@@ -8,7 +8,7 @@ import sys # Añade esta librería nativa al principio del archivo
 
 def rastrear_pilares():
     # Detectar el sistema operativo de forma automática
-    if sys.platform.startswith('win'):
+    if sys.platform.startswith('win'): 
         # Si es Windows, usa DirectShow
         cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     else:
