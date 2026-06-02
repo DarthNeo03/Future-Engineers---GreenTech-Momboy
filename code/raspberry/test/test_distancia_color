@@ -1,0 +1,81 @@
+import cv2
+import numpy as np
+
+# --- DATOS DE CALIBRACIÓN ---
+# Estos números los cambiarás luego de hacer tu prueba física
+ANCHO_REAL_PILAR_CM = 10.0 
+DISTANCIA_FOCAL = 600.0 # Valor hipotético. Lo calcularemos en tu laboratorio.
+
+def rastrear_y_medir_distancia():
+    cap = cv2.VideoCapture(0, cv2.CAP_V4L2) # Usa CAP_V4L2 en la Raspberry
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    kernel = np.ones((5,5), np.uint8)
+
+    def procesar_color_con_distancia(mascara, color_dibujo, nombre_objeto):
+        contornos, _ = cv2.findContours(mascara, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        max_area = 0
+        mejor_centro_x = None
+        distancia_estimada_cm = None
+
+        for contorno in contornos:
+            area = cv2.contourArea(contorno)
+            if area > 1000 and area > max_area:
+                max_area = area
+                x, y, w, h = cv2.boundingRect(contorno)
+                
+                # --- NUEVO: CÁLCULO DE DISTANCIA ---
+                # Fórmula: D = (Ancho_Real * Focal) / Ancho_Pixeles
+                distancia_estimada_cm = (ANCHO_REAL_PILAR_CM * DISTANCIA_FOCAL) / w
+                
+                cv2.rectangle(frame, (x, y), (x + w, y + h), color_dibujo, 2)
+                mejor_centro_x = x + (w // 2)
+                centro_y = y + (h // 2)
+                
+                # Mostrar la distancia en pantalla (Formateada a 1 decimal)
+                texto = f"{nombre_objeto} | {distancia_estimada_cm:.1f} cm"
+                cv2.putText(frame, texto, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_dibujo, 2)
+        
+        return mejor_centro_x, distancia_estimada_cm
+
+    while True:
+        ret, frame = cap.read()
+        if not ret: break
+
+        hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        # (Tus rangos de color rojo y verde van aquí igual que antes...)
+        # SIMULACIÓN RÁPIDA DE MÁSCARA PARA EL EJEMPLO:
+        mascara_roja = cv2.inRange(hsv_frame, np.array([0, 50, 50]), np.array([10, 255, 255]))
+        
+        # Procesamos y extraemos la DISTANCIA
+        centro_rojo_x, distancia_rojo = procesar_color_con_distancia(mascara_roja, (0, 0, 255), "ROJO")
+
+        # =========================================================
+        # NUEVA LÓGICA DE NAVEGACIÓN Y EVASIÓN
+        # =========================================================
+        if centro_rojo_x is not None and distancia_rojo is not None:
+            
+            # 1. ZONA CRÍTICA: Demasiado cerca, choque inminente
+            if distancia_rojo < 15.0:
+                print(f"¡PELIGRO! Pilar a {distancia_rojo:.1f} cm. METIENDO REVERSA Y RECALCULANDO.")
+                # Comando a ESP32: Freno total, Reverso 30%, Dirección recta.
+            
+            # 2. ZONA DE MANIOBRA: Distancia óptima para esquivar
+            elif 15.0 <= distancia_rojo < 60.0:
+                print(f"Esquivando pilar rojo a {distancia_rojo:.1f} cm por la DERECHA.")
+                # Comando a ESP32: Velocidad 50%, Dirección Derecha (servo).
+            
+            # 3. ZONA DE PLANIFICACIÓN: Lejos, nos acercamos suavemente
+            else:
+                print(f"Pilar rojo detectado a lo lejos ({distancia_rojo:.1f} cm). Centrando rumbo...")
+                # Comando a ESP32: Velocidad 80%, Dirección leve para acomodarse.
+
+        cv2.imshow("Robot Vision", frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'): break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    rastrear_y_medir_distancia()
