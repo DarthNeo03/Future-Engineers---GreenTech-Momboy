@@ -18,7 +18,12 @@ def rastrear_pilares():
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
     # Definimos el "borrador mágico" una sola vez para ahorrar memoria
-    kernel = np.ones((5,5), np.uint8)
+    # kernel = np.ones((5,5), np.uint8)
+
+    # Un kernel más grande (ej. 15x15) asegura que las dos mitades del carrete se fusionen
+    kernel = np.ones((15, 15), np.uint8) 
+
+
 
     while True:
         ret, frame = cap.read()
@@ -47,17 +52,26 @@ def rastrear_pilares():
         # ==========================================
         # El verde en OpenCV está alrededor de Hue=60. (Rango seguro: 40 a 80)
         verde_bajo = np.array([40, 50, 50])
-        verde_alto = np.array([80, 255, 255])
+        verde_alto = np.array([75, 255, 255])
         
         mascara_verde = cv2.inRange(hsv_frame, verde_bajo, verde_alto)
         mascara_verde = cv2.morphologyEx(mascara_verde, cv2.MORPH_OPEN, kernel)
+
 
         # ==========================================
         # 4. FUNCIÓN INTERNA: Procesar Contornos
         # ==========================================
         def procesar_color(mascara, color_dibujo, nombre_objeto):
-            contornos, _ = cv2.findContours(mascara, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
+            
+
+            # Se aplica DESPUÉS del MORPH_OPEN
+            mascara_limpia = cv2.morphologyEx(mascara, cv2.MORPH_OPEN, np.ones((5,5), np.uint8))
+            mascara_perfecta = cv2.morphologyEx(mascara_limpia, cv2.MORPH_CLOSE, kernel)
+
+
+            contornos, _ = cv2.findContours(mascara_perfecta, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
             # Variables para guardar el objeto más grande encontrado
             max_area = 0
             mejor_centro_x = None

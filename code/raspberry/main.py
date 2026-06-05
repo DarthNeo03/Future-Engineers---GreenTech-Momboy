@@ -1,30 +1,32 @@
 import cv2
 import numpy as np
-import sys # Añade esta librería nativa al principio del archivo
+import sys
 
-#modulo internos
+# modules for color processing
 
 from visual.processColor import ColorProcessor
 
-color_processor = ColorProcessor()
+kernel = np.ones((15,15), np.uint8) # this is the size of each kernel/group of pixels to avoid small flashes from the camera
+height = 480
+width = 640
 
+
+color_processor = ColorProcessor(kernel=kernel, height=height, width=width) 
 def iniciar():
 
-    ############################################# Iniciar camara en OS de windows o linux
+    ############################################# init camera diferent for windows and linux (raspberry)
     if sys.platform.startswith('win'):
-        # Si es Windows, usa DirectShow
+        # if the platform is Windows, use DirectShow
         cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     else:
-        # Si es Linux (Raspberry), usa V4L2
+        # if the platform is Linux (Raspberry), use V4L2
         cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     #############################################
 
-    kernel = np.ones((1,1), np.uint8) # este es el tamaño de cada nucleo/grupo de pixel para evitar pequeños destellos de la camara
 
-
-    # iniciar el bucle de la camara
+    # init bucle camera
     while True:
         ret , frame = cap.read()
         if not ret:
@@ -34,11 +36,11 @@ def iniciar():
         hsv_frame , rgb_frame = color_processor.process(frame)
         
 
-        # Mostrar resultados
+        # show the result
         cv2.imshow("Robot Vision", rgb_frame)
 
 
-        # Cerrar Ventanas
+        # close the program when 'q' is pressed
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
     
