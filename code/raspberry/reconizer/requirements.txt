@@ -1,0 +1,11 @@
+# Carro WRO Futuros Ingenieros. Python 3.11 en Windows 11 y en Raspbian.
+#
+#   Windows:   .venv\Scripts\activate  &&  pip install -r requirements.txt
+#   Raspbian:  sudo apt install python3-tk      <-- tkinter NO viene por pip
+#              source .venv/bin/activate && pip install -r requirements.txt
+#
+opencv-python>=4.8
+numpy>=1.24
+pillow>=10.0        # opcional: mete el video dentro de la ventana del calibrador
+pyserial>=3.5       # enlace con el ESP32
+smbus2>=0.4         # solo Linux: MPU6050 por I2C (opcional)

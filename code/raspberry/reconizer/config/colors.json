@@ -1,0 +1,411 @@
+{
+  "version": 2,
+  "activo": "Prueba1",
+  "perfiles": [
+    {
+      "nombre": "Prueba1",
+      "fecha": "2026-08-19 11:41:05",
+      "notas": "calibrado con tools/calibrador.py",
+      "camara": {
+        "indice": 0,
+        "ancho": 640,
+        "alto": 480,
+        "fps": 30,
+        "fourcc": "MJPG",
+        "voltear": false
+      },
+      "colores": {
+        "rojo": {
+          "rangos": [
+            [
+              [
+                150,
+                100,
+                6
+              ],
+              [
+                179,
+                255,
+                255
+              ]
+            ],
+            [
+              [
+                0,
+                104,
+                6
+              ],
+              [
+                10,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 7,
+          "area_min": 475,
+          "area_max": 300100,
+          "llenado_min": 0.55,
+          "aspecto_min": 0.6,
+          "aspecto_max": 4.0,
+          "usar_aspecto": true,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.15,
+          "roi_abajo": 1.0,
+          "max_objetos": 6,
+          "color_dibujo": [
+            0,
+            0,
+            255
+          ]
+        },
+        "verde": {
+          "rangos": [
+            [
+              [
+                40,
+                70,
+                50
+              ],
+              [
+                93,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 5,
+          "area_min": 350,
+          "area_max": 250000,
+          "llenado_min": 0.55,
+          "aspecto_min": 0.6,
+          "aspecto_max": 4.0,
+          "usar_aspecto": true,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.15,
+          "roi_abajo": 1.0,
+          "max_objetos": 4,
+          "color_dibujo": [
+            0,
+            200,
+            0
+          ]
+        },
+        "negro": {
+          "rangos": [
+            [
+              [
+                0,
+                0,
+                0
+              ],
+              [
+                179,
+                255,
+                22
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 7,
+          "unir_huecos": 7,
+          "area_min": 1200,
+          "area_max": 300000,
+          "llenado_min": 0.2,
+          "aspecto_min": 0.0,
+          "aspecto_max": 50.0,
+          "usar_aspecto": false,
+          "ancho_min": 4,
+          "alto_min": 4,
+          "roi_arriba": 0.0,
+          "roi_abajo": 1.0,
+          "max_objetos": 5,
+          "color_dibujo": [
+            255,
+            0,
+            255
+          ]
+        }
+      }
+    },
+    {
+      "nombre": "calib_0819_1114",
+      "fecha": "2026-08-19 11:39:13",
+      "notas": "calibrado con tools/calibrador.py",
+      "camara": {
+        "indice": 0,
+        "ancho": 640,
+        "alto": 480,
+        "fps": 30,
+        "fourcc": "MJPG",
+        "voltear": false
+      },
+      "colores": {
+        "rojo": {
+          "rangos": [
+            [
+              [
+                150,
+                100,
+                6
+              ],
+              [
+                179,
+                255,
+                255
+              ]
+            ],
+            [
+              [
+                0,
+                104,
+                6
+              ],
+              [
+                10,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 7,
+          "area_min": 475,
+          "area_max": 300100,
+          "llenado_min": 0.55,
+          "aspecto_min": 0.6,
+          "aspecto_max": 4.0,
+          "usar_aspecto": true,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.15,
+          "roi_abajo": 1.0,
+          "max_objetos": 6,
+          "color_dibujo": [
+            0,
+            0,
+            255
+          ]
+        },
+        "verde": {
+          "rangos": [
+            [
+              [
+                40,
+                70,
+                50
+              ],
+              [
+                93,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 5,
+          "area_min": 350,
+          "area_max": 250000,
+          "llenado_min": 0.55,
+          "aspecto_min": 0.6,
+          "aspecto_max": 4.0,
+          "usar_aspecto": true,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.15,
+          "roi_abajo": 1.0,
+          "max_objetos": 4,
+          "color_dibujo": [
+            0,
+            200,
+            0
+          ]
+        },
+        "negro": {
+          "rangos": [
+            [
+              [
+                0,
+                0,
+                0
+              ],
+              [
+                179,
+                255,
+                22
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 7,
+          "unir_huecos": 7,
+          "area_min": 1200,
+          "area_max": 300000,
+          "llenado_min": 0.2,
+          "aspecto_min": 0.0,
+          "aspecto_max": 50.0,
+          "usar_aspecto": false,
+          "ancho_min": 4,
+          "alto_min": 4,
+          "roi_arriba": 0.0,
+          "roi_abajo": 1.0,
+          "max_objetos": 5,
+          "color_dibujo": [
+            255,
+            0,
+            255
+          ]
+        }
+      }
+    },
+    {
+      "nombre": "base",
+      "fecha": "2026-08-19 15:02:07",
+      "notas": "Valores iniciales sin calibrar",
+      "camara": {
+        "indice": 0,
+        "ancho": 640,
+        "alto": 480,
+        "fps": 30,
+        "fourcc": "MJPG",
+        "voltear": false
+      },
+      "colores": {
+        "rojo": {
+          "rangos": [
+            [
+              [
+                0,
+                110,
+                70
+              ],
+              [
+                8,
+                255,
+                255
+              ]
+            ],
+            [
+              [
+                168,
+                110,
+                70
+              ],
+              [
+                179,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 5,
+          "area_min": 350,
+          "area_max": 250000,
+          "llenado_min": 0.55,
+          "aspecto_min": 0.6,
+          "aspecto_max": 4.0,
+          "usar_aspecto": true,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.15,
+          "roi_abajo": 1.0,
+          "max_objetos": 4,
+          "color_dibujo": [
+            0,
+            0,
+            255
+          ]
+        },
+        "verde": {
+          "rangos": [
+            [
+              [
+                45,
+                70,
+                50
+              ],
+              [
+                85,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 5,
+          "area_min": 350,
+          "area_max": 250000,
+          "llenado_min": 0.55,
+          "aspecto_min": 0.6,
+          "aspecto_max": 4.0,
+          "usar_aspecto": true,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.15,
+          "roi_abajo": 1.0,
+          "max_objetos": 4,
+          "color_dibujo": [
+            0,
+            200,
+            0
+          ]
+        },
+        "negro": {
+          "rangos": [
+            [
+              [
+                0,
+                0,
+                0
+              ],
+              [
+                179,
+                90,
+                65
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 7,
+          "unir_huecos": 7,
+          "area_min": 1200,
+          "area_max": 300000,
+          "llenado_min": 0.2,
+          "aspecto_min": 0.0,
+          "aspecto_max": 50.0,
+          "usar_aspecto": false,
+          "ancho_min": 4,
+          "alto_min": 4,
+          "roi_arriba": 0.0,
+          "roi_abajo": 1.0,
+          "max_objetos": 3,
+          "color_dibujo": [
+            255,
+            0,
+            255
+          ]
+        }
+      }
+    }
+  ]
+}
