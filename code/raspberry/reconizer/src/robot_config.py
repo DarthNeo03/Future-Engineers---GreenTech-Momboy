@@ -38,55 +38,153 @@ POR_DEFECTO: Dict[str, Any] = {
     "camara": {
         "indice": 0, "ancho": 640, "alto": 480, "fps": 30,
         "fourcc": "MJPG", "voltear": False,
+
+        # Geometria del montaje. Solo se usa mientras NO exista
+        # config/suelo.json; en cuanto se calibra con tools/calibrar_suelo.py
+        # manda la homografia medida y esto se ignora.
+        # Subir la camara mejora directamente la precision en distancia: el
+        # limite del reglamento son 300 mm de alto total.
+        "altura_mm": 200.0,
+        "cabeceo_deg": 20.0,     # cuanto mira hacia abajo respecto a la horizontal
+        "hfov_deg": 70.0,        # campo horizontal REAL de la lente
+        "vfov_deg": 0.0,         # 0 = deducirlo del horizontal
     },
 
     "limites": {
         "vmax": 130,             # tope de PWM 0-255 que el ESP32 nunca supera
-        "vel_crucero": 55,       # % de vmax en recta
-        "vel_giro": 38,          # % de vmax girando
+        "vel_crucero": 45,       # % de vmax en recta
+        "vel_giro": 32,          # % de vmax girando
         "dir_max": 100,          # % de direccion que se permite pedir
     },
 
+    # "abierto" = Open Challenge, "obstaculos" = Obstacle Challenge
+    "reto": "abierto",
+
     "navegacion": {
-        "estrategia": "centrado",       # "centrado" | "pared"
         "color_muro": "negro",
 
-        # --- lectura del muro ---
-        "px_min_columna": 6,     # menos pixeles negros que esto en una columna
-                                 # = ahi no hay muro (mata el ruido)
-        "suavizado": 15,         # promedio movil del perfil, en columnas
+        # --- lectura del muro (geometria.py) ---
+        "alto_min_muro_px": 12,  # racha vertical continua minima para creerse
+                                 # que hay muro. Es lo que separa un muro de
+                                 # 100 mm de una sombra en el piso blanco.
         "ignorar_abajo": 0.06,   # franja inferior tapada por el chasis
+        "suavizado_mm": 5,       # media movil del escaneo, en columnas
 
-        # --- zonas ---
-        "banda_lateral": 0.28,   # ancho de las bandas izquierda y derecha
-        "ruedas_izq": 0.32,      # por donde pasan las ruedas (la camara no las ve)
-        "ruedas_der": 0.68,
+        # --- deteccion de la esquina convexa (el pivote del giro) ---
+        "salto_min_mm": 260.0,   # salto de rango que delata al muro interno
+        "salto_corrida": 6,      # columnas validas pegadas exigidas al lado
+                                 # cercano del salto (mata los saltos de ruido)
+        "salto_z_max_mm": 1600.0,
+        "frames_para_fijar_lado": 4,
+        # La esquina se ve al principio de la recta y desaparece del encuadre
+        # justo cuando te acercas. Se sigue por estima con yaw + velocidad.
+        "esquina_memoria_s": 6.0,
+        "esquina_atras_mm": 400.0,
+        "ancho_corredor_inicial_mm": 800.0,
+        "ancho_fiable_s": 4.0,
+        "ancho_mezcla": 0.15,
 
-        # --- PD del centrado ---
-        "kp": 95.0,
-        "kd": 22.0,
+        # --- seguimiento del muro interno ---
+        # El sesgo hacia dentro es intencionado: la regla 9.18 prohibe TOCAR
+        # el muro exterior en la prueba abierta, y rozar el interior sin
+        # moverlo no penaliza. En un pasillo de 600 mm esto deja ~150 mm de
+        # holgura interior y ~250 mm exterior con un carro de 200 mm.
+        "pared_objetivo_mm": 250.0,
+        "recta_z_desde_mm": 120.0,
+        "recta_z_hasta_mm": 900.0,
+        # Control en cascada. El error lateral manda sobre el ANGULO de
+        # aproximacion (acotado), y el volante persigue ese angulo. Ver el
+        # comentario largo en navegacion._paso_recto: la version directa
+        # satura el volante y cruza el corredor en diagonal.
+        "aprox_grados_por_mm": 0.06,  # 250 mm de error -> 15 grados
+        "aprox_max_grados": 22.0,     # nunca se ataca la pared mas inclinado
+        "aprox_max_grados_senal": 30.0,  # esquivar un pilar si admite mas prisa
+        "kp_rumbo": 2.5,              # % de direccion por grado
+        "kd_rumbo": 0.15,
+        "aprox_max_grados_buscando": 14.0,
+        "kp_centrado": 60.0,     # solo en BUSCANDO, antes de saber el sentido
 
-        # --- PD del seguimiento de pared ---
-        "lado_pared": "izq",
-        "pared_objetivo": 0.45,
-        "kp_pared": 130.0,
-        "kd_pared": 28.0,
+        # --- guardia contra el muro externo (regla 9.18) ---
+        "min_externo_mm": 150.0,
+        "kp_externo": 0.5,
 
-        # --- umbrales (sobre el espacio libre normalizado 0..1) ---
-        "girar_bajo": 0.40,      # por debajo de esto, hay esquina: girar
-        "salir_giro_sobre": 0.55,
-        "frenar_bajo": 0.50,     # empieza a bajar la velocidad
-        "parar_bajo": 0.24,      # parada de seguridad
-        "giro_max_ms": 3000,
-        "min_recto_ms": 600,     # espera minima entre dos esquinas seguidas
-        "dir_giro": 90.0,        # % de direccion durante el giro
-
-        # --- giroscopio (si hay MPU6050) ---
-        "usar_yaw": True,
-        "yaw_kp": 1.6,           # % de direccion por grado de error
-        "yaw_max": 45.0,         # tope de la correccion por yaw
+        # --- disparo y ejecucion del giro ---
+        # RADIO DE GIRO REAL del carro, medido con tiza en el suelo. De aqui
+        # sale solo la distancia de disparo: z_disparo = radio - objetivo.
+        # Es el numero mas importante de todo el archivo.
+        "radio_giro_mm": 350.0,
+        "giro_z_mm": 0.0,        # 0 = automatico desde radio_giro_mm.
+                                 # Un valor > 0 lo fuerza a mano.
+        "giro_frente_mm": 300.0, # red de seguridad si no se ve la esquina
         "giro_grados": 90.0,     # la pista es cuadrada
-        "giro_tolerancia": 8.0,
+        "giro_kp": 2.8,          # salida proporcional: evita el sobregiro
+        "giro_tolerancia": 5.0,
+        "giro_max_ms": 4000,
+        "giro_min_ms": 700,      # solo para el cierre sin giroscopio
+        "giro_paralelo_grados": 12.0,
+        "dir_giro": 85.0,        # direccion fija si no hay giroscopio
+        "min_recto_ms": 500,     # espera minima entre dos esquinas seguidas
+
+        # --- velocidad y seguridad ---
+        "semiancho_carro_mm": 110.0,
+        "frenar_mm": 650.0,
+        # OJO: `parar_mm` tiene que estar POR ENCIMA de la distancia minima
+        # medible (unos 200 mm con ignorar_abajo=0.06 y la camara a 200 mm).
+        # Si se pone por debajo, la parada no puede dispararse nunca porque el
+        # muro desaparece del encuadre antes de llegar al umbral. El robot
+        # avisa al arrancar si estos numeros no cuadran.
+        "parar_mm": 280.0,
+        "salir_bloqueo_mm": 430.0,
+        # Segundos de cada tiempo de la maniobra de desatasco
+        # (atras / adelante / atras...). Ver navegacion._desatascar.
+        "bloqueo_alterna_s": 1.4,
+        "memoria_frente_mm": 700.0,   # por debajo de esto, un muro que sale del
+        "memoria_frente_s": 2.0,      # encuadre se recuerda en vez de olvidarse
+        "cobertura_min": 0.25,   # si se ve menos muro que esto, no acelerar:
+                                 # desconocido no es lo mismo que despejado
+
+        # --- giroscopio ---
+        "usar_yaw": True,
+        "yaw_kp": 1.2,
+        "yaw_max": 30.0,
+
+        # --- final de carrera ---
+        # Sin encoder la distancia se integra de la velocidad pedida por esta
+        # constante, medida a mano una vez. Con encoder, sustituir por el
+        # contador real de la telemetria.
+        "mm_por_seg_a_100": 900.0,
+        "parada_tras_giro_mm": 700.0,
+
+        # --- solo para dibujar ---
+        "ruedas_izq": 0.32,
+        "ruedas_der": 0.68,
+    },
+
+    "obstaculos": {
+        # ROJO  -> el carro pasa por la DERECHA del pilar
+        # VERDE -> el carro pasa por la IZQUIERDA del pilar
+        "senal_z_min_mm": 120.0,
+        "senal_z_max_mm": 1600.0,
+        "senal_z_soltar_mm": 220.0,   # mas cerca que esto ya no se corrige
+        "senal_alto_min_px": 10,
+        "senal_aspecto_min": 1.1,     # un pilar 50x50x100 siempre es mas alto
+        # 100 (medio carro) + 25 (medio pilar) + holgura. Con 190 la holgura
+        # real quedaba en 65 mm y el simulador rozaba pilares: 240 deja 115.
+        "senal_margen_mm": 245.0,
+        # Distancia minima a un muro que un esquive NO puede invadir.
+        "hueco_muro_senal_mm": 220.0,
+        # mm que se sostiene el desvio despues de soltar la señal, para
+        # rebasarla de verdad antes de volver a la pared.
+        "senal_mantener_mm": 450.0,
+        # Tope del desvio lateral. Puede ser generoso porque el navegador lo
+        # acota ademas contra los muros medidos, que es el limite que de
+        # verdad importa: con 380 el carro no llegaba a apartarse lo
+        # suficiente de un pilar centrado y lo rozaba.
+        "senal_desvio_max_mm": 600.0,
+        "senal_salto_mm": 260.0,
+        # Mas lateral que esto la señal esta en OTRO corredor, vista de reojo
+        # por encima de la esquina: no es nuestra.
+        "senal_x_max_mm": 650.0,
     },
 
     "imu": {
@@ -96,6 +194,11 @@ POR_DEFECTO: Dict[str, Any] = {
         "hz": 100,
         "alfa_complementario": 0.98,
         "muestras_calibracion": 400,
+        # El navegador espera yaw en convenio de BRUJULA: aumenta al girar a la
+        # DERECHA. Comprueba con el carro en la mano: girandolo a la derecha, el
+        # yaw del panel tiene que subir. Si baja, pon esto en true. Con el signo
+        # al reves los giros salen hacia el lado contrario.
+        "invertir_yaw": False,
     },
 
     "red": {

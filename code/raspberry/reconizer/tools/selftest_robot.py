@@ -7,11 +7,15 @@ selftest_robot.py — Pruebas del sistema completo SIN carro.
 Cubre:
   1. Protocolo Python <-> C++ (los mismos bytes en las dos implementaciones)
   2. El lector de tramas frente a ruido, truncados y arranques a media trama
-  3. Navegacion sobre pistas sinteticas: recta, muro a un lado, esquina, choque
+  3. Geometria: la camara como LIDAR metrico, contiguidad, desconocido!=libre
+  3b. El salto de rango que distingue el muro interno del externo
+  3c. Navegacion: los cuatro sintomas de pista, en los dos sentidos
+  3d. Senales rojas y verdes del reto de obstaculos
+  10. VUELTAS COMPLETAS en lazo cerrado sobre la pista del reglamento
   4. Enlace serie de verdad, contra un ESP32 falso al otro lado de un pty
   5. Servidor web: pagina, JSON de estado, ordenes y stream MJPEG
-  6. Seguridad del Robot: sin imagen se desarma, y en manual no te deja
-     empotrarte
+  6. Seguridad del Robot: sin imagen se desarma, en manual no te deja
+     empotrarte, y el mando manual caduca si el joystick deja de refrescar
 
 Lo unico que no se puede probar aqui es el ESP32 real; para eso esta
 tools/test_firmware.cpp, que compila su logica con g++.
@@ -20,14 +24,19 @@ tools/test_firmware.cpp, que compila su logica con g++.
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# /tmp no existe en Windows y el README pide correr esto en los dos sistemas.
+TMP = Path(tempfile.gettempdir())
 
 import cv2
 import numpy as np
@@ -37,6 +46,7 @@ if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
 from src import color_config as cc, navegacion as nav, protocolo as P  # noqa: E402
+from src import geometria as geo, obstaculos as obs                     # noqa: E402
 from src import robot_config, vision                                    # noqa: E402
 
 _fallos: List[str] = []
@@ -58,7 +68,7 @@ def check(cond, nombre, detalle=""):
 # ===========================================================================
 def test_protocolo_cruzado():
     print("\n[1] Protocolo: Python contra la implementacion del ESP32")
-    binario = Path("/tmp/tfw_selftest")
+    binario = TMP / "tfw_selftest"
     fuente = RAIZ / "tools" / "test_firmware.cpp"
     inc = RAIZ / "firmware" / "esp32_carro"
     try:
@@ -154,11 +164,10 @@ def test_lector_robusto():
 
 
 # ===========================================================================
-# 3. Navegacion
+# 3. Geometria: la camara como LIDAR metrico
 # ===========================================================================
 def pista(alturas, ancho=640, alto=480, ruido=5):
-    """Dibuja una vista con muro negro arriba cuyo borde inferior sigue
-    'alturas' (lista de (x, y) que se interpola). Piso blanco debajo."""
+    """Vista con muro negro arriba cuyo borde inferior sigue 'alturas'."""
     img = np.full((alto, ancho, 3), 235, np.uint8)
     xs = np.array([p[0] for p in alturas], dtype=np.float32)
     ys = np.array([p[1] for p in alturas], dtype=np.float32)
@@ -176,176 +185,501 @@ def _mascara_muro(img, colores):
     return m["negro"]
 
 
-def test_perfil():
-    print("\n[3] Perfil del muro (el 'LIDAR pobre')")
-    colores = cc.colores_por_defecto()
+def _cortar_rayo(ox, oz, dx, dz, seg):
+    """Interseccion rayo-segmento. Devuelve la distancia o None."""
+    (x1, z1), (x2, z2) = seg
+    ex, ez = x2 - x1, z2 - z1
+    den = dx * ez - dz * ex
+    if abs(den) < 1e-9:
+        return None
+    t = ((x1 - ox) * ez - (z1 - oz) * ex) / den
+    u = ((x1 - ox) * dz - (z1 - oz) * dx) / den
+    if t > 1e-6 and -1e-6 <= u <= 1 + 1e-6:
+        return t
+    return None
+
+
+def escaneo_mundo(segmentos, ancho=640, hfov=100.0, ruido_mm=0.0, semilla=1):
+    """Traza un mundo 2D de paredes y devuelve un Escaneo metrico.
+
+    Es mucho mas directo que fabricar imagenes: prueba la NAVEGACION sin
+    arrastrar el detector de color ni la proyeccion. La cadena completa
+    (imagen -> mascara -> escaneo) se prueba aparte, en test_pipeline_imagen.
+    """
+    rng = np.random.default_rng(semilla)
+    med = math.radians(hfov) / 2.0
+    ang = np.linspace(-med, med, ancho)
+    X = np.full(ancho, np.nan)
+    Z = np.full(ancho, np.nan)
+    val = np.zeros(ancho, bool)
+    for i, a in enumerate(ang):
+        dx, dz = math.sin(a), math.cos(a)
+        mejor = None
+        for seg in segmentos:
+            t = _cortar_rayo(0.0, 0.0, dx, dz, seg)
+            if t is not None and (mejor is None or t < mejor):
+                mejor = t
+        if mejor is None or mejor > geo.Z_MAX_MM:
+            continue
+        r = mejor + (rng.normal(0, ruido_mm) if ruido_mm else 0.0)
+        X[i], Z[i] = r * dx, r * dz
+        val[i] = True
+    return geo.Escaneo(x=X, z=Z, valido=val,
+                       y_contacto=np.zeros(ancho, np.int32), ancho=ancho, alto=480)
+
+
+def corredor(ancho_mm=1000.0, lado_interno=-1, z_esquina=None, largo=2500.0):
+    """Un tramo recto de corredor.
+
+    El carro va a 250 mm del muro interno (que es el objetivo por defecto).
+    Si z_esquina no es None, el muro interno se ACABA ahi -esquina convexa- y
+    el muro externo cierra por delante en concavo: una esquina de pista.
+    """
+    x_int = lado_interno * 250.0
+    x_ext = -lado_interno * (ancho_mm - 250.0)
+    segs = [((x_ext, -200.0), (x_ext, largo))]
+    if z_esquina is None:
+        segs.append(((x_int, -200.0), (x_int, largo)))
+    else:
+        # El muro interno se ACABA en la esquina convexa.
+        segs.append(((x_int, -200.0), (x_int, z_esquina)))
+        # El muro externo cierra por delante en concavo, y su pared frontal
+        # se extiende MUCHO mas alla del lado interno: es la pared exterior
+        # del siguiente pasillo. Eso es lo que produce el salto de rango al
+        # asomarse por encima de la esquina interna.
+        z_f = z_esquina + ancho_mm
+        x_lejos = x_int + lado_interno * 3000.0
+        segs.append(((x_lejos, z_f), (x_ext, z_f)))
+    return segs
+
+
+def test_geometria():
+    print("\n[3] Geometria: contacto, contiguidad y escaneo metrico")
     cfg = robot_config.POR_DEFECTO["navegacion"]
+    suelo = geo.Suelo(robot_config.POR_DEFECTO["camara"])
 
-    # muro lejos y parejo
-    m = _mascara_muro(pista([(0, 150), (639, 150)]), colores)
-    p = nav.perfil_desde_mascara(m, cfg)
-    check(abs(p.izq - p.der) < 0.03, "muro parejo: izquierda y derecha iguales",
-          f"{p.izq:.3f} vs {p.der:.3f}")
-    check(0.6 < p.pasillo < 0.8, "pasillo despejado", f"{p.pasillo:.3f}")
+    check(not suelo.calibrado, "sin suelo.json usa el modelo aproximado")
 
-    # muro que baja por la izquierda (mas cerca a la izquierda)
-    m = _mascara_muro(pista([(0, 380), (320, 220), (639, 150)]), colores)
-    p2 = nav.perfil_desde_mascara(m, cfg)
-    check(p2.der > p2.izq + 0.15, "muro cerca por la izquierda: mas libre a la derecha",
-          f"izq={p2.izq:.3f} der={p2.der:.3f}")
+    # --- contiguidad vertical: muro si, sombra no ---
+    muro = np.zeros((480, 640), np.uint8)
+    muro[100:300, 200:400] = 255            # bloque alto = muro
+    y, v = geo.contacto_muro(muro, cfg)
+    check(v[300] and 250 < y[300] < 300, "un muro alto da contacto en su base",
+          f"y={y[300]} v={v[300]}")
+    check(not v[100], "y fuera del muro no hay contacto")
 
-    # sin muro ninguno
-    m = _mascara_muro(np.full((480, 640, 3), 235, np.uint8), colores)
-    p3 = nav.perfil_desde_mascara(m, cfg)
-    check(p3.pasillo > 0.95 and not p3.hay_muro, "sin muro, todo libre",
-          f"{p3.pasillo:.3f}")
+    sombra = np.zeros((480, 640), np.uint8)
+    sombra[290:298, 200:400] = 255          # franja de 8 px = sombra en el piso
+    _y2, v2 = geo.contacto_muro(sombra, cfg)
+    check(not v2[300], "una franja fina NO cuenta como muro (mata las sombras)")
 
-    # una mota negra suelta no debe leerse como muro pegado
-    img = np.full((480, 640, 3), 235, np.uint8)
-    cv2.circle(img, (320, 460), 3, (10, 10, 10), -1)
-    m = _mascara_muro(img, colores)
-    p4 = nav.perfil_desde_mascara(m, cfg)
-    check(p4.pasillo > 0.9, "una mota no cierra el pasillo", f"{p4.pasillo:.3f}")
+    # --- desconocido no es libre ---
+    vacio = np.zeros((480, 640), np.uint8)
+    e = geo.escanear(vacio, suelo, cfg)
+    check(e.cobertura() == 0.0, "sin muro visible la cobertura es 0")
+    check(not e.valido.any(), "y ninguna columna se marca valida: "
+                              "desconocido no es lo mismo que despejado")
 
-    # el chasis en la franja inferior se ignora
-    img = np.full((480, 640, 3), 235, np.uint8)
-    img[455:, :] = (12, 12, 12)
-    m = _mascara_muro(img, colores)
-    p5 = nav.perfil_desde_mascara(m, dict(cfg, ignorar_abajo=0.08))
-    check(p5.pasillo > 0.9, "la franja del chasis no cuenta como muro",
-          f"{p5.pasillo:.3f}")
-    p6 = nav.perfil_desde_mascara(m, dict(cfg, ignorar_abajo=0.0))
-    check(p6.pasillo < 0.2, "y sin ignorarla, si la ve (la prueba comprueba el filtro)",
-          f"{p6.pasillo:.3f}")
+    # --- proyeccion metrica coherente ---
+    e2 = geo.escanear(muro, suelo, cfg)
+    _xs, zs = e2.puntos()
+    check(len(zs) > 50 and bool(np.all(zs > 0)), "la proyeccion da distancias positivas")
+    check(200 < float(np.median(zs)) < 3000, "y en un rango fisico razonable",
+          float(np.median(zs)))
+
+    # --- el escaneo sintetico se comporta ---
+    e3 = escaneo_mundo(corredor(1000.0, lado_interno=-1))
+    izq, der = e3.lateral(-1), e3.lateral(+1)
+    check(izq is not None and abs(izq - 250) < 40, "mide bien la pared izquierda", izq)
+    check(der is not None and abs(der - 750) < 80, "y la derecha", der)
+    r = e3.recta(-1)
+    check(r is not None and abs(r[1]) < 3.0, "una pared paralela da angulo ~0",
+          None if r is None else r[1])
 
 
-def test_estrategias():
-    print("\n[4] Estrategias de esquive")
-    colores = cc.colores_por_defecto()
-    base = dict(robot_config.POR_DEFECTO["navegacion"], min_recto_ms=0)
+# ===========================================================================
+# 4. El discriminador: cual de los dos muros negros es el interno
+# ===========================================================================
+def test_salto():
+    print("\n[4] Esquina convexa: distinguir muro interno de externo")
+    cfg = dict(robot_config.POR_DEFECTO["navegacion"])
+
+    for lado, nombre in ((-1, "izquierda"), (+1, "derecha")):
+        e = escaneo_mundo(corredor(1000.0, lado_interno=lado, z_esquina=900.0))
+        s = geo.buscar_salto(e, cfg)
+        check(s is not None and s.lado == lado,
+              f"muro interno a la {nombre}: lo detecta por el salto de rango",
+              None if s is None else s.lado)
+        if s is not None:
+            check(abs(s.z - 900.0) < 250,
+                  f"  y situa la esquina cerca de donde esta ({nombre})", s.z)
+
+    # Un corredor recto SIN esquina no debe inventarse un salto.
+    e = escaneo_mundo(corredor(1000.0, lado_interno=-1))
+    s = geo.buscar_salto(e, cfg)
+    check(s is None, "en recta sin esquina no aparece una esquina falsa",
+          None if s is None else (s.lado, s.magnitud))
+
+    # El muro EXTERNO tiene esquina concava: no debe generar salto a su lado.
+    e = escaneo_mundo(corredor(1000.0, lado_interno=-1, z_esquina=700.0))
+    s = geo.buscar_salto(e, cfg)
+    check(s is not None and s.lado == -1,
+          "la esquina concava del externo NO se confunde con la del interno",
+          None if s is None else s.lado)
+
+
+# ===========================================================================
+# 5. Navegacion: los cuatro sintomas observados en pista
+# ===========================================================================
+def _ang(a):
+    return (a + 180.0) % 360.0 - 180.0
+
+
+def _nav(**over):
+    cfg = dict(robot_config.POR_DEFECTO["navegacion"])
+    cfg.update(over)
     lim = dict(robot_config.POR_DEFECTO["limites"])
-
-    def decidir(img, cfg=None, pasos=3, yaw=None, navegador=None):
-        cfg = cfg or base
-        m = _mascara_muro(img, colores)
-        p = nav.perfil_desde_mascara(m, cfg)
-        n = navegador or nav.Navegador(cfg, lim)
-        d = None
-        for _ in range(pasos):
-            d = n.paso(p, yaw)
-            time.sleep(0.01)
-        return d, p, n
-
-    # --- recta despejada ---
-    d, p, _ = decidir(pista([(0, 150), (639, 150)]))
-    check(d.estado == nav.RECTO, "muro lejos: sigue recto", d.estado)
-    check(abs(d.direccion) < 12, "y casi no gira", d.direccion)
-    check(d.vel >= lim["vel_giro"], "con velocidad de crucero", d.vel)
-
-    # --- muro cerca por la izquierda -> girar a la derecha ---
-    d, p, _ = decidir(pista([(0, 400), (320, 250), (639, 160)]))
-    check(d.direccion > 10, "muro a la izquierda: gira a la derecha",
-          f"dir={d.direccion} izq={p.izq:.2f} der={p.der:.2f}")
-
-    # --- muro cerca por la derecha -> girar a la izquierda ---
-    d, p, _ = decidir(pista([(0, 160), (320, 250), (639, 400)]))
-    check(d.direccion < -10, "muro a la derecha: gira a la izquierda",
-          f"dir={d.direccion} izq={p.izq:.2f} der={p.der:.2f}")
-
-    # --- esquina: pared de frente todavia a distancia, hueco a la derecha ---
-    # Base del muro en y=300 dentro del pasillo -> libre 0.375, por debajo de
-    # girar_bajo pero por encima de parar_bajo: justo la situacion de esquina.
-    cfg_esq = dict(base, girar_bajo=0.45, parar_bajo=0.20)
-    d, p, n = decidir(pista([(0, 300), (430, 300), (520, 190), (639, 160)]), cfg_esq)
-    check(n.estado == nav.GIRO, "pared de frente a distancia: entra en modo giro",
-          f"{n.estado} pasillo={p.pasillo:.2f}")
-    check(d.direccion > 40, "y gira fuerte hacia el hueco", d.direccion)
-    check(d.vel > 0, "sin pararse (girar parado no sirve con direccion Ackermann)", d.vel)
-
-    # Y si ya es demasiado tarde, la seguridad manda sobre la estrategia
-    d2, p2, n2 = decidir(pista([(0, 425), (430, 425), (520, 200), (639, 150)]), cfg_esq)
-    check(n2.estado == nav.BLOQUEADO, "si ya esta encima, bloqueado en vez de giro",
-          f"{n2.estado} pasillo={p2.pasillo:.2f}")
-    check(d2.vel < 0 and d2.direccion < 0,
-          "retrocede girando al reves para reencuadrar hacia el hueco derecho",
-          f"vel={d2.vel} dir={d2.direccion}")
-
-    # --- muro encima: parada / retroceso ---
-    d, p, _ = decidir(pista([(0, 465), (639, 465)]))
-    check(d.estado == nav.BLOQUEADO, "muro encima: bloqueado", d.estado)
-    check(d.vel < 0, "retrocede en vez de empujar la pared", d.vel)
-
-    # --- frenado progresivo ---
-    lejos, _, _ = decidir(pista([(0, 140), (639, 140)]))
-    cerca, pc, _ = decidir(pista([(0, 330), (639, 330)]))
-    check(cerca.vel < lejos.vel, "cuanto mas cerca el muro, mas despacio",
-          f"{cerca.vel} vs {lejos.vel} (pasillo {pc.pasillo:.2f})")
-
-    # --- seguir pared izquierda (con el pasillo despejado, para aislar el PD) ---
-    cfg_p = dict(base, estrategia="pared", lado_pared="izq", pared_objetivo=0.40)
-    lejos_de_pared = pista([(0, 250), (200, 250), (260, 150), (639, 150)])
-    cerca_de_pared = pista([(0, 340), (200, 340), (260, 150), (639, 150)])
-    d1, p1, _ = decidir(lejos_de_pared, cfg_p)
-    d2, p2, _ = decidir(cerca_de_pared, cfg_p)
-    check(p1.izq > p2.izq, "la banda izquierda mide bien la distancia a esa pared",
-          f"lejos={p1.izq:.2f} cerca={p2.izq:.2f}")
-    check(d1.direccion < d2.direccion,
-          "lejos de la pared se arrima (izquierda) y cerca se separa (derecha)",
-          f"lejos dir={d1.direccion}  cerca dir={d2.direccion}")
-    check(d1.direccion < 0 < d2.direccion,
-          "y los signos son los correctos para la pared izquierda",
-          f"{d1.direccion} / {d2.direccion}")
-
-    cfg_pd = dict(cfg_p, lado_pared="der")
-    d3, _, _ = decidir(pista([(0, 150), (380, 150), (440, 250), (639, 250)]), cfg_pd)
-    d4, _, _ = decidir(pista([(0, 150), (380, 150), (440, 340), (639, 340)]), cfg_pd)
-    check(d3.direccion > d4.direccion,
-          "con la pared derecha los signos se invierten, como debe ser",
-          f"lejos dir={d3.direccion}  cerca dir={d4.direccion}")
-
-    # --- la direccion nunca se pasa del tope ---
-    peor = 0
-    for izq in range(120, 460, 40):
-        for der in range(120, 460, 40):
-            d, _, _ = decidir(pista([(0, izq), (639, der)]), pasos=2)
-            if abs(d.direccion) > lim["dir_max"] or abs(d.vel) > 100:
-                peor = max(peor, abs(d.direccion))
-    check(peor == 0, "ninguna combinacion saca la direccion de rango", peor)
+    return nav.Navegador(cfg, lim)
 
 
-def test_yaw():
-    print("\n[5] Ayuda del giroscopio")
-    colores = cc.colores_por_defecto()
-    cfg = dict(robot_config.POR_DEFECTO["navegacion"], min_recto_ms=0, usar_yaw=True)
-    lim = dict(robot_config.POR_DEFECTO["limites"])
-    m = _mascara_muro(pista([(0, 150), (639, 150)]), colores)
-    p = nav.perfil_desde_mascara(m, cfg)
+def _correr(n, segs, yaw=None, veces=8, **kw):
+    d = None
+    for _ in range(veces):
+        d = n.paso(escaneo_mundo(segs), yaw, **kw)
+    return d
 
-    n = nav.Navegador(cfg, lim)
-    n.paso(p, yaw=0.0)                       # fija el rumbo objetivo en 0
-    d_recto = n.paso(p, yaw=0.0)
-    d_torcido = n.paso(p, yaw=-10.0)         # el carro se fue 10 grados
-    check(d_torcido.direccion > d_recto.direccion,
-          "si el carro se desvia, el yaw corrige hacia el otro lado",
-          f"{d_recto.direccion} -> {d_torcido.direccion}")
 
-    n2 = nav.Navegador(dict(cfg, usar_yaw=False), lim)
-    n2.paso(p, yaw=0.0)
-    a = n2.paso(p, yaw=0.0)
-    b = n2.paso(p, yaw=-30.0)
-    check(a.direccion == b.direccion, "con usar_yaw=False el giroscopio se ignora")
+def test_navegacion():
+    print("\n[5] Navegacion: se corrigen los sintomas de pista")
 
-    # sin IMU (yaw=None) todo sigue funcionando
-    n3 = nav.Navegador(cfg, lim)
-    d = n3.paso(p, yaw=None)
-    check(d.estado == nav.RECTO, "sin giroscopio la navegacion funciona igual")
+    # --- 1) se arrima al muro INTERNO, no al externo --------------------
+    for lado, nombre in ((-1, "izquierda"), (+1, "derecha")):
+        n = _nav(pared_objetivo_mm=180.0)
+        n.fijar_lado_interno(lado)
+        # El corredor sintetico deja el carro a 250 mm del interno y el
+        # objetivo es 180: tiene que acercarse AL INTERNO.
+        d = _correr(n, corredor(1000.0, lado_interno=lado))
+        check(np.sign(d.direccion) == lado,
+              f"interno a la {nombre}: si esta lejos, gira HACIA el muro interno",
+              f"dir={d.direccion}")
 
-    # la correccion esta acotada
-    n4 = nav.Navegador(dict(cfg, yaw_max=20.0), lim)
-    n4.paso(p, yaw=0.0)
-    d = n4.paso(p, yaw=-170.0)
-    check(abs(d.direccion) <= lim["dir_max"], "la correccion por yaw no desborda",
+    # --- 2) el giro se dispara por la ESQUINA INTERNA -------------------
+    n = _nav(min_recto_ms=0, giro_z_mm=350.0, giro_frente_mm=120.0)
+    n.fijar_lado_interno(-1)
+    d = _correr(n, corredor(1000.0, lado_interno=-1, z_esquina=1200.0), veces=3)
+    check(d.estado != nav.GIRO, "no gira solo porque haya muro de frente lejano",
+          d.estado)
+    d = n.paso(escaneo_mundo(corredor(1000.0, lado_interno=-1, z_esquina=300.0)), 0.0)
+    check(d.estado == nav.GIRO, "gira cuando la ESQUINA INTERNA entra en rango",
+          f"{d.estado} {d.motivo}")
+    check("esquina interna" in d.motivo,
+          "  y el motivo dice que la referencia fue la esquina, no el frente",
+          d.motivo)
+
+    # --- 3) funciona en los dos sentidos --------------------------------
+    for lado, nombre in ((-1, "antihorario"), (+1, "horario")):
+        n = _nav(min_recto_ms=0, frames_para_fijar_lado=2)
+        segs = corredor(1000.0, lado_interno=lado, z_esquina=1100.0)
+        for _ in range(6):
+            n.paso(escaneo_mundo(segs), 0.0)
+        check(n.lado_interno == lado,
+              f"deduce el sentido {nombre} sin que se lo digan", n.lado_interno)
+
+    # --- 4) el giro es de 90 grados, no mas -----------------------------
+    n = _nav(min_recto_ms=0, giro_z_mm=400.0)
+    n.fijar_lado_interno(+1)
+    segs = corredor(1000.0, lado_interno=+1, z_esquina=300.0)
+    n.paso(escaneo_mundo(segs), 0.0)
+    n.paso(escaneo_mundo(segs), 0.0)
+    check(n.estado == nav.GIRO, "entra en giro", n.estado)
+    check(n.rumbo_objetivo is not None and abs(_ang(n.rumbo_objetivo - 90.0)) < 1e-6,
+          "el objetivo de rumbo es exactamente 90 grados", n.rumbo_objetivo)
+
+    d40 = n.paso(escaneo_mundo(segs), 50.0)     # faltan 40 grados
+    d10 = n.paso(escaneo_mundo(segs), 80.0)     # faltan 10
+    check(abs(d10.direccion) < abs(d40.direccion),
+          "la salida del giro es proporcional: afloja al acercarse",
+          f"{d40.direccion} -> {d10.direccion}")
+    n.paso(escaneo_mundo(segs), 88.0)           # dentro de tolerancia
+    check(n.estado != nav.GIRO, "y cierra el giro en 90 grados, sin pasarse",
+          f"{n.estado} yaw=88")
+
+    # --- sin giroscopio se cierra por PARALELISMO, no por espacio libre --
+    n = _nav(min_recto_ms=0, giro_z_mm=400.0, giro_min_ms=0)
+    n.fijar_lado_interno(+1)
+    esq = escaneo_mundo(corredor(1000.0, +1, z_esquina=300.0))
+    n.paso(esq, None)
+    check(n.estado == nav.GIRO, "sin yaw tambien entra en giro", n.estado)
+    # Mientras la esquina siga delante NO puede darse por terminado, aunque el
+    # muro previo a la esquina este perfectamente paralelo.
+    n.paso(esq, None)
+    check(n.estado == nav.GIRO,
+          "y no se cierra solo porque el muro de antes de la esquina sea paralelo",
+          n.estado)
+    time.sleep(0.3)
+    d = n.paso(escaneo_mundo(corredor(1000.0, lado_interno=+1)), None)
+    check(n.estado != nav.GIRO,
+          "sale cuando la esquina ya quedo atras y el muro esta paralelo",
+          f"{n.estado} {d.motivo}")
+
+
+def test_seguridad_y_vueltas():
+    print("\n[5b] Guardia del muro externo, cobertura y conteo de vueltas")
+
+    # --- guardia contra el muro externo (regla 9.18) --------------------
+    n = _nav(min_externo_mm=250.0, pared_objetivo_mm=250.0)
+    n.fijar_lado_interno(-1)
+    # Pasillo estrecho: el externo queda a 150 mm, por debajo del minimo.
+    segs = [((-250.0, -200.0), (-250.0, 2500.0)), ((150.0, -200.0), (150.0, 2500.0))]
+    d = _correr(n, segs)
+    check(d.direccion < 0, "si el muro EXTERNO se acerca, empuja hacia el interno",
           d.direccion)
+    check("EXTERNO" in d.motivo, "  y lo avisa en el motivo", d.motivo)
+
+    # --- no acelerar hacia lo desconocido -------------------------------
+    n = _nav()
+    n.fijar_lado_interno(-1)
+    vacio = geo.Escaneo(x=np.full(640, np.nan), z=np.full(640, np.nan),
+                        valido=np.zeros(640, bool),
+                        y_contacto=np.zeros(640, np.int32), ancho=640, alto=480)
+    d = n.paso(vacio, 0.0)
+    lim = robot_config.POR_DEFECTO["limites"]
+    check(d.vel <= lim["vel_giro"],
+          "con cobertura 0 no acelera: desconocido no es despejado", d.vel)
+
+    # --- parada de seguridad --------------------------------------------
+    n = _nav()
+    n.fijar_lado_interno(-1)
+    pegado = [((-250.0, -200.0), (-250.0, 2500.0)),
+              ((750.0, -200.0), (750.0, 2500.0)),
+              ((-400.0, 150.0), (900.0, 150.0))]      # muro a 150 mm de frente
+    d = _correr(n, pegado, veces=3)
+    check(d.estado == nav.BLOQUEADO and d.vel < 0,
+          "muro encima: retrocede en vez de empujar la pared",
+          f"{d.estado} vel={d.vel}")
+
+    # --- un muro que sale del encuadre NO es via libre --------------------
+    # Es el fallo que hace que el carro acelere contra la pared en el ultimo
+    # palmo: por debajo del suelo de medida (~200 mm) el muro desaparece del
+    # recorte y el escaneo crudo dice "despejado".
+    n = _nav()
+    n.fijar_lado_interno(-1)
+    cerca = [((-250.0, -200.0), (-250.0, 2500.0)),
+             ((750.0, -200.0), (750.0, 2500.0)),
+             ((-400.0, 420.0), (900.0, 420.0))]
+    d = _correr(n, cerca, veces=4)
+    check(abs(n.frente_mm - 420) < 90, "mide el muro de frente mientras se ve",
+          round(n.frente_mm))
+
+    # ahora el muro se "esfuma": ninguna columna valida en el pasillo
+    vacio = geo.Escaneo(x=np.full(640, np.nan), z=np.full(640, np.nan),
+                        valido=np.zeros(640, bool),
+                        y_contacto=np.zeros(640, np.int32), ancho=640, alto=480)
+    d = n.paso(vacio, 0.0)
+    check(d.metricas["frente_mm"] < 700,
+          "si se esfuma estando cerca, NO se asume via libre",
+          d.metricas["frente_mm"])
+    check(d.vel <= robot_config.POR_DEFECTO["limites"]["vel_giro"],
+          "y no acelera: sigue tratandolo como un muro que se acerca", d.vel)
+
+    # en cambio, si lo ultimo visto estaba lejos, si es via libre
+    n2 = _nav()
+    n2.fijar_lado_interno(-1)
+    n2.frente_mm = 2500.0
+    d2 = n2.paso(vacio, 0.0)
+    check(d2.metricas["frente_mm"] > 1000,
+          "pero un frente que ya estaba lejos si cuenta como despejado",
+          d2.metricas["frente_mm"])
+
+    # --- conteo de vueltas ------------------------------------------------
+    n = _nav()
+    n.fijar_lado_interno(+1)
+    for _ in range(12):
+        n._iniciar_giro(0.0, +1)
+        n._terminar_giro(0.0)
+    check(n.giros == 12, "12 esquinas contadas", n.giros)
+    check(n.vueltas == 3, "son exactamente 3 vueltas", n.vueltas)
+    check(n.estado == nav.FINALIZANDO, "y entra en la fase de parada", n.estado)
+
+    # --- yaw acumulado sin envolver ---------------------------------------
+    n = _nav()
+    n.fijar_lado_interno(+1)
+    segs = corredor(1000.0, +1)
+    for k in range(0, 1100, 20):
+        n.paso(escaneo_mundo(segs), _ang(k))
+    check(abs(n.yaw_acumulado - 1080) < 80,
+          "el yaw acumulado llega a ~1080 grados sin envolverse en +-180",
+          round(n.yaw_acumulado, 1))
+
+
+
+def test_desatasco():
+    """Salir de un atasco es un requisito, no un extra.
+
+    La regla 9.23 solo deja pedir una reparacion por ronda, y no la conceden
+    con el carro en movimiento. Un carro que se queda restregandose contra la
+    pared sin avanzar ni parar del todo es el peor de los casos: pierde la
+    vuelta y encima puede que no le dejen tocarlo.
+    """
+    print("\n[5e] Salir de un atasco")
+    sys.path.insert(0, str(RAIZ / "tools"))
+    try:
+        import simulador as sim
+    except Exception as e:                       # pragma: no cover
+        print(f"       (sin simulador: {e}); me lo salto")
+        return
+
+    cfg = robot_config.cargar(TMP / "robot_bloq_test.json")
+    pista = sim.Pista((600., 600., 600., 600.))
+
+    # Morro contra la esquina exterior y atravesado: encajonado de verdad.
+    carro = sim.Carro(x=2830., y=280., theta=math.radians(-40))
+    n = nav.Navegador(dict(cfg["navegacion"]), dict(cfg["limites"]))
+    n.fijar_lado_interno(-1)
+
+    dt, t, salio = 1 / 30, 0.0, None
+    for i in range(300):
+        e = sim.escanear_pista(pista, carro, hfov=100.)
+        d = n.paso(e, nav._norm_angulo(carro.yaw_deg), ahora=t)
+        if i == 0:
+            check(d.estado == nav.BLOQUEADO,
+                  "encajonado contra la pared: detecta el atasco", d.estado)
+        if i > 3 and d.estado != nav.BLOQUEADO and salio is None:
+            salio = t
+        carro.avanzar(d.vel, d.direccion, dt)
+        t += dt
+        if salio is not None:
+            break
+
+    check(salio is not None, "y SALE de el", f"seguia atascado tras {t:.1f} s")
+    if salio is not None:
+        check(salio < 6.0, "en pocos segundos", f"{salio:.1f} s")
+
+    # --- el lado de la maniobra no puede recalcularse cada frame ---------
+    # Ese era el fallo: al retroceder cambia lo que se ve, el lado "mas
+    # despejado" se da la vuelta, el volante oscila y el carro se restriega
+    # sin salir. Aqui se comprueba que la eleccion se MANTIENE.
+    carro = sim.Carro(x=2830., y=280., theta=math.radians(-40))
+    n2 = nav.Navegador(dict(cfg["navegacion"]), dict(cfg["limites"]))
+    n2.fijar_lado_interno(-1)
+    t = 0.0
+    lados = []
+    for _ in range(20):
+        e = sim.escanear_pista(pista, carro, hfov=100.)
+        d = n2.paso(e, nav._norm_angulo(carro.yaw_deg), ahora=t)
+        if d.estado == nav.BLOQUEADO:
+            lados.append(n2.bloq_lado)
+        carro.avanzar(d.vel, d.direccion, dt)
+        t += dt
+    check(len(set(lados)) == 1,
+          "el lado de la maniobra se fija y no oscila cada frame", set(lados))
+
+    # --- y alterna si el primer intento no sirve -------------------------
+    n3 = nav.Navegador(dict(cfg["navegacion"]), dict(cfg["limites"]))
+    n3.fijar_lado_interno(-1)
+    n3.estado = nav.BLOQUEADO
+    n3.bloq_lado = 1
+    n3.bloq_t0 = 0.0
+    n3._t = 0.0
+    vacio = geo.Escaneo(x=np.full(640, np.nan), z=np.full(640, np.nan),
+                        valido=np.zeros(640, bool),
+                        y_contacto=np.zeros(640, np.int32), ancho=640, alto=480)
+    fases = set()
+    for k in range(60):
+        n3._t = k * 0.5
+        n3._desatascar(vacio, 0.0, 32.0, 100.0, 100.0)
+        fases.add(n3.bloq_fase)
+    check(fases == {0, 1}, "alterna marcha atras y marcha adelante", fases)
+    check(n3.bloq_intentos > 0, "y cuenta los intentos para invertir el lado",
+          n3.bloq_intentos)
+
+
+# ===========================================================================
+# 5c. Señales de trafico (Obstacle Challenge)
+# ===========================================================================
+def test_senales():
+    print("\n[5c] Senales verdes y rojas")
+    cfg = dict(robot_config.POR_DEFECTO["obstaculos"])
+    det = obs.DetectorSenales(cfg)
+
+    rojo = obs.Senal(obs.ROJO, 0.0, 800.0, 20, 40, None)
+    verde = obs.Senal(obs.VERDE, 0.0, 800.0, 20, 40, None)
+
+    check(rojo.lado_paso == +1, "ROJO: el carro pasa por la DERECHA del pilar")
+    check(verde.lado_paso == -1, "VERDE: el carro pasa por la IZQUIERDA del pilar")
+
+    o_rojo = det.objetivo(rojo)
+    o_verde = det.objetivo(verde)
+    check(o_rojo is not None and o_rojo > 0,
+          "con un pilar rojo centrado, el objetivo se va a la derecha", o_rojo)
+    check(o_verde is not None and o_verde < 0,
+          "con uno verde centrado, a la izquierda", o_verde)
+    check(abs(o_rojo) >= 150,
+          "y el margen deja hueco de sobra para no tocarlo", o_rojo)
+
+    rojo2 = obs.Senal(obs.ROJO, -200.0, 700.0, 20, 40, None)
+    check(det.objetivo(rojo2) < o_rojo,
+          "si el pilar esta a la izquierda, el objetivo se desplaza con el")
+
+    lejano = obs.Senal(obs.ROJO, 900.0, 700.0, 20, 40, None)
+    check(abs(det.objetivo(lejano)) <= cfg["senal_desvio_max_mm"] + 1,
+          "el desvio nunca supera el tope configurado", det.objetivo(lejano))
+
+    det.activa = None
+    encima = obs.Senal(obs.ROJO, 0.0, 100.0, 20, 40, None)
+    check(det.elegir([encima]) is None,
+          "una senal ya pegada al carro se suelta (no se corrige a ciegas)")
+
+    # --- la senal desvia en RECTO pero no toca la logica de giro --------
+    segs = corredor(1000.0, lado_interno=-1)
+    n1 = _nav(min_recto_ms=0)
+    n1.fijar_lado_interno(-1)
+    d_sin = _correr(n1, segs)
+    n2 = _nav(min_recto_ms=0)
+    n2.fijar_lado_interno(-1)
+    d_con = _correr(n2, segs, objetivo_lateral=300.0, motivo_extra="rojo")
+    check(d_con.direccion > d_sin.direccion,
+          "un objetivo lateral a la derecha empuja la direccion a la derecha",
+          f"{d_sin.direccion} -> {d_con.direccion}")
+
+
+# ===========================================================================
+# 5d. La cadena completa: imagen -> mascara -> escaneo -> decision
+# ===========================================================================
+def test_pipeline_imagen():
+    print("\n[5d] Cadena completa desde una imagen sintetica")
+    colores = cc.colores_por_defecto()
+    cfg = dict(robot_config.POR_DEFECTO["navegacion"])
+    suelo = geo.Suelo(robot_config.POR_DEFECTO["camara"])
+
+    img = pista([(0, 200), (320, 230), (639, 200)])
+    e = geo.escanear(_mascara_muro(img, colores), suelo, cfg)
+    check(e.cobertura() > 0.6, "detecta el muro en casi todas las columnas",
+          round(e.cobertura(), 2))
+
+    n = _nav()
+    n.fijar_lado_interno(-1)
+    d = n.paso(e, 0.0)
+    check(isinstance(d.vel, int) and -100 <= d.vel <= 100, "la decision es valida")
+    check(-100 <= d.direccion <= 100, "y la direccion no se sale de rango")
+
+    # Muro lo mas cerca que permite la geometria: `ignorar_abajo` recorta la
+    # franja del chasis, asi que hay un minimo medible por debajo del cual la
+    # camara sencillamente no ve. Ahi la respuesta correcta es frenar a fondo;
+    # el retroceso por BLOQUEADO se prueba con escaneo metrico en [5b].
+    cerca = pista([(0, 465), (639, 465)])
+    e2 = geo.escanear(_mascara_muro(cerca, colores), suelo, cfg)
+    frente = e2.frente(110.0)
+    check(frente < 400, "un muro pegado se mide cerca", round(frente))
+    n2 = _nav()
+    n2.fijar_lado_interno(-1)
+    d2 = None
+    for _ in range(3):
+        d2 = n2.paso(e2, 0.0)
+    lim = robot_config.POR_DEFECTO["limites"]
+    check(d2.vel <= lim["vel_giro"],
+          "con el muro encima frena hasta la velocidad minima",
+          f"vel={d2.vel} frente={frente:.0f} estado={d2.estado}")
 
 
 # ===========================================================================
@@ -523,13 +857,13 @@ def test_robot_y_web():
     from src import robot as robot_mod, servidor as srv_mod
 
     img = pista([(0, 200), (320, 210), (639, 320)])
-    ruta = "/tmp/pista_test.png"
+    ruta = str(TMP / "pista_test.png")
     cv2.imwrite(ruta, img)
 
-    cfg = robot_config.cargar("/tmp/robot_test.json")
+    cfg = robot_config.cargar(TMP / "robot_test.json")
     cfg["red"]["puerto_http"] = 8391
     cfg["navegacion"]["min_recto_ms"] = 0
-    perfil = cc.obtener(cc.cargar("/tmp/colors_test.json"))
+    perfil = cc.obtener(cc.cargar(TMP / "colors_test.json"))
 
     r = robot_mod.Robot(cfg, perfil, simulado=True, fuente_imagen=ruta)
     r.iniciar()
@@ -551,7 +885,10 @@ def test_robot_y_web():
 
     est = json.loads(get("/api/estado"))
     check(est["armado"] is False and "enlace" in est, "el JSON de estado responde")
-    check("pasillo" in est["decision"]["metricas"], "e incluye las metricas del muro")
+    check("frente_mm" in est["decision"]["metricas"],
+          "e incluye las metricas metricas del muro", est["decision"]["metricas"])
+    check(est["reto"] == "abierto" and "carrera" in est,
+          "y el estado del reto y de la carrera")
 
     get("/api/cmd?armar=1")
     time.sleep(0.3)
@@ -564,10 +901,17 @@ def test_robot_y_web():
     check(r.cfg["limites"]["vmax"] == 77 and r.enlace._vmax == 77,
           "cambiar vmax desde la web llega hasta el enlace", r.enlace._vmax)
 
-    get("/api/cmd?estrategia=pared")
-    check(r.cfg["navegacion"]["estrategia"] == "pared", "cambia de estrategia")
-    get("/api/cmd?estrategia=centrado&kp=123")
-    check(r.cfg["navegacion"]["kp"] == 123.0, "cambia ganancias en caliente")
+    get("/api/cmd?reto=obstaculos")
+    check(r.reto == "obstaculos", "la web cambia al reto de obstaculos", r.reto)
+    get("/api/cmd?reto=abierto")
+    check(r.reto == "abierto", "y vuelve al open challenge", r.reto)
+    get("/api/cmd?pared_objetivo_mm=210&aprox_max_grados=18")
+    check(r.cfg["navegacion"]["pared_objetivo_mm"] == 210.0,
+          "cambia la distancia al muro interno en caliente")
+    check(r.cfg["navegacion"]["aprox_max_grados"] == 18.0,
+          "y el angulo de aproximacion")
+    get("/api/cmd?lado_interno=der")
+    check(r.navegador.lado_interno == 1, "y puede forzarse el lado interno")
 
     get("/api/cmd?emergencia=1")
     time.sleep(0.2)
@@ -584,16 +928,45 @@ def test_robot_y_web():
     # --- seguridad en manual ---
     r.armar(True)
     r.fijar_modo("manual")
+    check(r.manual == {"vel": 0, "dir": 0}, "entrar en manual empieza siempre parado")
     r.mando_manual(60, 0)
-    time.sleep(0.3)
+    time.sleep(0.25)
     check(r.decision.vel == 60, "en manual obedece el mando")
 
-    cerca = pista([(0, 470), (639, 470)])
-    cv2.imwrite("/tmp/pista_muro.png", cerca)
-    r._imagen_fija = cv2.imread("/tmp/pista_muro.png")
-    time.sleep(0.4)
+    cerca = pista([(0, 430), (639, 430)])
+    ruta_muro = str(TMP / "pista_muro.png")
+    cv2.imwrite(ruta_muro, cerca)
+    r._imagen_fija = cv2.imread(ruta_muro)
+    # Hay que seguir refrescando el mando mientras se comprueba: si no, lo que
+    # pararia el carro seria el hombre-muerto y no la capa de seguridad, y la
+    # prueba pasaria por el motivo equivocado.
+    for _ in range(8):
+        r.mando_manual(60, 0)
+        time.sleep(0.05)
     check(r.decision.vel <= 0, "pero NO te deja empotrarte aunque lo pidas",
           f"vel={r.decision.vel} motivo={r.decision.motivo}")
+    check("bloqueado" in r.decision.motivo,
+          "y lo para la seguridad, no el hombre-muerto", r.decision.motivo)
+
+    # --- hombre-muerto del mando manual (el joystick de la web) ---
+    r._imagen_fija = cv2.imread(ruta)          # pista despejada otra vez
+    r.mando_manual(55, 20)
+    time.sleep(0.25)
+    check(r.decision.vel == 55, "en pista libre el mando manual vuelve a obedecer",
+          f"vel={r.decision.vel}")
+
+    time.sleep(0.6)                            # dejar de refrescar mas de 400 ms
+    check(r.decision.vel == 0 and r.decision.direccion == 0,
+          "si el joystick deja de refrescar, para y centra el servo",
+          f"vel={r.decision.vel} dir={r.decision.direccion}")
+    check(r.manual == {"vel": 0, "dir": 0}, "y el mando guardado se pone a cero")
+
+    r.mando_manual(40, 0)
+    time.sleep(0.25)
+    check(r.decision.vel == 40, "y se recupera en cuanto vuelve a llegar mando",
+          f"vel={r.decision.vel}")
+    r.fijar_modo("auto")
+    check(r.manual == {"vel": 0, "dir": 0}, "cambiar de modo limpia el mando manual")
 
     # --- sin imagen se desarma ---
     r.fijar_modo("auto")
@@ -611,7 +984,7 @@ def test_robot_y_web():
 # ===========================================================================
 def test_config():
     print("\n[8] Configuracion del robot")
-    ruta = Path("/tmp/robot_cfg_test.json")
+    ruta = TMP / "robot_cfg_test.json"
     if ruta.exists():
         ruta.unlink()
     cfg = robot_config.cargar(ruta)
@@ -624,7 +997,8 @@ def test_config():
     ruta.write_text(json.dumps({"limites": {"vmax": 55}}), encoding="utf-8")
     cfg2 = robot_config.cargar(ruta)
     check(cfg2["limites"]["vmax"] == 55, "respeta lo que hay")
-    check("navegacion" in cfg2 and "kp" in cfg2["navegacion"],
+    check("navegacion" in cfg2 and "pared_objetivo_mm" in cfg2["navegacion"]
+          and "obstaculos" in cfg2,
           "y rellena las claves que falten")
     ruta.write_text("{roto", encoding="utf-8")
     check(robot_config.cargar(ruta)["limites"]["vmax"] == 130,
@@ -645,11 +1019,78 @@ def test_config():
 
 
 # ===========================================================================
+# 10. Vueltas completas en lazo cerrado (el simulador)
+# ===========================================================================
+def test_vuelta_completa():
+    """La prueba de integracion de verdad.
+
+    Todo lo anterior valida piezas: que el salto se detecta, que el PD tiene
+    el signo bueno, que el giro cierra a 90 grados. Ninguna de ellas puede
+    ver que el conjunto se sale de la pista en la tercera esquina, porque
+    para eso hay que CERRAR EL LAZO: lo que decide el navegador mueve el
+    carro, y mover el carro cambia lo que la camara ve al frame siguiente.
+
+    Aqui se corre un subconjunto representativo. El barrido completo de las
+    16 combinaciones de ancho por los dos sentidos, mas deriva, ruido y
+    lentes, esta en `python3 tools/simulador.py --todas`.
+    """
+    print("\n[10] Vueltas completas en lazo cerrado")
+    sys.path.insert(0, str(RAIZ / "tools"))
+    try:
+        import simulador as sim
+    except Exception as e:                       # pragma: no cover
+        print(f"       (no se pudo cargar el simulador: {e}); me lo salto")
+        return
+
+    cfg = robot_config.cargar(TMP / "robot_sim_test.json")
+
+    casos = [
+        ("corredor ancho, antihorario", (1000., 1000., 1000., 1000.), "ccw", {}),
+        ("corredor ancho, horario", (1000., 1000., 1000., 1000.), "cw", {}),
+        ("corredor estrecho, antihorario", (600., 600., 600., 600.), "ccw", {}),
+        ("anchos mezclados (el caso real)", (600., 1000., 600., 1000.), "ccw", {}),
+        ("sin giroscopio", (1000., 600., 1000., 600.), "ccw", {"usar_yaw": False}),
+        ("con 2 grados/s de deriva", (600., 600., 1000., 1000.), "cw",
+         {"deriva_yaw_grados_s": 2.0}),
+        ("con 25 mm de ruido en el escaneo", (1000., 1000., 600., 1000.), "ccw",
+         {"ruido_mm": 25.0}),
+    ]
+
+    for nombre, anchos, sentido, extra in casos:
+        inf = sim.simular(sim.Pista(anchos), sentido=sentido, cfg=cfg, **extra)
+        check(not inf.toco_exterior,
+              f"{nombre}: NO toca el muro exterior (regla 9.18)",
+              f"min_ext={inf.min_exterior:.0f} mm  {inf.motivo}")
+        check(inf.vueltas_reales >= 2.9,
+              f"{nombre}: completa las tres vueltas",
+              f"{inf.vueltas_reales:.2f} vueltas  {inf.motivo}")
+        check(inf.vueltas_contadas == 3 and inf.giros == 12,
+              f"{nombre}: cuenta 3 vueltas y 12 esquinas",
+              f"vueltas={inf.vueltas_contadas} giros={inf.giros}")
+
+    # --- el sentido se DEDUCE, en los dos casos --------------------------
+    for sentido, esperado, nombre in (("ccw", -1, "antihorario -> interno izq"),
+                                      ("cw", +1, "horario -> interno der")):
+        inf = sim.simular(sim.Pista((1000., 1000., 1000., 1000.)),
+                          sentido=sentido, cfg=cfg)
+        check(inf.lado_interno == esperado,
+              f"deduce el sentido solo: {nombre}", inf.lado_interno)
+
+    # --- para sola, sin que nadie se lo diga -----------------------------
+    inf = sim.simular(sim.Pista((1000., 1000., 1000., 1000.)), "ccw", cfg=cfg)
+    check("paro solo" in inf.motivo,
+          "para sola en la seccion de salida tras las tres vueltas", inf.motivo)
+    check(inf.segundos < 170.0,
+          "y lo hace dentro de los 3 minutos de la ronda", f"{inf.segundos:.0f} s")
+
+
+# ===========================================================================
 if __name__ == "__main__":
     print(f"OpenCV {cv2.__version__} · Python {sys.version.split()[0]}")
-    for f in (test_protocolo_cruzado, test_lector_robusto, test_perfil,
-              test_estrategias, test_yaw, test_enlace, test_robot_y_web,
-              test_config):
+    for f in (test_protocolo_cruzado, test_lector_robusto, test_geometria,
+              test_salto, test_navegacion, test_seguridad_y_vueltas,
+              test_desatasco, test_senales, test_pipeline_imagen, test_enlace,
+              test_robot_y_web, test_config, test_vuelta_completa):
         try:
             f()
         except Exception as e:
