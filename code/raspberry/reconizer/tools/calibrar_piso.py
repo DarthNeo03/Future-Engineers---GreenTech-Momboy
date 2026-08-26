@@ -221,6 +221,17 @@ def _informe(perfiles: List[Dict]) -> None:
     print(f"  separacion minima entre colores: {peor:.3f}"
           f"   {'(comoda)' if peor > 0.15 else '(justa: revisa la altura)'}")
 
+    # Con el sensor colgado del ESP32, quien clasifica es el FIRMWARE, asi que
+    # estos mismos numeros hay que llevarlos alli. Se imprimen ya en C++ para
+    # copiar y pegar sin transcribir a mano, que es donde se cuelan los erratas.
+    print("\n  Si el sensor cuelga del ESP32, copia esto en esp32_carro.ino")
+    print("  (el indice 0 TIENE que ser el blanco) y vuelve a subir el firmware:\n")
+    print(f"  sens::PerfilColor perfiles[{len(perfiles)}] = {{")
+    for p_ in perfiles:
+        print(f"    {{{p_['r']:.3f}f, {p_['g']:.3f}f, {p_['b']:.3f}f, "
+              f"{p_['tol']:.3f}f}},   // {p_['nombre']}")
+    print("  };")
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

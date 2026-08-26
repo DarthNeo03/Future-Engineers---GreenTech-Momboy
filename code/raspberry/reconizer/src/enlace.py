@@ -86,6 +86,7 @@ class Enlace:
         self._armado = False
         self._parada = False
         self._centrar = False
+        self._cal_imu = 0            # tramas que quedan pidiendo calibracion
         self._t_mando = 0.0
         self._config_pendiente: Optional[bytes] = None
         self._ping_t: Dict[int, float] = {}
@@ -118,6 +119,13 @@ class Enlace:
     def centrar_servo(self, activo: bool = True) -> None:
         with self._lock:
             self._centrar = bool(activo)
+
+    def calibrar_imu(self, tramas: int = 10) -> None:
+        """Pide al ESP32 que recalibre el giroscopio. El carro tiene que estar
+        QUIETO. Se manda la bandera en varias tramas seguidas porque una sola
+        se puede perder, y el ESP32 la trata como idempotente."""
+        with self._lock:
+            self._cal_imu = max(1, int(tramas))
 
     def enviar_config(self, centro: int, izq: int, der: int,
                       rampa: int, grados_s: int) -> None:
@@ -259,7 +267,10 @@ class Enlace:
                         armado=self._armado and not vencido and not self._parada,
                         parada=self._parada,
                         centrar=self._centrar,
+                        cal_imu=self._cal_imu > 0,
                     )
+                    if self._cal_imu > 0:
+                        self._cal_imu -= 1
                     cfg_pend = self._config_pendiente
                     self._config_pendiente = None
                 self._seq = (self._seq + 1) & 0xFF

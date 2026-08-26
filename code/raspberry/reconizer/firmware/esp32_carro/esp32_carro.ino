@@ -17,6 +17,7 @@
 //
 // TAREAS FreeRTOS
 //   nucleo 0: tareaRx (prio 5)        lee UARTs, valida CRC, publica el mando
+//             tareaSensores (3)       MPU6050 y TCS34725 a 100 Hz
 //             tareaTelemetria (2)     manda estado cada 50 ms
 //   nucleo 1: tareaControl (4)        tick de 10 ms: rampas y escritura al HW
 //             tareaVigilante (6)      si el control o la Pi se callan, corta
@@ -26,8 +27,10 @@
 // ===========================================================================
 
 #include <Arduino.h>
+#include <Wire.h>
 #include "protocolo.h"
 #include "seguridad.h"
+#include "sensores.h"
 
 // ======================= PINES =======================
 // Puente H (tal cual tu montaje actual)
@@ -38,6 +41,14 @@ const int PIN_L_EN = 33;
 
 // Servo de direccion (MG996R)
 const int PIN_SERVO = 32;
+
+// I2C de los sensores: MPU6050 (0x68) y TCS34725 (0x29) en el mismo bus.
+// Van aqui y no en la Pi porque el sensor de color necesita un muestreo
+// deterministico -a 0,4 m/s una linea de 20 mm dura 50 ms- y porque estan
+// fisicamente pegados al ESP32. Ver la cabecera de sensores.h.
+const int PIN_SDA = 21;
+const int PIN_SCL = 22;
+const uint32_t I2C_HZ = 400000;
 
 // UART hacia la Raspberry
 const int PIN_RX2 = 16;   // <- TX de la Pi (GPIO14)
@@ -62,7 +73,9 @@ const uint32_t PERIODO_TELE_MS = 50;    // 20 Hz
 const uint32_t FAILSAFE_MS     = 300;   // silencio tolerado de la Pi
 const uint32_t VIGILANTE_MS    = 200;   // silencio tolerado del propio control
 
-const uint8_t VERSION_FIRMWARE = 2;
+const uint32_t PERIODO_SENSORES_MS = 10;   // 100 Hz
+
+const uint8_t VERSION_FIRMWARE = 3;   // 3 = telemetria con yaw y lineas
 
 // ======================= ESTADO COMPARTIDO =======================
 QueueHandle_t colaMando = NULL;         // longitud 1, el nuevo pisa al viejo
@@ -79,8 +92,100 @@ volatile int8_t   enlaceActivo    = -1;  // 0 = USB, 1 = GPIO, -1 = ninguno aun
 seg::ControlServo servo;
 seg::ControlMotor motor;
 
+// --- sensores --------------------------------------------------------------
+sens::Yaw yaw;
+sens::DetectorLinea linea;
+volatile bool imu_ok = false;
+volatile bool piso_ok = false;
+volatile bool pedir_cal_imu = false;
+uint8_t mpu_dir = 0;
+
+// Perfiles de color. El indice 0 tiene que ser el BLANCO: el detector de
+// linea usa ese convenio para saber cuando NO esta sobre una linea.
+// Se miden con tools/calibrar_piso.py en la Pi y se copian aqui.
+sens::PerfilColor perfiles[3] = {
+  {0.33f, 0.34f, 0.33f, 0.05f},   // 0 blanco
+  {0.55f, 0.30f, 0.15f, 0.09f},   // 1 naranja
+  {0.20f, 0.32f, 0.48f, 0.09f},   // 2 azul
+};
+const uint16_t CLEAR_MIN = 60;
+const uint16_t CLEAR_MAX = 65000;
+
 HardwareSerial *enlaces[2] = { &Serial, &Serial2 };
 proto::Lector lectores[2];
+
+// ======================= I2C =======================
+static bool i2cEscribir(uint8_t dir, uint8_t reg, uint8_t valor) {
+  Wire.beginTransmission(dir);
+  Wire.write(reg);
+  Wire.write(valor);
+  return Wire.endTransmission() == 0;
+}
+
+static bool i2cLeer(uint8_t dir, uint8_t reg, uint8_t *buf, uint8_t n) {
+  Wire.beginTransmission(dir);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom((int)dir, (int)n) != n) return false;
+  for (uint8_t i = 0; i < n; i++) buf[i] = Wire.read();
+  return true;
+}
+
+// --- MPU6050 ---------------------------------------------------------------
+static bool iniciarMPU() {
+  const uint8_t dirs[2] = {sens::MPU_DIR_A, sens::MPU_DIR_B};
+  for (uint8_t k = 0; k < 2; k++) {
+    uint8_t id = 0;
+    if (!i2cLeer(dirs[k], sens::MPU_WHO_AM_I, &id, 1)) continue;
+    if (id != 0x68 && id != 0x70 && id != 0x71 && id != 0x73) continue;
+    mpu_dir = dirs[k];
+    i2cEscribir(mpu_dir, sens::MPU_PWR_MGMT_1, 0x80);   // reset
+    delay(60);
+    i2cEscribir(mpu_dir, sens::MPU_PWR_MGMT_1, 0x01);   // reloj del giro X
+    i2cEscribir(mpu_dir, sens::MPU_CONFIG, 0x03);       // filtro 44 Hz
+    i2cEscribir(mpu_dir, sens::MPU_SMPLRT_DIV, 0x04);   // 200 Hz
+    i2cEscribir(mpu_dir, sens::MPU_GYRO_CONFIG, 0x00);  // +-250 dps
+    delay(20);
+    return true;
+  }
+  return false;
+}
+
+static bool leerGiroZ(int16_t &gz) {
+  uint8_t b[2];
+  if (!i2cLeer(mpu_dir, sens::MPU_GYRO_ZOUT_H, b, 2)) return false;
+  gz = (int16_t)((b[0] << 8) | b[1]);
+  return true;
+}
+
+// --- TCS34725 --------------------------------------------------------------
+static bool iniciarTCS() {
+  uint8_t id = 0;
+  if (!i2cLeer(sens::TCS_DIR, sens::TCS_CMD | sens::TCS_ID, &id, 1)) return false;
+  if (id != 0x44 && id != 0x4D) return false;
+  i2cEscribir(sens::TCS_DIR, sens::TCS_CMD | sens::TCS_ENABLE, sens::TCS_PON);
+  delay(3);
+  // ATIME 0xF6 = 24 ms. ES EL PARAMETRO QUE DECIDE SI SE VE LA LINEA: con los
+  // 154 o 700 ms que traen por defecto muchas librerias, una linea de 20 mm a
+  // 0,4 m/s se promedia con el piso blanco y no aparece nunca.
+  i2cEscribir(sens::TCS_DIR, sens::TCS_CMD | sens::TCS_ATIME, 0xF6);
+  i2cEscribir(sens::TCS_DIR, sens::TCS_CMD | sens::TCS_CONTROL, 0x01);  // x4
+  i2cEscribir(sens::TCS_DIR, sens::TCS_CMD | sens::TCS_ENABLE,
+              sens::TCS_PON | sens::TCS_AEN);
+  delay(30);
+  return true;
+}
+
+static bool leerTCS(uint16_t &c, uint16_t &r, uint16_t &g, uint16_t &b) {
+  uint8_t d[8];
+  if (!i2cLeer(sens::TCS_DIR, sens::TCS_CMD_AUTO | sens::TCS_CDATAL, d, 8))
+    return false;
+  c = (uint16_t)(d[0] | (d[1] << 8));
+  r = (uint16_t)(d[2] | (d[3] << 8));
+  g = (uint16_t)(d[4] | (d[5] << 8));
+  b = (uint16_t)(d[6] | (d[7] << 8));
+  return true;
+}
 
 // ======================= HARDWARE =======================
 static inline void escribirServoHW(int angulo) {
@@ -155,7 +260,9 @@ void tareaRx(void *) {
             if (m.limpiar()) {
               tramasMalas = 0;
               lectores[0].crcMalos = lectores[1].crcMalos = 0;
+              linea.reiniciar();
             }
+            if (m.flags & proto::F_CAL_IMU) pedir_cal_imu = true;
           }
         } else if (tipo == proto::TIPO_PING) {
           uint8_t eco = lectores[e].len() ? lectores[e].payload()[0] : 0;
@@ -246,6 +353,55 @@ void tareaVigilante(void *) {
   }
 }
 
+// ======================= TAREA: SENSORES (100 Hz) =======================
+// Nucleo 0, prioridad baja: si alguna vez compite con la recepcion del UART,
+// que pierda esta. Perder una muestra de yaw no se nota; perder una trama de
+// mando si.
+//
+// Si un sensor deja de responder se marca como caido y se sigue: el resto del
+// programa ya sabe funcionar sin giroscopio y sin sensor de color.
+void tareaSensores(void *) {
+  TickType_t ultimo = xTaskGetTickCount();
+  uint32_t t_prev = millis();
+  uint8_t fallos_mpu = 0, fallos_tcs = 0;
+
+  for (;;) {
+    vTaskDelayUntil(&ultimo, pdMS_TO_TICKS(PERIODO_SENSORES_MS));
+    const uint32_t ahora = millis();
+    const float dt = (ahora - t_prev) / 1000.0f;
+    t_prev = ahora;
+
+    if (pedir_cal_imu) {
+      pedir_cal_imu = false;
+      yaw.empezarCalibracion(200);       // 2 s a 100 Hz, con el carro QUIETO
+    }
+
+    // --- giroscopio ---
+    if (imu_ok) {
+      int16_t gz = 0;
+      if (leerGiroZ(gz)) {
+        fallos_mpu = 0;
+        yaw.paso(gz, dt > 0.0f ? dt : PERIODO_SENSORES_MS / 1000.0f);
+      } else if (++fallos_mpu > 20) {
+        imu_ok = false;
+      }
+    }
+
+    // --- color del piso ---
+    if (piso_ok) {
+      uint16_t c, r, g, b;
+      if (leerTCS(c, r, g, b)) {
+        fallos_tcs = 0;
+        const uint8_t idx = sens::clasificar(c, r, g, b, perfiles, 3,
+                                             CLEAR_MIN, CLEAR_MAX);
+        linea.paso(idx, ahora);
+      } else if (++fallos_tcs > 20) {
+        piso_ok = false;
+      }
+    }
+  }
+}
+
 // ======================= TAREA: TELEMETRIA =======================
 void tareaTelemetria(void *) {
   TickType_t ultimo = xTaskGetTickCount();
@@ -260,6 +416,12 @@ void tareaTelemetria(void *) {
     t.ms_desde_mando = (edad > 65535) ? 65535 : (uint16_t)edad;
     t.tramas_malas = (tramasMalas > 255) ? 255 : (uint8_t)tramasMalas;
     t.version = VERSION_FIRMWARE;
+    t.yaw_dg = yaw.decigrados();
+    t.sensores = (uint8_t)((imu_ok ? proto::S_IMU_OK : 0) |
+                           (piso_ok ? proto::S_PISO_OK : 0) |
+                           (yaw.calibrando() ? proto::S_IMU_CAL : 0));
+    t.lineas = linea.contador();
+    t.color_linea = linea.ultimoColor();
 
     uint8_t buf[5 + proto::MAX_PAYLOAD];
     uint8_t n = proto::empaquetarTelemetria(t, buf);
@@ -293,6 +455,12 @@ void setup() {
   cm.msFrenoAntesDeInvertir = 150;
   motor.configurar(cm);
 
+  // --- Sensores I2C ---
+  Wire.begin(PIN_SDA, PIN_SCL, I2C_HZ);
+  imu_ok = iniciarMPU();
+  piso_ok = iniciarTCS();
+  if (imu_ok) yaw.empezarCalibracion(200);   // el carro tiene que estar quieto
+
   // --- Enlaces ---
   Serial.begin(BAUDIOS);
   Serial2.begin(BAUDIOS, SERIAL_8N1, PIN_RX2, PIN_TX2);
@@ -310,8 +478,10 @@ void setup() {
   xTaskCreatePinnedToCore(tareaTelemetria,  "Tele",     3072, NULL, 2, NULL, 0);
   xTaskCreatePinnedToCore(tareaControl,     "Control",  4096, NULL, 4, NULL, 1);
   xTaskCreatePinnedToCore(tareaVigilante,   "Vigilante",2048, NULL, 6, NULL, 1);
+  xTaskCreatePinnedToCore(tareaSensores,    "Sensores", 3072, NULL, 3, NULL, 0);
 
-  enviarLog("ESP32 listo");
+  enviarLog(imu_ok ? (piso_ok ? "listo imu+piso" : "listo imu")
+                   : (piso_ok ? "listo piso" : "listo sin sensores"));
 }
 
 // Nada que hacer aqui: todo vive en las tareas. Se deja dormir para no

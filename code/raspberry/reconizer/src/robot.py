@@ -44,8 +44,18 @@ class Robot:
         self.navegador = nav.Navegador(cfg["navegacion"], cfg["limites"])
         self.senales = obs.DetectorSenales(cfg["obstaculos"])
         self.enlace = enl.Enlace(cfg["enlace"], simulado=simulado, al_log=self.log)
-        self.imu = imu_mod.IMU(cfg["imu"])
-        self.piso = cp.SensorPiso(cfg.get("piso", {}))
+        # De donde salen los sensores I2C. Por defecto del ESP32: el muestreo
+        # es deterministico y el cableado mas corto. La opcion "pi" queda por
+        # si vuelven al I2C de la Raspberry.
+        if str(cfg["imu"].get("fuente", "esp32")) == "esp32":
+            self.imu = imu_mod.IMUEnlace(cfg["imu"], self.enlace)
+        else:
+            self.imu = imu_mod.IMU(cfg["imu"])
+        piso_cfg = cfg.get("piso", {})
+        if str(piso_cfg.get("fuente", "esp32")) == "esp32":
+            self.piso = cp.PisoEnlace(piso_cfg, self.enlace)
+        else:
+            self.piso = cp.SensorPiso(piso_cfg)
         self.lineas: List[str] = []          # colores cruzados, en orden
 
         # "abierto" = Open Challenge, "obstaculos" = Obstacle Challenge.

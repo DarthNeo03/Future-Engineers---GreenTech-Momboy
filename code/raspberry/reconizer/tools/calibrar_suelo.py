@@ -2,10 +2,42 @@
 """
 calibrar_suelo.py — Mide la homografia imagen -> suelo. Se hace UNA vez.
 
-    python3 tools/calibrar_suelo.py                    # camara 0
+    python3 tools/calibrar_suelo.py --tablero          # AUTOMATICO (recomendado)
+    python3 tools/calibrar_suelo.py --tablero --cuadro 40 --distancias 250 550 900
+    python3 tools/calibrar_suelo.py                    # a mano, cuatro clics
     python3 tools/calibrar_suelo.py --imagen foto.png
-    python3 tools/calibrar_suelo.py --x 150 --z1 300 --z2 700
 
+DOS MODOS
+---------
+`--tablero` detecta un tablero de ajedrez y saca ~54 esquinas por toma, sin
+clics. Es el bueno, por dos razones que no son comodidad:
+
+  * COBERTURA. Se toman varias capturas con el tablero a distintas
+    distancias, y la homografia se ajusta a TODAS las esquinas a la vez. El
+    metodo de cuatro marcas solo cubre el rectangulo que forman: mas alla
+    extrapola, y justo ahi es donde peor se porta una homografia.
+
+  * TE DICE SI TE EQUIVOCASTE. Con cuatro puntos la homografia pasa
+    exactamente por ellos y el error de reproyeccion es CERO por
+    construccion, midieras bien o mal. Con ciento y pico el ajuste es por
+    minimos cuadrados y el error que sale es una medida de verdad.
+
+El modo manual se queda por si no tienes tablero a mano.
+
+POR QUE NO PUEDE SER AUTOMATICO DEL TODO
+----------------------------------------
+Una sola camara NO puede recuperar la escala de una foto: dos escenas, una
+del doble de tamano al doble de distancia, dan exactamente la misma imagen.
+Es geometria, no falta de ganas. Hace falta UNA medida real de referencia.
+
+Con tablero esa medida son dos numeros que se toman una vez: el lado de la
+casilla (que ya sabes, lo imprimiste tu) y la distancia del carro a la fila
+mas cercana. Todo lo demas -encontrar las esquinas, ordenarlas, ajustar y
+comprobar el error- va solo.
+
+============================================================================
+MODO MANUAL (sin --tablero)
+============================================================================
 QUE HAY QUE MONTAR
 ------------------
 Cuatro marcas en el suelo formando un rectangulo, con el carro quieto y la
@@ -81,6 +113,13 @@ def main() -> int:
     ap.add_argument("--intrinsecos", default=None,
                     help="JSON con K y dist de cv2.calibrateCamera")
     ap.add_argument("--salida", default=None)
+    ap.add_argument("--tablero", nargs="?", const="9x6", default=None,
+                    help="modo automatico. Esquinas INTERNAS, p.ej. 9x6")
+    ap.add_argument("--cuadro", type=float, default=40.0,
+                    help="lado de cada casilla en mm")
+    ap.add_argument("--distancias", type=float, nargs="+",
+                    default=[250.0, 550.0, 900.0],
+                    help="distancias del carro a la fila mas cercana, en mm")
     args = ap.parse_args()
 
     cfg = robot_config.cargar()
@@ -93,6 +132,9 @@ def main() -> int:
         [+args.x, args.z2],
         [-args.x, args.z2],
     ], dtype=np.float64)
+
+    if args.tablero:
+        return modo_tablero(args, cfg, cam_cfg)
 
     K = dist = None
     if args.intrinsecos:
@@ -181,6 +223,156 @@ def main() -> int:
             print(f"\n[calibrar] guardado en {ruta}")
             _informe(H, mundo, puntos, K, dist)
             break
+
+    if cap is not None:
+        cap.release()
+    cv2.destroyAllWindows()
+    return 0
+
+
+
+def modo_tablero(args, cfg, cam_cfg) -> int:
+    """Calibracion automatica: tablero de ajedrez a varias distancias.
+
+    QUE HAY QUE MEDIR, Y POR QUE NO SE PUEDE EVITAR
+    -----------------------------------------------
+    Una sola camara NO puede recuperar la escala de una foto. Dos escenas, una
+    del doble de tamano al doble de distancia, dan exactamente la misma imagen.
+    Es geometria, no falta de ganas: hace falta UNA medida real de referencia.
+
+    Aqui esa medida son dos numeros que solo se toman una vez: el lado de la
+    casilla del tablero (que ya sabes, lo imprimiste tu) y la distancia del
+    carro a la fila de esquinas mas cercana. Todo lo demas -encontrar las
+    esquinas, ordenarlas, ajustar y comprobar- va solo.
+    """
+    import cv2
+
+    try:
+        nx, ny = (int(v) for v in str(args.tablero).lower().split("x"))
+    except Exception:
+        print(f"--tablero mal escrito: '{args.tablero}'. Se espera algo como 9x6")
+        return 2
+
+    cap = None
+    fija = None
+    if args.imagen:
+        fija = cv2.imread(args.imagen)
+        if fija is None:
+            print(f"No se pudo leer {args.imagen}")
+            return 2
+    else:
+        idx = args.camara if args.camara is not None else int(cam_cfg["indice"])
+        cap = camera.abrir(indice=idx, ancho=cam_cfg["ancho"], alto=cam_cfg["alto"],
+                           fps=cam_cfg["fps"], fourcc=cam_cfg["fourcc"])
+        if cap is None:
+            print("No se pudo abrir la camara")
+            return 2
+
+    print(f"""
+Tablero de {nx}x{ny} esquinas internas, casillas de {args.cuadro:.0f} mm.
+
+Colocalo PLANO en el suelo, con las filas ATRAVESADAS respecto a la marcha
+y centrado en el eje del carro. Para cada distancia de la lista, mide del
+carro a la fila de esquinas MAS CERCANA.
+
+  espacio  capturar (solo si el tablero esta detectado, en verde)
+  s        saltarse esta distancia
+  v        ver la rejilla de comprobacion (con 2 tomas o mas)
+  g        ajustar y guardar
+  q        salir sin guardar
+""")
+
+    vistas = []
+    pendientes = list(args.distancias)
+    H = None
+    ver_rejilla = False
+    ventana = "Calibracion por tablero"
+    cv2.namedWindow(ventana, cv2.WINDOW_NORMAL)
+
+    while True:
+        if fija is not None:
+            frame = fija.copy()
+        else:
+            ok, frame = cap.read()
+            if not ok:
+                continue
+            if cam_cfg.get("voltear"):
+                frame = cv2.flip(frame, -1)
+
+        gris = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        esq = geo.detectar_tablero(gris, nx, ny)
+
+        if esq is not None:
+            cv2.drawChessboardCorners(frame, (nx, ny),
+                                      esq.reshape(-1, 1, 2), True)
+            # La esquina de referencia (fila 0, columna 0) marcada aparte: si
+            # sale en el sitio equivocado, el tablero esta mal puesto.
+            cv2.circle(frame, tuple(esq[0, 0].astype(int)), 9, (0, 255, 255), 2)
+
+        z0 = pendientes[0] if pendientes else None
+        cv2.rectangle(frame, (0, 0), (frame.shape[1], 46), (0, 0, 0), -1)
+        if z0 is not None:
+            txt = f"tablero a {z0:.0f} mm  |  {'DETECTADO' if esq is not None else 'no se ve'}"
+        else:
+            txt = "todas las distancias hechas: pulsa g para guardar"
+        cv2.putText(frame, txt, (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    (0, 255, 0) if esq is not None else (0, 165, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"tomas: {len(vistas)}   faltan: "
+                           f"{', '.join(f'{d:.0f}' for d in pendientes) or '-'}",
+                    (8, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (200, 200, 200), 1,
+                    cv2.LINE_AA)
+
+        if ver_rejilla and H is not None:
+            _dibujar_rejilla(frame, H, None, None)
+
+        cv2.imshow(ventana, frame)
+        t = cv2.waitKey(20) & 0xFF
+
+        if t in (ord("q"), 27):
+            break
+        elif t == ord("s") and pendientes:
+            pendientes.pop(0)
+        elif t == ord("v"):
+            ver_rejilla = not ver_rejilla
+        elif t == ord(" ") and esq is not None and z0 is not None:
+            mundo = geo.mundo_tablero(nx, ny, args.cuadro, z0)
+            vistas.append((esq, mundo))
+            pendientes.pop(0)
+            print(f"  capturada a {z0:.0f} mm  ({esq.size // 2} esquinas, "
+                  f"{len(vistas)} tomas)")
+            if len(vistas) >= 2:
+                try:
+                    H, err, peor = geo.homografia_desde_tableros(vistas)
+                    print(f"    ajuste provisional: error medio {err:.1f} mm, "
+                          f"peor {peor:.1f} mm")
+                except Exception as e:
+                    print(f"    aun no se puede ajustar: {e}")
+        elif t == ord("g"):
+            if len(vistas) < 2:
+                print("  hacen falta al menos 2 tomas a distintas distancias: "
+                      "con una sola, la homografia extrapola y se va lejos")
+                continue
+            try:
+                H, err, peor = geo.homografia_desde_tableros(vistas)
+            except Exception as e:
+                print(f"  no se pudo ajustar: {e}")
+                continue
+            n_esq = sum(v[0].size // 2 for v in vistas)
+            print(f"\n  {len(vistas)} tomas, {n_esq} esquinas")
+            print(f"  error de reproyeccion: medio {err:.1f} mm, peor {peor:.1f} mm")
+            if err > 25.0:
+                print("  AVISO: mas de 25 mm de media. Revisa que mediste bien las\n"
+                      "         distancias y que el tablero estaba plano y centrado.")
+            else:
+                print("  Buen ajuste.")
+            su = geo.Suelo(cam_cfg)
+            su.H = H
+            ruta = su.guardar(Path(args.salida) if args.salida else None,
+                              notas=f"tablero {nx}x{ny} de {args.cuadro:.0f} mm, "
+                                    f"{len(vistas)} tomas, error medio {err:.1f} mm")
+            print(f"  guardado en {ruta}")
+            print("  Pulsa v para superponer la rejilla y comprobarlo sobre el suelo.")
+            ver_rejilla = True
 
     if cap is not None:
         cap.release()

@@ -40,6 +40,72 @@ ESCALA_GIRO = 131.0      # LSB por grado/s con +-250 dps
 ESCALA_ACEL = 16384.0    # LSB por g con +-2 g
 
 
+class IMUEnlace:
+    """Giroscopio leido de la TELEMETRIA del ESP32, no del I2C de la Pi.
+
+    Es la fuente por defecto desde que los dos sensores cuelgan del ESP32. La
+    misma interfaz que `IMU` para que el resto del programa no note el cambio:
+    `.yaw`, `.disponible`, `.calibrar()`, `.estado()`.
+
+    EL COSTE ES LA LATENCIA, y conviene tenerla presente: el yaw llega con el
+    periodo de la telemetria, 50 ms. Girando a 40 grados/s son 2 grados de
+    retraso, dentro de la tolerancia de 5 con la que se cierra el giro de 90.
+    A cambio, el muestreo lo hace una tarea de FreeRTOS a 100 Hz en un nucleo
+    que no hace otra cosa, en vez de un hilo de Python compitiendo con la
+    vision a 30 fps y con el servidor web.
+    """
+
+    def __init__(self, cfg: Dict[str, Any], enlace=None):
+        self.cfg = cfg or {}
+        self.enlace = enlace
+        self.motivo = "esperando telemetria del ESP32"
+
+    @property
+    def disponible(self) -> bool:
+        if self.enlace is None or not self.enlace.conectado:
+            return False
+        return bool(self.enlace.telemetria.imu_ok)
+
+    @property
+    def yaw(self) -> float:
+        if self.enlace is None:
+            return 0.0
+        return float(self.enlace.telemetria.yaw)
+
+    @property
+    def calibrando(self) -> bool:
+        return bool(self.enlace and self.enlace.telemetria.imu_calibrando)
+
+    def iniciar(self) -> bool:
+        if self.enlace is None:
+            self.motivo = "sin enlace con el ESP32"
+            return False
+        self.motivo = "giroscopio en el ESP32 (por telemetria)"
+        return True
+
+    def calibrar(self, muestras=None) -> bool:
+        if self.enlace is None:
+            return False
+        self.enlace.calibrar_imu()
+        return True
+
+    def poner_cero(self) -> None:
+        self.calibrar()
+
+    def parar(self) -> None:
+        pass
+
+    def estado(self) -> Dict[str, Any]:
+        return {
+            "disponible": self.disponible,
+            "motivo": self.motivo if not self.disponible else
+                      ("calibrando" if self.calibrando else "ok, en el ESP32"),
+            "yaw": round(self.yaw, 1),
+            "hz": 100.0 if self.disponible else 0.0,
+            "fuente": "esp32",
+        }
+
+
 class IMU:
     """Lee el MPU6050 en su propio hilo y publica yaw/pitch/roll.
 

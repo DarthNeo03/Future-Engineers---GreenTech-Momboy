@@ -27,7 +27,7 @@ static const uint8_t VERSION_PROTOCOLO = 1;
 static const uint8_t TIPO_MANDO  = 0x01;   // Pi -> ESP32, 6 bytes
 static const uint8_t TIPO_PING   = 0x02;   // Pi -> ESP32, 1 byte
 static const uint8_t TIPO_CONFIG = 0x03;   // Pi -> ESP32, 6 bytes
-static const uint8_t TIPO_TELE   = 0x81;   // ESP32 -> Pi, 8 bytes
+static const uint8_t TIPO_TELE   = 0x81;   // ESP32 -> Pi, 13 bytes
 static const uint8_t TIPO_LOG    = 0x82;   // ESP32 -> Pi, texto
 static const uint8_t TIPO_PONG   = 0x83;   // ESP32 -> Pi, 1 byte
 
@@ -36,6 +36,7 @@ static const uint8_t F_ARMADO  = 0x01;
 static const uint8_t F_PARADA  = 0x02;
 static const uint8_t F_CENTRAR = 0x04;
 static const uint8_t F_LIMPIAR = 0x08;
+static const uint8_t F_CAL_IMU = 0x10;   // recalibrar el giroscopio
 
 // Bits de estado de la telemetria
 static const uint8_t E_ARMADO        = 0x01;
@@ -105,6 +106,16 @@ inline bool decodificarMando(const uint8_t *p, uint8_t n, Mando &m) {
   return true;
 }
 
+// Bits del byte `sensores`
+static const uint8_t S_IMU_OK  = 0x01;
+static const uint8_t S_PISO_OK = 0x02;
+static const uint8_t S_IMU_CAL = 0x04;
+
+// Colores de linea
+static const uint8_t LINEA_NINGUNA = 0;
+static const uint8_t LINEA_NARANJA = 1;
+static const uint8_t LINEA_AZUL    = 2;
+
 struct Telemetria {
   uint8_t  seq_eco;
   uint8_t  estado;
@@ -113,10 +124,14 @@ struct Telemetria {
   uint16_t ms_desde_mando;
   uint8_t  tramas_malas;
   uint8_t  version;
+  int16_t  yaw_dg;        // decigrados, convenio brujula (+ = a la derecha)
+  uint8_t  sensores;      // bits S_*
+  uint8_t  lineas;        // contador circular de cruces de linea
+  uint8_t  color_linea;   // LINEA_* del ultimo cruce
 };
 
 inline uint8_t empaquetarTelemetria(const Telemetria &t, uint8_t *salida) {
-  uint8_t p[8];
+  uint8_t p[13];
   p[0] = t.seq_eco;
   p[1] = t.estado;
   p[2] = t.pwm;
@@ -125,7 +140,12 @@ inline uint8_t empaquetarTelemetria(const Telemetria &t, uint8_t *salida) {
   p[5] = (uint8_t)(t.ms_desde_mando >> 8);
   p[6] = t.tramas_malas;
   p[7] = t.version;
-  return empaquetar(TIPO_TELE, p, 8, salida);
+  p[8] = (uint8_t)(((uint16_t)t.yaw_dg) & 0xFF);    // int16 en complemento a 2
+  p[9] = (uint8_t)(((uint16_t)t.yaw_dg) >> 8);
+  p[10] = t.sensores;
+  p[11] = t.lineas;
+  p[12] = t.color_linea;
+  return empaquetar(TIPO_TELE, p, 13, salida);
 }
 
 // --------------------------------------------------------------------------
