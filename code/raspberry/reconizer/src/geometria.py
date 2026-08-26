@@ -61,7 +61,7 @@ import os
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -327,6 +327,84 @@ class Suelo:
         X = (us - cx_lut[vi]) * fac_lut[vi]
         return X, Z
 
+
+
+# ---------------------------------------------------------------------------
+# Calibracion automatica con tablero de ajedrez
+# ---------------------------------------------------------------------------
+def detectar_tablero(gris: np.ndarray, nx: int, ny: int
+                     ) -> Optional[np.ndarray]:
+    """Esquinas internas de un tablero, ORDENADAS: fila 0 la mas cercana al
+    carro, columna 0 la de mas a la izquierda.
+
+    Ese orden hay que imponerlo a mano. OpenCV devuelve las esquinas en un
+    orden consistente con el patron, pero no sabe como esta puesto el tablero:
+    girado 180 grados devuelve la misma lista al reves, y con eso la
+    calibracion sale reflejada sin avisar de nada.
+    """
+    for detector in ("SB", "clasico"):
+        if detector == "SB" and hasattr(cv2, "findChessboardCornersSB"):
+            ok, esq = cv2.findChessboardCornersSB(gris, (nx, ny))
+        else:
+            ok, esq = cv2.findChessboardCorners(
+                gris, (nx, ny),
+                flags=cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE)
+            if ok:
+                cv2.cornerSubPix(
+                    gris, esq, (11, 11), (-1, -1),
+                    (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.01))
+        if ok:
+            break
+    else:
+        return None
+
+    e = np.asarray(esq, np.float32).reshape(ny, nx, 2)
+    # Fila 0 = la mas ABAJO en la imagen = la mas cercana al carro.
+    if e[0, :, 1].mean() < e[-1, :, 1].mean():
+        e = e[::-1]
+    # Columna 0 = la mas a la IZQUIERDA en la imagen.
+    if e[:, 0, 0].mean() > e[:, -1, 0].mean():
+        e = e[:, ::-1]
+    return e
+
+
+def mundo_tablero(nx: int, ny: int, cuadro_mm: float, z0_mm: float) -> np.ndarray:
+    """Coordenadas reales de las esquinas, en el marco del carro.
+
+    El tablero se coloca plano en el suelo, con las filas ATRAVESADAS respecto
+    a la marcha y centrado en el eje longitudinal del carro. `z0_mm` es lo
+    unico que hay que medir: la distancia del carro a la fila mas cercana.
+    """
+    xs = (np.arange(nx, dtype=np.float64) - (nx - 1) / 2.0) * cuadro_mm
+    zs = z0_mm + np.arange(ny, dtype=np.float64) * cuadro_mm
+    X, Z = np.meshgrid(xs, zs)
+    return np.stack([X, Z], axis=-1).astype(np.float32)
+
+
+def homografia_desde_tableros(vistas: Sequence[Tuple[np.ndarray, np.ndarray]]
+                              ) -> Tuple[np.ndarray, float, float]:
+    """Ajusta UNA homografia a todas las esquinas de todas las tomas.
+
+    Devuelve (H, error_medio_mm, error_peor_mm).
+
+    Con cuatro puntos la homografia pasa exactamente por ellos y el error de
+    reproyeccion es CERO por construccion: no te enteras de si mediste mal.
+    Con ciento y pico puntos el ajuste es por minimos cuadrados y el error que
+    sale es una medida de verdad de lo bien que ha quedado.
+    """
+    img = np.concatenate([v[0].reshape(-1, 2) for v in vistas]).astype(np.float64)
+    mun = np.concatenate([v[1].reshape(-1, 2) for v in vistas]).astype(np.float64)
+    if len(img) < 8:
+        raise ValueError("hacen falta al menos 8 esquinas")
+
+    H, _mask = cv2.findHomography(img.reshape(-1, 1, 2), mun.reshape(-1, 1, 2),
+                                  cv2.RANSAC, 20.0)
+    if H is None:
+        raise ValueError("no se pudo ajustar la homografia")
+
+    est = cv2.perspectiveTransform(img.reshape(-1, 1, 2), H).reshape(-1, 2)
+    err = np.linalg.norm(est - mun, axis=1)
+    return H, float(err.mean()), float(err.max())
 
 # ---------------------------------------------------------------------------
 def contacto_muro(mascara: np.ndarray, cfg: Dict[str, Any]

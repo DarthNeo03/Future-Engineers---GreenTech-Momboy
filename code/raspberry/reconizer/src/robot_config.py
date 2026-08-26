@@ -189,7 +189,11 @@ POR_DEFECTO: Dict[str, Any] = {
 
     "imu": {
         "activo": True,          # si no aparece el chip, se sigue sin el
-        "bus": 1,
+        # "esp32" = el MPU6050 cuelga del ESP32 y el yaw llega en la
+        # telemetria. "pi" = colgado del I2C de la Raspberry (montaje
+        # anterior). Ver la cabecera de firmware/esp32_carro/sensores.h.
+        "fuente": "esp32",
+        "bus": 1,                # solo si fuente = "pi"
         "direcciones": [104, 105],   # 0x68 y 0x69
         "hz": 100,
         "alfa_complementario": 0.98,
@@ -204,7 +208,8 @@ POR_DEFECTO: Dict[str, Any] = {
     # ---- TCS34725 mirando al suelo: cruces de linea naranja y azul ----
     "piso": {
         "activo": True,          # si no aparece el chip, se sigue sin el
-        "bus": 1,                # el mismo del MPU6050: 0x29 y 0x68 no chocan
+        "fuente": "esp32",       # "esp32" o "pi", igual que el giroscopio
+        "bus": 1,                # solo si fuente = "pi"
         # EL PARAMETRO QUE DECIDE TODO. A 0,4 m/s una linea de 20 mm pasa por
         # debajo del sensor en 50 ms: con los 154 o 700 ms que traen por
         # defecto muchas librerias, la linea se promedia con el piso blanco y
@@ -217,6 +222,10 @@ POR_DEFECTO: Dict[str, Any] = {
         "separacion_min_s": 0.35,  # antirrebote entre dos cruces
         # Medidos con tools/calibrar_piso.py SOBRE EL TAPETE DE COMPETENCIA.
         # Los de aqui son un punto de partida, no una calibracion.
+        # OJO: con fuente = "esp32" la clasificacion la hace el FIRMWARE, asi
+        # que estos numeros hay que copiarlos tambien al array `perfiles` de
+        # esp32_carro.ino y volver a subirlo. El calibrador los imprime en el
+        # formato de C++ justo para eso.
         "perfiles": [
             {"nombre": "blanco", "r": 0.33, "g": 0.34, "b": 0.33, "tol": 0.05},
             {"nombre": "naranja", "r": 0.55, "g": 0.30, "b": 0.15, "tol": 0.09},

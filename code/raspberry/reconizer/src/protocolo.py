@@ -35,7 +35,7 @@ VERSION_PROTOCOLO = 1
 TIPO_MANDO = 0x01     # Pi -> ESP32 (6 bytes)
 TIPO_PING = 0x02      # Pi -> ESP32 (1 byte: seq)
 TIPO_CONFIG = 0x03    # Pi -> ESP32 (6 bytes) ajustes en caliente
-TIPO_TELE = 0x81      # ESP32 -> Pi (8 bytes)
+TIPO_TELE = 0x81      # ESP32 -> Pi (13 bytes)
 TIPO_LOG = 0x82       # ESP32 -> Pi (texto)
 TIPO_PONG = 0x83      # ESP32 -> Pi (1 byte: seq eco)
 
@@ -44,6 +44,7 @@ F_ARMADO = 0x01       # sin esto el ESP32 no mueve el motor pase lo que pase
 F_PARADA = 0x02       # parada de emergencia: ignora vel
 F_CENTRAR = 0x04      # lleva el servo al centro
 F_LIMPIAR = 0x08      # reinicia los contadores de error
+F_CAL_IMU = 0x10      # recalibrar el giroscopio (con el carro QUIETO)
 
 # --- bits de estado en la telemetria --------------------------------------
 E_ARMADO = 0x01
@@ -105,6 +106,7 @@ class Mando:
     parada: bool = False
     centrar: bool = False
     limpiar: bool = False
+    cal_imu: bool = False
 
     def banderas(self) -> int:
         f = 0
@@ -116,6 +118,8 @@ class Mando:
             f |= F_CENTRAR
         if self.limpiar:
             f |= F_LIMPIAR
+        if self.cal_imu:
+            f |= F_CAL_IMU
         return f
 
     def a_bytes(self) -> bytes:
@@ -137,11 +141,37 @@ class Mando:
                      armado=bool(flags & F_ARMADO),
                      parada=bool(flags & F_PARADA),
                      centrar=bool(flags & F_CENTRAR),
-                     limpiar=bool(flags & F_LIMPIAR))
+                     limpiar=bool(flags & F_LIMPIAR),
+                     cal_imu=bool(flags & F_CAL_IMU))
+
+
+# --- bits del byte `sensores` de la telemetria ------------------------------
+S_IMU_OK = 0x01       # el MPU6050 responde
+S_PISO_OK = 0x02      # el TCS34725 responde
+S_IMU_CAL = 0x04      # el giroscopio se esta calibrando ahora mismo
+
+# Colores de linea que reporta el ESP32
+LINEA_NINGUNA = 0
+LINEA_NARANJA = 1
+LINEA_AZUL = 2
+NOMBRE_LINEA = {LINEA_NINGUNA: "", LINEA_NARANJA: "naranja", LINEA_AZUL: "azul"}
 
 
 @dataclass
 class Telemetria:
+    """Lo que el ESP32 cuenta cada 50 ms. 13 bytes.
+
+    Desde que los dos sensores I2C cuelgan del ESP32, aqui viajan tambien el
+    yaw y los cruces de linea.
+
+    EL CRUCE DE LINEA VIAJA COMO CONTADOR, NO COMO EVENTO. Es la diferencia
+    entre que la latencia importe y que no importe: un evento suelto se puede
+    perder si se cae una trama, y llega tarde por definicion. Un contador es
+    idempotente -la Pi compara con el anterior y sabe cuantos van- y sobrevive
+    a que se pierda una trama entera. Como las lineas de la pista estan a
+    metros unas de otras y la telemetria va a 20 Hz, es imposible que se
+    crucen dos entre dos tramas.
+    """
     seq_eco: int = 0
     estado: int = 0
     pwm: int = 0
@@ -149,6 +179,27 @@ class Telemetria:
     ms_desde_mando: int = 0
     tramas_malas: int = 0
     version: int = 0
+    yaw_dg: int = 0            # decigrados, -1800..1800 (convenio brujula)
+    sensores: int = 0          # bits S_*
+    lineas: int = 0            # contador circular de cruces
+    color_linea: int = 0       # LINEA_* del ultimo cruce
+
+    @property
+    def yaw(self) -> float:
+        """Yaw en grados. Positivo al girar a la DERECHA."""
+        return self.yaw_dg / 10.0
+
+    @property
+    def imu_ok(self) -> bool:
+        return bool(self.sensores & S_IMU_OK)
+
+    @property
+    def piso_ok(self) -> bool:
+        return bool(self.sensores & S_PISO_OK)
+
+    @property
+    def imu_calibrando(self) -> bool:
+        return bool(self.sensores & S_IMU_CAL)
 
     @property
     def armado(self) -> bool:
@@ -168,13 +219,23 @@ class Telemetria:
 
     def a_bytes(self) -> bytes:
         return empaquetar(TIPO_TELE, struct.pack(
-            "<BBBBHBB", self.seq_eco & 0xFF, self.estado & 0xFF,
+            "<BBBBHBBhBBB", self.seq_eco & 0xFF, self.estado & 0xFF,
             _lim(self.pwm, 0, 255), _lim(self.angulo, 0, 255),
             _lim(self.ms_desde_mando, 0, 65535),
-            _lim(self.tramas_malas, 0, 255), self.version & 0xFF))
+            _lim(self.tramas_malas, 0, 255), self.version & 0xFF,
+            _lim(self.yaw_dg, -1800, 1800), self.sensores & 0xFF,
+            self.lineas & 0xFF, self.color_linea & 0xFF))
 
     @staticmethod
     def desde_payload(payload: bytes) -> "Telemetria":
+        # Se acepta el formato VIEJO de 8 bytes: un ESP32 con firmware
+        # anterior sigue hablando, solo que sin yaw ni lineas. Rechazarlo
+        # dejaria el carro mudo por una discrepancia de version.
+        if len(payload) >= 13:
+            (seq, estado, pwm, ang, ms, malas, ver,
+             yaw, sens, lin, col) = struct.unpack("<BBBBHBBhBBB", payload[:13])
+            return Telemetria(seq, estado, pwm, ang, ms, malas, ver,
+                              yaw, sens, lin, col)
         (seq, estado, pwm, ang, ms, malas, ver) = struct.unpack("<BBBBHBB", payload[:8])
         return Telemetria(seq, estado, pwm, ang, ms, malas, ver)
 

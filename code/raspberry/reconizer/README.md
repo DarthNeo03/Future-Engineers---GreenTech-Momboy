@@ -26,6 +26,7 @@ reconizer/
 │   └── servidor.py       carrito.local: vídeo + control desde el móvil
 ├── tools/
 │   ├── simulador.py      da vueltas a la pista entera, sin carro
+│   ├── asistente.py      calibración guiada de principio a fin
 │   ├── calibrar_piso.py  colores del suelo vistos por el TCS34725
 │   ├── calibrar_suelo.py homografía al suelo: se hace UNA vez
 │   ├── calibrador.py     interfaz de calibración HSV
@@ -273,6 +274,36 @@ así que el carro se mete en giros de 90° en mitad de la recta. Arreglarlo pide
 validar la esquina candidata contra la geometría del corredor, no basta con
 bloquear el giro mientras se ve una señal (con varios pilares por recta siempre
 se ve alguno y el carro no giraría nunca).
+
+## Calibrar el robot: el asistente
+
+```bash
+python3 tools/asistente.py
+```
+
+Va paso a paso, hace solo todo lo que se puede hacer solo y te dice qué medir
+en lo que no. `--revisar` comprueba sin mover nada; `--solo 4 5` repite pasos
+sueltos.
+
+| Paso | Qué hace | ¿Automático? |
+|---|---|---|
+| 1 | I2C, cámara, ESP32, giroscopio, qué falta por calibrar | sí |
+| 2 | Coherencia: FOV, `parar_mm` contra el mínimo medible, disparo del giro | sí |
+| 3 | Te manda a las tres herramientas con cámara, en orden | — |
+| 4 | **Signo del yaw**: gira a la derecha y comprueba que el yaw sube | sí, y lo corrige |
+| 5 | **Velocidad real**: avanza 2 s, tú mides con cinta | mide tú, calcula él |
+| 6 | **Radio de giro**: arco a tope, lo mide con el giroscopio | sí |
+
+Los pasos 4, 5 y 6 **mueven el carro**: avisan antes, piden confirmación, van a
+velocidad baja, cada movimiento tiene tope de tiempo y el `finally` manda parada
+de emergencia pase lo que pase, también con Ctrl+C.
+
+El radio de giro se saca de `R = v / ω` con el giroscopio, así que no hace falta
+tiza ni medir el círculo. Y de ahí sale sola la distancia de disparo del giro,
+que es `radio − objetivo`.
+
+La velocidad es lo único que no puede medir él: una cámara sola no recupera la
+escala del mundo, hace falta una referencia real, y esa es la cinta métrica.
 
 ## Calibrar el suelo: hazlo antes que nada
 

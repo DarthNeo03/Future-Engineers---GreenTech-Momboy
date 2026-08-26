@@ -47,6 +47,7 @@ if str(RAIZ) not in sys.path:
 
 from src import color_config as cc, navegacion as nav, protocolo as P  # noqa: E402
 from src import color_piso as cp, geometria as geo                      # noqa: E402
+from src import imu as imu_mod                                          # noqa: E402
 from src import obstaculos as obs                                       # noqa: E402
 from src import robot_config, vision                                    # noqa: E402
 
@@ -296,6 +297,75 @@ def test_geometria():
     r = e3.recta(-1)
     check(r is not None and abs(r[1]) < 3.0, "una pared paralela da angulo ~0",
           None if r is None else r[1])
+
+
+
+def test_calibracion_tablero():
+    """La calibracion automatica por tablero, sin camara."""
+    print("\n[3b] Calibracion del suelo por tablero")
+    nx, ny, cuadro = 9, 6, 40.0
+
+    # --- coordenadas del mundo -------------------------------------------
+    m = geo.mundo_tablero(nx, ny, cuadro, 260.0)
+    check(m.shape == (ny, nx, 2), "una coordenada por esquina", m.shape)
+    check(abs(m[0, 0, 1] - 260.0) < 1e-6,
+          "la fila 0 queda a la distancia medida", m[0, 0, 1])
+    check(abs(m[-1, 0, 1] - (260.0 + (ny - 1) * cuadro)) < 1e-6,
+          "y la ultima, tantas casillas mas alla", m[-1, 0, 1])
+    check(abs(m[0, :, 0].mean()) < 1e-6,
+          "el tablero va centrado en el eje del carro", m[0, :, 0].mean())
+    check(m[0, 0, 0] < m[0, -1, 0], "columna 0 a la izquierda")
+
+    # --- deteccion y orden, sobre una vista sintetica ---------------------
+    suelo = geo.Suelo({"altura_mm": 200.0, "cabeceo_deg": 20.0,
+                       "hfov_deg": 100.0, "ancho": 640})
+    us = np.repeat(np.linspace(40, 600, 12), 12)
+    vs = np.tile(np.linspace(300, 470, 12), 12)
+    X, Z = suelo.proyectar(us, vs, 640, 480)
+    ok = np.isfinite(X) & np.isfinite(Z)
+    H_i2m, _ = cv2.findHomography(np.stack([us[ok], vs[ok]], 1),
+                                  np.stack([X[ok], Z[ok]], 1))
+    H_m2i = np.linalg.inv(H_i2m)
+
+    img = np.full((480, 640), 255, np.uint8)
+    casillas = geo.mundo_tablero(nx + 1, ny + 1, cuadro, 260.0)
+    for i in range(ny + 1):
+        for j in range(nx + 1):
+            if (i + j) % 2:
+                continue
+            q = np.array([[casillas[i, j]], [casillas[i, j] + [cuadro, 0]],
+                          [casillas[i, j] + [cuadro, cuadro]],
+                          [casillas[i, j] + [0, cuadro]]], np.float32)
+            px = cv2.perspectiveTransform(q.reshape(-1, 1, 2), H_m2i).reshape(-1, 2)
+            cv2.fillPoly(img, [px.astype(np.int32)], 0)
+
+    esq = geo.detectar_tablero(img, nx, ny)
+    check(esq is not None, "detecta el tablero en la vista sintetica")
+    if esq is None:
+        return
+    check(esq.shape == (ny, nx, 2), "y devuelve la rejilla completa", esq.shape)
+
+    # El ORDEN es lo que hay que imponer a mano: girado 180 grados, OpenCV
+    # devuelve la misma lista al reves y la calibracion saldria reflejada.
+    check(esq[0, :, 1].mean() > esq[-1, :, 1].mean(),
+          "fila 0 = la mas cercana al carro (mas abajo en la imagen)")
+    check(esq[:, 0, 0].mean() < esq[:, -1, 0].mean(),
+          "columna 0 = la de mas a la izquierda")
+
+    # --- ajuste y error ---------------------------------------------------
+    mundo = geo.mundo_tablero(nx, ny, cuadro, 260.0 + cuadro)
+    H, err, peor = geo.homografia_desde_tableros([(esq, mundo)])
+    check(H is not None and H.shape == (3, 3), "ajusta una homografia 3x3")
+    check(err < 40.0, "con un error de reproyeccion razonable",
+          f"medio {err:.1f} mm, peor {peor:.1f} mm")
+    check(peor >= err, "el peor error nunca es menor que el medio")
+
+    # Con menos de 8 esquinas no hay ajuste que valga.
+    try:
+        geo.homografia_desde_tableros([(esq[:1, :2], mundo[:1, :2])])
+        check(False, "rechaza un ajuste con muy pocos puntos")
+    except ValueError:
+        check(True, "rechaza un ajuste con muy pocos puntos")
 
 
 # ===========================================================================
@@ -717,6 +787,145 @@ def test_piso():
           "dos veces el mismo color no decide nada")
     check(not robot_config.POR_DEFECTO["piso"]["usar_para_sentido"],
           "y viene DESACTIVADO: el orden real no esta verificado en el tapete")
+
+
+
+def test_asistente():
+    """La aritmetica del asistente de calibracion, sin carro."""
+    print("\n[5g] Asistente de calibracion")
+    sys.path.insert(0, str(RAIZ / "tools"))
+    try:
+        import asistente as asi
+    except Exception as e:                       # pragma: no cover
+        print(f"       (no se pudo cargar: {e}); me lo salto")
+        return
+
+    # --- yaw desenrollado: 3 vueltas son 1080 grados, no 0 ---------------
+    m = [(k * 0.02, ((k * 2.0 + 180.0) % 360.0) - 180.0) for k in range(541)]
+    total = asi._desenrollar(m)
+    check(abs(total - 1080.0) < 1.0,
+          "acumula 1080 grados sin envolverse en +-180", round(total, 1))
+
+    m_der = [(k * 0.05, k * 3.0) for k in range(31)]
+    check(asi._desenrollar(m_der) > 0, "girar a la derecha da yaw positivo")
+    m_izq = [(k * 0.05, -k * 3.0) for k in range(31)]
+    check(asi._desenrollar(m_izq) < 0, "y a la izquierda, negativo")
+
+    # --- velocidad: 810 mm en 2 s al 45% son 900 mm/s al 100% -----------
+    d, seg, vel = 810.0, 2.0, 45
+    mm_s = d / seg / (vel / 100.0)
+    check(abs(mm_s - 900.0) < 1.0,
+          "810 mm en 2 s al 45% -> 900 mm/s al 100%", round(mm_s, 1))
+
+    # --- radio de giro: R = v / w ---------------------------------------
+    # 90 grados en 1 s a 400 mm/s tienen que dar 255 mm de radio.
+    import math as _m
+    w = _m.radians(90.0 / 1.0)
+    R = 400.0 / w
+    check(abs(R - 254.6) < 1.0, "90 grados/s a 400 mm/s -> radio 255 mm",
+          round(R, 1))
+    # El radio NO puede depender de la velocidad: al doble de velocidad, el
+    # doble de grados por segundo, mismo radio.
+    R2 = 800.0 / _m.radians(180.0)
+    check(abs(R2 - R) < 1.0, "y el radio no cambia con la velocidad",
+          (round(R, 1), round(R2, 1)))
+
+    # --- la distancia de disparo sale de ahi ----------------------------
+    nav = robot_config.POR_DEFECTO["navegacion"]
+    z = nav["radio_giro_mm"] - nav["pared_objetivo_mm"]
+    check(abs(z - 100.0) < 1e-6,
+          "radio 350 - objetivo 250 -> disparo a 100 mm de la esquina", z)
+
+
+
+# ===========================================================================
+# 5h. Sensores colgados del ESP32 (yaw y lineas por telemetria)
+# ===========================================================================
+class _EnlaceFalso:
+    """Un enlace con telemetria puesta a mano, para probar sin ESP32."""
+
+    def __init__(self, **kw):
+        self.conectado = True
+        self.telemetria = P.Telemetria(**kw)
+        self.calibraciones = 0
+
+    def calibrar_imu(self, tramas=10):
+        self.calibraciones += 1
+
+
+def test_sensores_esp32():
+    print("\n[5h] Sensores en el ESP32: yaw y lineas por telemetria")
+
+    # --- el protocolo lleva los campos nuevos ----------------------------
+    t = P.Telemetria(seq_eco=7, estado=3, pwm=120, angulo=100,
+                     ms_desde_mando=42, tramas_malas=1, version=3,
+                     yaw_dg=-1234, sensores=P.S_IMU_OK | P.S_PISO_OK,
+                     lineas=5, color_linea=P.LINEA_AZUL)
+    tramas = P.Lector().alimentar(t.a_bytes())
+    check(len(tramas) == 1, "la telemetria de 13 bytes viaja entera")
+    r = P.Telemetria.desde_payload(tramas[0][1])
+    check(r == t, "y vuelve identica")
+    check(abs(r.yaw + 123.4) < 1e-9, "el yaw sale en grados con signo", r.yaw)
+    check(r.imu_ok and r.piso_ok, "los bits de sensores se leen bien")
+    check(P.NOMBRE_LINEA[r.color_linea] == "azul", "y el color de la linea")
+
+    # Un ESP32 con firmware VIEJO manda 8 bytes. Rechazarlo dejaria el carro
+    # mudo por una discrepancia de version, asi que se acepta sin los campos.
+    import struct as _st
+    viejo = P.Telemetria.desde_payload(_st.pack("<BBBBHBB", 7, 3, 120, 100, 42, 1, 2))
+    check(viejo.pwm == 120 and viejo.yaw == 0.0 and not viejo.imu_ok,
+          "un firmware viejo de 8 bytes sigue entendiendose")
+
+    m = P.Mando(seq=1, vel=50, direccion=-20, vmax=130, armado=True, cal_imu=True)
+    check(P.Mando.desde_payload(m.a_bytes()[4:-1]).cal_imu,
+          "la orden de calibrar el giroscopio viaja en el mando")
+
+    # --- el giroscopio por enlace ----------------------------------------
+    e = _EnlaceFalso(yaw_dg=456, sensores=P.S_IMU_OK)
+    g = imu_mod.IMUEnlace({}, e)
+    check(g.iniciar(), "arranca si hay enlace")
+    check(g.disponible, "disponible cuando el ESP32 dice que el MPU responde")
+    check(abs(g.yaw - 45.6) < 1e-9, "y entrega el yaw en grados", g.yaw)
+    g.calibrar()
+    check(e.calibraciones == 1, "calibrar() se lo pide al ESP32")
+
+    e.telemetria.sensores = 0
+    check(not g.disponible, "si el ESP32 dice que no hay MPU, no esta disponible")
+    e.conectado = False
+    check(not g.disponible, "y sin enlace tampoco")
+    check(not imu_mod.IMUEnlace({}, None).iniciar(), "sin enlace ni arranca")
+
+    # --- las lineas por CONTADOR, que es lo que las hace robustas --------
+    e = _EnlaceFalso(sensores=P.S_PISO_OK, lineas=10, color_linea=P.LINEA_NARANJA)
+    pi = cp.PisoEnlace({}, e)
+    pi.iniciar()
+    check(pi.tomar_cruces() == [], "al arrancar no se inventa cruces pasados")
+
+    e.telemetria.lineas = 11
+    cruces = pi.tomar_cruces()
+    check(len(cruces) == 1 and cruces[0].color == "naranja",
+          "un cruce nuevo aparece con su color",
+          [(c.color) for c in cruces])
+    check(pi.tomar_cruces() == [], "y no se repite al volver a preguntar")
+
+    # Aqui esta la gracia del contador: si se pierden tramas, el numero ya
+    # lleva dentro cuantos cruces hubo. Un evento suelto se habria perdido.
+    e.telemetria.lineas = 14
+    e.telemetria.color_linea = P.LINEA_AZUL
+    check(len(pi.tomar_cruces()) == 3,
+          "si se pierden tramas, el contador recupera los cruces perdidos")
+
+    # Y sobrevive a que el contador de un byte se envuelva en 256.
+    e.telemetria.lineas = 254
+    pi.tomar_cruces()
+    e.telemetria.lineas = 2
+    check(len(pi.tomar_cruces()) == 4,
+          "el contador se envuelve en 256 sin perder la cuenta")
+
+    # --- eleccion de fuente ------------------------------------------------
+    cfg = robot_config.POR_DEFECTO
+    check(cfg["imu"]["fuente"] == "esp32", "por defecto el giroscopio va al ESP32")
+    check(cfg["piso"]["fuente"] == "esp32", "y el sensor de color tambien")
 
 
 # ===========================================================================
@@ -1164,8 +1373,9 @@ def test_vuelta_completa():
 if __name__ == "__main__":
     print(f"OpenCV {cv2.__version__} · Python {sys.version.split()[0]}")
     for f in (test_protocolo_cruzado, test_lector_robusto, test_geometria,
-              test_salto, test_navegacion, test_seguridad_y_vueltas,
-              test_desatasco, test_senales, test_piso,
+              test_calibracion_tablero, test_salto, test_navegacion, test_seguridad_y_vueltas,
+              test_desatasco, test_senales, test_piso, test_asistente,
+              test_sensores_esp32,
               test_pipeline_imagen, test_enlace,
               test_robot_y_web, test_config, test_vuelta_completa):
         try:

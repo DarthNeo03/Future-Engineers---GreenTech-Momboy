@@ -133,6 +133,84 @@ PERFILES_POR_DEFECTO = [
 
 
 # ---------------------------------------------------------------------------
+class PisoEnlace:
+    """Cruces de linea leidos de la TELEMETRIA del ESP32.
+
+    LA LATENCIA AQUI NO IMPORTA, y esa es la gracia del diseño: el cruce viaja
+    como CONTADOR, no como evento. La Pi compara el contador con el que tenia
+    y sabe cuantas lineas se han cruzado desde la ultima vez. Da igual cuando
+    llegue la trama, y si se pierde una entera tampoco se pierde el cruce: el
+    contador ya lo lleva dentro.
+
+    Un evento suelto, en cambio, llega tarde por definicion y desaparece si se
+    cae su trama.
+    """
+
+    def __init__(self, cfg: Dict[str, Any], enlace=None):
+        self.cfg = cfg or {}
+        self.enlace = enlace
+        self.motivo = "esperando telemetria del ESP32"
+        self.color = BLANCO
+        self.hz_real = 100.0
+        self._ultimo_contador: Optional[int] = None
+        self._pendientes: List[Cruce] = []
+
+    @property
+    def disponible(self) -> bool:
+        if self.enlace is None or not self.enlace.conectado:
+            return False
+        return bool(self.enlace.telemetria.piso_ok)
+
+    def iniciar(self) -> bool:
+        if self.enlace is None:
+            self.motivo = "sin enlace con el ESP32"
+            return False
+        self.motivo = "sensor de piso en el ESP32 (por telemetria)"
+        return True
+
+    def parar(self) -> None:
+        pass
+
+    def _sondear(self) -> None:
+        if self.enlace is None:
+            return
+        t = self.enlace.telemetria
+        n = int(t.lineas)
+        if self._ultimo_contador is None:
+            self._ultimo_contador = n           # al arrancar no se inventa nada
+            return
+        if n == self._ultimo_contador:
+            return
+        # El contador es de un byte: se envuelve en 256. La resta modular da
+        # cuantos cruces han pasado aunque se hayan perdido tramas.
+        nuevos = (n - self._ultimo_contador) & 0xFF
+        self._ultimo_contador = n
+        from .protocolo import NOMBRE_LINEA
+        color = NOMBRE_LINEA.get(int(t.color_linea), "")
+        ahora = time.monotonic()
+        for _ in range(min(nuevos, 8)):
+            self._pendientes.append(Cruce(color=color or DESCONOCIDO, t=ahora))
+        self.color = color or BLANCO
+
+    def tomar_cruces(self) -> List[Cruce]:
+        self._sondear()
+        fuera, self._pendientes = self._pendientes, []
+        return fuera
+
+    def estado(self) -> Dict[str, Any]:
+        t = self.enlace.telemetria if self.enlace else None
+        return {
+            "disponible": self.disponible,
+            "motivo": self.motivo if not self.disponible else "ok, en el ESP32",
+            "color": self.color,
+            "hz": 100.0 if self.disponible else 0.0,
+            "crudo": {"c": 0, "r": 0, "g": 0, "b": 0},
+            "cromatico": [0.0, 0.0, 0.0],
+            "contador_esp32": int(t.lineas) if t else 0,
+            "fuente": "esp32",
+        }
+
+
 class SensorPiso:
     """Lee el TCS34725 en su propio hilo y publica cruces de linea.
 
