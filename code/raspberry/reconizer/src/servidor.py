@@ -310,6 +310,12 @@ function estado(){
          s.senal.color=='rojo'?'mal':'ok');
     fila(t,'Giroscopio', s.imu.disponible ? ('yaw '+s.imu.yaw+'&deg;  '+s.imu.hz+' Hz')
                                           : s.imu.motivo, s.imu.disponible?'ok':'avi');
+    if (s.piso) fila(t,'Sensor de piso',
+        s.piso.disponible
+          ? (s.piso.color+'  &middot;  '+s.piso.lineas+' lineas ('+s.piso.vueltas
+             +' vueltas)  '+s.piso.hz+' Hz')
+          : s.piso.motivo,
+        s.piso.disponible ? 'ok' : 'avi');
     fila(t,'FPS vision', s.fps);
     fila(t,'Perfil de color', s.perfil_color);
   }).catch(()=>{});

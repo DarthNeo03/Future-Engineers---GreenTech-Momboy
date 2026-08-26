@@ -46,7 +46,8 @@ if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
 from src import color_config as cc, navegacion as nav, protocolo as P  # noqa: E402
-from src import geometria as geo, obstaculos as obs                     # noqa: E402
+from src import color_piso as cp, geometria as geo                      # noqa: E402
+from src import obstaculos as obs                                       # noqa: E402
 from src import robot_config, vision                                    # noqa: E402
 
 _fallos: List[str] = []
@@ -643,6 +644,81 @@ def test_senales():
           f"{d_sin.direccion} -> {d_con.direccion}")
 
 
+
+# ===========================================================================
+# 5f. Sensor de color del piso (TCS34725)
+# ===========================================================================
+def test_piso():
+    """Lo que se puede probar sin el chip: los tiempos y la clasificacion."""
+    print("\n[5f] Sensor de color del piso")
+    cfg = dict(robot_config.POR_DEFECTO["piso"])
+
+    # --- el tiempo de integracion, que es lo que decide si se ve la linea --
+    # A 0,4 m/s una linea de 20 mm pasa bajo el sensor en 50 ms.
+    ms_linea = 20.0 / 400.0 * 1000.0
+    check(abs(ms_linea - 50.0) < 1e-6, "una linea de 20 mm dura 50 ms a 0,4 m/s")
+
+    for ms, cabe in ((700.0, False), (154.0, False), (24.0, True), (2.4, True)):
+        real = cp.ms_desde_atime(cp.atime_desde_ms(ms))
+        muestras = ms_linea / real
+        check((muestras >= 2.0) == cabe,
+              f"integracion {ms:6.1f} ms -> {muestras:5.2f} muestras por linea: "
+              f"{'sirve' if cabe else 'NO sirve'}", round(muestras, 2))
+
+    check(cp.atime_desde_ms(2.4) == 0xFF, "ATIME de 2,4 ms es 0xFF",
+          hex(cp.atime_desde_ms(2.4)))
+    check(abs(cp.ms_desde_atime(cp.atime_desde_ms(24.0)) - 24.0) < 2.5,
+          "24 ms ida y vuelta por el registro ATIME",
+          cp.ms_desde_atime(cp.atime_desde_ms(24.0)))
+    check(cfg["integracion_ms"] <= 24.0,
+          "el valor por defecto del proyecto sirve", cfg["integracion_ms"])
+
+    # --- clasificacion ----------------------------------------------------
+    s = cp.SensorPiso(cfg)
+
+    def como(r, g, b, c=2000):
+        # se entrega en crudo; el sensor normaliza por si mismo
+        return s.clasificar(c, r, g, b)
+
+    check(como(1000, 1030, 1000) == cp.BLANCO, "reconoce el blanco del piso")
+    check(como(1650, 900, 450) == "naranja", "reconoce el naranja",
+          como(1650, 900, 450))
+    check(como(600, 960, 1440) == "azul", "reconoce el azul", como(600, 960, 1440))
+
+    # el brillo NO debe cambiar la clasificacion: por eso se normaliza
+    check(como(330, 180, 90, 400) == "naranja",
+          "el mismo naranja con la mitad de luz sigue siendo naranja",
+          como(330, 180, 90, 400))
+
+    # --- desconocido no es blanco ----------------------------------------
+    check(como(10, 10, 10, 5) == cp.DESCONOCIDO,
+          "a oscuras devuelve DESCONOCIDO, no blanco")
+    check(como(1000, 1000, 1000, 65535) == cp.DESCONOCIDO,
+          "saturado devuelve DESCONOCIDO, no blanco")
+    check(como(1400, 400, 1400) == cp.DESCONOCIDO,
+          "un color que no es ninguno de los tres no se fuerza",
+          como(1400, 400, 1400))
+
+    # --- tolerancias que no se pisan --------------------------------------
+    ps = [cp.Perfil(**q) for q in cfg["perfiles"]]
+    solapan = []
+    for i, a in enumerate(ps):
+        for b in ps[i + 1:]:
+            if a.distancia(b.r, b.g, b.b) < a.tol + b.tol:
+                solapan.append((a.nombre, b.nombre))
+    check(not solapan, "los perfiles por defecto no se solapan entre si", solapan)
+
+    # --- el sentido por orden de lineas ----------------------------------
+    check(cp.sentido_desde_orden("naranja", "azul") == +1,
+          "naranja y luego azul: interno a la derecha (horario)")
+    check(cp.sentido_desde_orden("azul", "naranja") == -1,
+          "al reves: interno a la izquierda")
+    check(cp.sentido_desde_orden("azul", "azul") == 0,
+          "dos veces el mismo color no decide nada")
+    check(not robot_config.POR_DEFECTO["piso"]["usar_para_sentido"],
+          "y viene DESACTIVADO: el orden real no esta verificado en el tapete")
+
+
 # ===========================================================================
 # 5d. La cadena completa: imagen -> mascara -> escaneo -> decision
 # ===========================================================================
@@ -1089,7 +1165,8 @@ if __name__ == "__main__":
     print(f"OpenCV {cv2.__version__} · Python {sys.version.split()[0]}")
     for f in (test_protocolo_cruzado, test_lector_robusto, test_geometria,
               test_salto, test_navegacion, test_seguridad_y_vueltas,
-              test_desatasco, test_senales, test_pipeline_imagen, test_enlace,
+              test_desatasco, test_senales, test_piso,
+              test_pipeline_imagen, test_enlace,
               test_robot_y_web, test_config, test_vuelta_completa):
         try:
             f()
