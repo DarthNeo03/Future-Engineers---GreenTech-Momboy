@@ -54,7 +54,8 @@ class IMU:
         self.cfg = cfg or {}
         self.disponible = False
         self.motivo = "sin iniciar"
-        self.yaw = 0.0            # grados, acumulado (-180..180)
+        self.yaw = 0.0            # grados, acumulado (-180..180), + = a la derecha
+        self._signo = -1.0 if bool((cfg or {}).get("invertir_yaw", False)) else 1.0
         self.pitch = 0.0
         self.roll = 0.0
         self.temp = 0.0
@@ -223,7 +224,14 @@ class IMU:
                 gz -= self._sesgo[2]
                 # Yaw: solo integracion. El acelerometro no puede corregirlo
                 # (la gravedad no dice nada del rumbo); por eso importa el sesgo.
-                self.yaw = (self.yaw + gz * dt + 180.0) % 360.0 - 180.0
+                # SIGNO: el navegador espera convenio de BRUJULA, es decir que
+                # el yaw AUMENTE al girar a la derecha. El MPU6050 da gz con el
+                # signo que le toque segun como este montado en el chasis (boca
+                # arriba o boca abajo, y con que eje hacia adelante). Si al
+                # girar el carro a la derecha el yaw baja en vez de subir, se
+                # pone `invertir_yaw: true` en robot.json y ya esta: no hay que
+                # tocar ni el navegador ni el cableado.
+                self.yaw = (self.yaw + self._signo * gz * dt + 180.0) % 360.0 - 180.0
                 # Pitch y roll si se mezclan con el acelerometro (filtro
                 # complementario): utiles para detectar que el carro se subio
                 # a algo o volco.

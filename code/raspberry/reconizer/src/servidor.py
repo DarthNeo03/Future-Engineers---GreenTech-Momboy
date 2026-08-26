@@ -51,6 +51,22 @@ PAGINA = """<!DOCTYPE html>
  .ok{color:#4ade80} .mal{color:#f87171} .avi{color:#fbbf24}
  .tabs{display:flex;gap:6px;margin-bottom:8px}
  .tabs button{padding:8px;font-size:.85em}
+ /* --- joystick --- */
+ #pad{position:relative;width:100%;max-width:300px;aspect-ratio:1/1;margin:6px auto 10px;
+      background:#0f1115;border:2px solid #2a2f3a;border-radius:16px;
+      touch-action:none;overflow:hidden;user-select:none}
+ #pad.act{border-color:#2b5cd9}
+ #pad .ejeh,#pad .ejev{position:absolute;background:#242935}
+ #pad .ejeh{left:6%;right:6%;top:50%;height:1px}
+ #pad .ejev{top:6%;bottom:6%;left:50%;width:1px}
+ #pad .zm{position:absolute;left:50%;top:50%;width:34%;height:34%;margin:-17% 0 0 -17%;
+          border:1px dashed #242935;border-radius:50%}
+ #nub{position:absolute;left:50%;top:50%;width:74px;height:74px;margin:-37px 0 0 -37px;
+      border-radius:50%;background:#2b5cd9;box-shadow:0 3px 14px #000a;
+      transition:background .12s}
+ #pad.act #nub{background:#1a7f37}
+ #pad .pista{position:absolute;left:0;right:0;bottom:4px;text-align:center;
+             color:#5b6270;font-size:.75em;pointer-events:none}
 </style></head><body>
 <h1>Carrito WRO &mdash; Futuros Ingenieros</h1>
 <img id="cam" src="/stream.mjpg" alt="camara">
@@ -61,9 +77,23 @@ PAGINA = """<!DOCTYPE html>
 </div>
 
 <div class="tabs">
+  <button onclick="cmd('reto','abierto')" id="rAbierto">OPEN CHALLENGE</button>
+  <button onclick="cmd('reto','obstaculos')" id="rObs" class="off">OBSTACULOS</button>
+</div>
+
+<div class="tabs">
   <button onclick="cmd('modo','auto')" id="mAuto">AUTO</button>
   <button onclick="cmd('modo','manual')" id="mManual" class="off">MANUAL</button>
   <button onclick="verMascara()" id="mMask" class="off">MASCARA</button>
+</div>
+
+<div class="caja">
+  <div class="et"><span>Carrera</span><span id="vCarrera">-</span></div>
+  <div class="fila">
+    <button onclick="cmd('reiniciar_carrera','1')" class="off">Reiniciar vueltas</button>
+    <button onclick="cmd('lado_interno','izq')" class="off">Int. izq</button>
+    <button onclick="cmd('lado_interno','der')" class="off">Int. der</button>
+  </div>
 </div>
 
 <div class="caja">
@@ -76,22 +106,44 @@ PAGINA = """<!DOCTYPE html>
 </div>
 
 <div class="caja">
-  <div class="et"><span>Estrategia</span><span id="vEst">-</span></div>
-  <div class="fila">
-    <button onclick="cmd('estrategia','centrado')">Centrado</button>
-    <button onclick="cmd('estrategia','pared')">Seguir pared</button>
-  </div>
-  <div class="et"><span>Kp</span><span id="vKp">-</span></div>
-  <input type="range" id="kp" min="0" max="300" oninput="lz('kp',this.value)">
-  <div class="et"><span>Kd</span><span id="vKd">-</span></div>
-  <input type="range" id="kd" min="0" max="200" oninput="lz('kd',this.value)">
-  <div class="et"><span>Umbral de giro</span><span id="vGb">-</span></div>
-  <input type="range" id="girar" min="0" max="100" oninput="lz('girar_bajo',this.value/100)">
+  <div class="et"><span>Distancia al muro INTERNO (mm)</span><span id="vPar">-</span></div>
+  <input type="range" id="pared" min="120" max="450" oninput="lz('pared_objetivo_mm',this.value)">
+  <div class="et"><span>Girar cuando la esquina interna este a (mm)</span><span id="vGz">-</span></div>
+  <input type="range" id="girz" min="150" max="700" oninput="lz('giro_z_mm',this.value)">
+  <div class="et"><span>Minimo permitido al muro EXTERNO (mm)</span><span id="vExt">-</span></div>
+  <input type="range" id="ext" min="80" max="400" oninput="lz('min_externo_mm',this.value)">
+</div>
+
+<div class="caja">
+  <div class="et"><span>Angulo de aproximacion max (grados)</span><span id="vKl">-</span></div>
+  <input type="range" id="kpl" min="5" max="45" oninput="lz('aprox_max_grados',this.value)">
+  <div class="et"><span>Grados de aproximacion por mm de error</span><span id="vKdl">-</span></div>
+  <input type="range" id="kdl" min="1" max="20" oninput="lz('aprox_grados_por_mm',this.value/100)">
+  <div class="et"><span>Kp de rumbo (%/grado)</span><span id="vKr">-</span></div>
+  <input type="range" id="kpr" min="0" max="60" oninput="lz('kp_rumbo',this.value/10)">
+  <div class="et"><span>Kp del giro (%/grado)</span><span id="vKg">-</span></div>
+  <input type="range" id="kpg" min="0" max="80" oninput="lz('giro_kp',this.value/10)">
+</div>
+
+<div class="caja" id="cajaObs" style="display:none">
+  <div class="et"><span>Margen de esquive de la señal (mm)</span><span id="vMar">-</span></div>
+  <input type="range" id="mar" min="100" max="350" value="190"
+         oninput="lz('senal_margen_mm',this.value);document.getElementById('vMar').textContent=this.value">
+  <div class="et"><span>ROJO: paso por su derecha &middot; VERDE: por su izquierda</span><span></span></div>
 </div>
 
 <div class="caja" id="cajaManual" style="display:none">
+  <div class="et"><span>Joystick</span><span id="vMan">0% / 0%</span></div>
+  <div id="pad">
+    <div class="ejeh"></div><div class="ejev"></div><div class="zm"></div>
+    <div id="nub"></div>
+    <div class="pista">arriba = avanzar &middot; suelta = para</div>
+  </div>
+  <div class="et"><span>Tope del joystick (% de vmax)</span><span id="vTope">60</span></div>
+  <input type="range" id="tope" min="10" max="100" value="60"
+         oninput="document.getElementById('vTope').textContent=this.value">
   <div class="et"><span>Manual: velocidad</span><span id="vMv">0</span></div>
-  <input type="range" id="mv" min="-60" max="60" value="0" oninput="man()"
+  <input type="range" id="mv" min="-100" max="100" value="0" oninput="man()"
          onchange="this.value=0;man()">
   <div class="et"><span>Manual: direccion</span><span id="vMd">0</span></div>
   <input type="range" id="md" min="-100" max="100" value="0" oninput="man()"
@@ -112,9 +164,78 @@ function man(){
   const v = +document.getElementById('mv').value, d = +document.getElementById('md').value;
   document.getElementById('vMv').textContent = v;
   document.getElementById('vMd').textContent = d;
+  document.getElementById('vMan').textContent = v+'% / '+d+'%';
   tocando = Date.now();
-  fetch('/api/cmd?manual='+v+','+d);
+  fetch('/api/cmd?manual='+v+','+d).catch(()=>{});
 }
+
+/* ---------------------------------------------------------------------
+   Joystick. Escribe en los mismos sliders mv/md y llama a man(), asi que
+   hay un solo camino hacia el robot y los sliders sirven de lectura.
+
+   Tres cosas que lo hacen seguro y no son adorno:
+     - pointer capture: si el dedo sale del recuadro el evento sigue
+       llegando, no se queda el stick "pegado" a fondo;
+     - al soltar (o si el navegador cancela el toque) se centra y se manda
+       0,0 SIN throttle, para que la orden de parar no se pierda;
+     - mientras esta pulsado se reenvia cada 150 ms aunque no te muevas,
+       porque el robot caduca el mando manual a los 400 ms y si no
+       llegasen refrescos se pararia solo mientras lo sujetas.
+   --------------------------------------------------------------------- */
+const pad = document.getElementById('pad'), nub = document.getElementById('nub');
+let jAct = false, jUlt = 0;
+const J_ZONA_MUERTA = 0.12;     // fraccion del radio que se ignora
+
+function jTope(){ return +document.getElementById('tope').value; }
+
+function jAplicar(x, y, forzar){
+  x = Math.max(-1, Math.min(1, x));
+  y = Math.max(-1, Math.min(1, y));
+  const r = Math.hypot(x, y);
+  let ex = 0, ey = 0;
+  if (r >= J_ZONA_MUERTA) {
+    // Reescala fuera de la zona muerta para que no haya salto al entrar, y
+    // acota el radio a 1: en las diagonales hypot vale 1.41 y sin esto el
+    // tope se pasaba (un tope de 60 daba 62 en las esquinas del pad).
+    const k = Math.min(1, (r - J_ZONA_MUERTA) / (1 - J_ZONA_MUERTA)) / r;
+    ex = x * k; ey = y * k;
+  }
+  nub.style.left = (50 + x * 34) + '%';
+  nub.style.top  = (50 - y * 34) + '%';
+  const tope = jTope();
+  document.getElementById('md').value = Math.max(-100, Math.min(100, Math.round(ex * 100)));
+  document.getElementById('mv').value = Math.max(-tope, Math.min(tope, Math.round(ey * tope)));
+  const ahora = Date.now();
+  if (forzar || ahora - jUlt >= 60) { jUlt = ahora; man(); }
+}
+
+function jDesde(ev){
+  const c = pad.getBoundingClientRect();
+  jAplicar(((ev.clientX - c.left) / c.width) * 2 - 1,
+           -((((ev.clientY - c.top) / c.height) * 2) - 1), false);
+}
+
+function jSoltar(){
+  if (!jAct) return;
+  jAct = false;
+  pad.classList.remove('act');
+  jAplicar(0, 0, true);          // parar es prioritario: sin throttle
+}
+
+pad.addEventListener('pointerdown', ev => {
+  ev.preventDefault();
+  jAct = true;
+  pad.classList.add('act');
+  try { pad.setPointerCapture(ev.pointerId); } catch(e) {}
+  jDesde(ev);
+});
+pad.addEventListener('pointermove', ev => { if (jAct) { ev.preventDefault(); jDesde(ev); } });
+['pointerup','pointercancel'].forEach(t => pad.addEventListener(t, jSoltar));
+window.addEventListener('blur', jSoltar);
+document.addEventListener('visibilitychange', () => { if (document.hidden) jSoltar(); });
+
+// Latido: refresca el mando mientras se sujeta el stick.
+setInterval(() => { if (jAct) man(); }, 150);
 function verMascara(){
   const img = document.getElementById('cam');
   img.src = img.src.indexOf('mascara')>0 ? '/stream.mjpg' : '/mascara.mjpg';
@@ -130,21 +251,38 @@ function estado(){
     document.getElementById('mManual').className = s.modo=='manual' ? '' : 'off';
     document.getElementById('cajaManual').style.display = s.modo=='manual' ? '' : 'none';
 
+    const obs = s.reto=='obstaculos';
+    document.getElementById('rAbierto').className = obs ? 'off' : '';
+    document.getElementById('rObs').className     = obs ? '' : 'off';
+    document.getElementById('cajaObs').style.display = obs ? '' : 'none';
+
+    const n = s.navegacion, c = s.carrera;
+    const lado = c.lado_interno==0 ? 'buscando' : (c.lado_interno<0?'izquierda':'derecha');
+    document.getElementById('vCarrera').textContent =
+      'vuelta '+c.vueltas+'/3 · '+c.giros+' giros · int '+lado+' · yaw '+c.yaw_acum+'°';
+
     if (Date.now() - tocando > 1500) {
       document.getElementById('vmax').value    = s.limites.vmax;
       document.getElementById('crucero').value = s.limites.vel_crucero;
       document.getElementById('giro').value    = s.limites.vel_giro;
-      document.getElementById('kp').value      = s.navegacion.kp;
-      document.getElementById('kd').value      = s.navegacion.kd;
-      document.getElementById('girar').value   = Math.round(s.navegacion.girar_bajo*100);
+      document.getElementById('pared').value   = n.pared_objetivo_mm;
+      document.getElementById('girz').value    = n.giro_z_mm;
+      document.getElementById('ext').value     = n.min_externo_mm;
+      document.getElementById('kpl').value     = Math.round(n.aprox_max_grados);
+      document.getElementById('kdl').value     = Math.round(n.aprox_grados_por_mm*100);
+      document.getElementById('kpr').value     = Math.round(n.kp_rumbo*10);
+      document.getElementById('kpg').value     = Math.round(n.giro_kp*10);
     }
     document.getElementById('vVmax').textContent = s.limites.vmax;
     document.getElementById('vCru').textContent  = s.limites.vel_crucero+'%';
     document.getElementById('vGir').textContent  = s.limites.vel_giro+'%';
-    document.getElementById('vKp').textContent   = s.navegacion.kp;
-    document.getElementById('vKd').textContent   = s.navegacion.kd;
-    document.getElementById('vGb').textContent   = s.navegacion.girar_bajo.toFixed(2);
-    document.getElementById('vEst').textContent  = s.navegacion.estrategia;
+    document.getElementById('vPar').textContent  = n.pared_objetivo_mm+' mm';
+    document.getElementById('vGz').textContent   = n.giro_z_mm+' mm';
+    document.getElementById('vExt').textContent  = n.min_externo_mm+' mm';
+    document.getElementById('vKl').textContent   = n.aprox_max_grados.toFixed(0)+'°';
+    document.getElementById('vKdl').textContent  = n.aprox_grados_por_mm.toFixed(2);
+    document.getElementById('vKr').textContent   = n.kp_rumbo.toFixed(1);
+    document.getElementById('vKg').textContent   = n.giro_kp.toFixed(1);
 
     const t = document.getElementById('tel'); t.innerHTML='';
     const e = s.enlace, m = s.decision.metricas;
@@ -157,9 +295,19 @@ function estado(){
     }
     fila(t,'Estado', s.decision.estado+' &mdash; '+s.decision.motivo);
     fila(t,'vel / dir', s.decision.vel+'%  /  '+s.decision.dir+'%');
-    fila(t,'Libre izq/pas/der',
-         (m.izq!==undefined?m.izq:'-')+'  '+(m.pasillo!==undefined?m.pasillo:'-')+
-         '  '+(m.der!==undefined?m.der:'-'));
+    const mm = v => (v===undefined||v<0) ? '-' : Math.round(v)+' mm';
+    fila(t,'Izq / frente / der', mm(m.izq_mm)+'  '+mm(m.frente_mm)+'  '+mm(m.der_mm));
+    fila(t,'Esquina interna',
+         m.esquina_z===undefined ? 'no visible'
+           : (Math.round(m.esquina_z)+' mm  ('+(m.esquina_lado<0?'izq':'der')+')'),
+         m.esquina_z===undefined ? 'avi' : 'ok');
+    fila(t,'Cobertura del muro', (m.cobertura!==undefined? m.cobertura : '-'),
+         (m.cobertura!==undefined && m.cobertura < 0.25) ? 'mal' : 'ok');
+    fila(t,'Suelo', s.suelo.calibrado ? 'homografia medida' : 'SIN CALIBRAR (aproximado)',
+         s.suelo.calibrado ? 'ok' : 'avi');
+    if (s.senal) fila(t,'Señal activa',
+         s.senal.color+' a '+s.senal.z+' mm, paso por '+s.senal.lado,
+         s.senal.color=='rojo'?'mal':'ok');
     fila(t,'Giroscopio', s.imu.disponible ? ('yaw '+s.imu.yaw+'&deg;  '+s.imu.hz+' Hz')
                                           : s.imu.motivo, s.imu.disponible?'ok':'avi');
     fila(t,'FPS vision', s.fps);
@@ -223,8 +371,9 @@ class _Handler(BaseHTTPRequestHandler):
                 self.wfile.write(datos)
                 self.wfile.write(b"\r\n")
                 time.sleep(periodo)
-        except (BrokenPipeError, ConnectionResetError):
-            pass          # el movil cerro la pestaña; normal
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass          # el movil cerro la pestaña; normal (en Windows llega
+                          # como ConnectionAborted en vez de BrokenPipe)
 
     # -- rutas ------------------------------------------------------------
     def do_GET(self):
@@ -276,19 +425,34 @@ class Servidor:
                 elif k in ("vmax", "vel_crucero", "vel_giro", "dir_max"):
                     lim[k] = int(float(v))
                     r.aplicar_config()
-                elif k == "estrategia":
-                    nav_cfg["estrategia"] = "pared" if v.startswith("par") else "centrado"
+                elif k == "reto":
+                    r.fijar_reto("obstaculos" if v.startswith("obs") else "abierto")
+                elif k == "reiniciar_carrera":
                     r.navegador.reiniciar()
-                elif k == "lado_pared":
-                    nav_cfg["lado_pared"] = "izq" if v.startswith("i") else "der"
-                elif k in ("kp", "kd", "kp_pared", "kd_pared", "pared_objetivo",
-                           "girar_bajo", "frenar_bajo", "parar_bajo",
-                           "salir_giro_sobre", "dir_giro", "yaw_kp",
-                           "ruedas_izq", "ruedas_der", "banda_lateral",
-                           "ignorar_abajo"):
+                elif k == "lado_interno":
+                    # Escape manual por si el sensor de color o la primera
+                    # esquina fallan durante las pruebas. En competencia el
+                    # sentido tiene que deducirse solo (regla 9.9).
+                    r.navegador.lado_interno = 0
+                    r.navegador.fijar_lado_interno(-1 if v.startswith("i") else 1)
+                elif k in ("pared_objetivo_mm", "aprox_grados_por_mm",
+                           "aprox_max_grados", "kd_rumbo",
+                           "kp_rumbo", "kp_centrado", "min_externo_mm",
+                           "kp_externo", "giro_z_mm", "giro_frente_mm",
+                           "giro_grados", "giro_kp", "giro_tolerancia",
+                           "dir_giro", "yaw_kp", "yaw_max", "frenar_mm",
+                           "parar_mm", "salir_bloqueo_mm", "cobertura_min",
+                           "salto_min_mm", "semiancho_carro_mm",
+                           "mm_por_seg_a_100", "parada_tras_giro_mm",
+                           "ignorar_abajo", "ruedas_izq", "ruedas_der"):
                     nav_cfg[k] = float(v)
-                elif k in ("px_min_columna", "suavizado", "giro_max_ms", "min_recto_ms"):
+                elif k in ("alto_min_muro_px", "suavizado_mm", "giro_max_ms",
+                           "min_recto_ms", "salto_corrida",
+                           "frames_para_fijar_lado"):
                     nav_cfg[k] = int(float(v))
+                elif k in ("senal_margen_mm", "senal_z_max_mm", "senal_z_soltar_mm",
+                           "senal_desvio_max_mm", "senal_aspecto_min"):
+                    r.cfg["obstaculos"][k] = float(v)
                 elif k == "usar_yaw":
                     nav_cfg["usar_yaw"] = v not in ("0", "false")
                 elif k == "calibrar_imu":

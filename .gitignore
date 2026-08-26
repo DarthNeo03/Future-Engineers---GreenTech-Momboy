@@ -7,3 +7,5 @@ __pycache__/
 .venv/
 venv/
 ENV/
+# Generado al arrancar (puerto, ganancias, limites)
+code/raspberry/reconizer/config/robot.json

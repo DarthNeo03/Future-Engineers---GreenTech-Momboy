@@ -4,7 +4,9 @@
 #   Raspbian:  sudo apt install python3-tk      <-- tkinter NO viene por pip
 #              source .venv/bin/activate && pip install -r requirements.txt
 #
-opencv-python>=4.8
+opencv-python>=4.8   # NO uses opencv-python-headless: se queda sin
+                     # ventanas (calibrador, panel, simulador --ver)
+                     # y sin codecs de video
 numpy>=1.24
 pillow>=10.0        # opcional: mete el video dentro de la ventana del calibrador
 pyserial>=3.5       # enlace con el ESP32
