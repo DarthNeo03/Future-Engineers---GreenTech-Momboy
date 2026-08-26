@@ -18,6 +18,7 @@ reconizer/
 │   ├── protocolo.py      trama binaria hacia el ESP32
 │   ├── enlace.py         hilo serie con autodetección de puerto
 │   ├── imu.py            MPU6050 opcional por I2C
+│   ├── color_piso.py     TCS34725: cruces de línea naranja y azul
 │   ├── navegacion.py     seguir el muro interno y girar 90° exactos
 │   ├── obstaculos.py     señales rojas y verdes del reto de obstáculos
 │   ├── robot.py          el núcleo que lo une todo
@@ -25,6 +26,7 @@ reconizer/
 │   └── servidor.py       carrito.local: vídeo + control desde el móvil
 ├── tools/
 │   ├── simulador.py      da vueltas a la pista entera, sin carro
+│   ├── calibrar_piso.py  colores del suelo vistos por el TCS34725
 │   ├── calibrar_suelo.py homografía al suelo: se hace UNA vez
 │   ├── calibrador.py     interfaz de calibración HSV
 │   ├── panel.py          panel de pruebas de escritorio
@@ -306,6 +308,65 @@ tapete delante, no para competir.
 | `giro_kp` | Salida del giro. Bajarlo suaviza, subirlo cierra antes |
 | `parar_mm` / `frenar_mm` | Dónde se planta y dónde frena. `parar_mm` **por encima** del mínimo medible |
 | `alto_min_muro_px` | Racha vertical mínima para creerse que hay muro. Súbelo si las sombras dan falsos positivos |
+
+## El sensor de color del piso (TCS34725)
+
+Va al **mismo bus I2C que el MPU6050**: `0x29` y `0x68` no chocan.
+
+```
+VIN -> pin 17 (3V3)     SDA -> pin 3 (GPIO2)
+GND -> pin 9  (GND)     SCL -> pin 5 (GPIO3)
+```
+
+La dirección `0x29` es fija y no se puede cambiar: solo cabe uno por bus. Para
+dos harían falta un multiplexor TCA9548A. Comprueba con `i2cdetect -y 1`: deben
+salir `29` y `68`.
+
+**Móntalo a 5-15 mm del suelo, con falda** que tape la luz lateral. Más alto, el
+LED ilumina demasiada área y el contraste de la línea se diluye.
+
+### El tiempo de integración es lo que decide si funciona
+
+Es el error que hace que a la mayoría "no le funcione" el sensor de color, y no
+es evidente. A 0,4 m/s una línea de 20 mm pasa bajo el sensor en **50 ms**:
+
+| Integración | Muestras dentro de la línea | |
+|---|---|---|
+| 700 ms (por defecto de muchas librerías) | 0,08 | invisible |
+| 154 ms | 0,33 | se diluye con el blanco |
+| **24 ms** (el del proyecto) | **2,08** | sirve |
+| 2,4 ms | 20,8 | de sobra |
+
+### Calibrar
+
+```bash
+python3 tools/calibrar_piso.py
+```
+
+Colocas el sensor sobre cada color y pulsas `b` (blanco), `n` (naranja), `a`
+(azul). Toma 40 muestras y se queda la mediana. Al guardar avisa si dos colores
+se solapan.
+
+Se calibra en **cromaticidad** —cada canal dividido por el CLEAR—, así que lo
+medido aguanta cambios de brillo y que el LED envejezca. Lo que no aguanta es
+que cambies la altura: si lo remontas, vuelve a calibrar.
+
+Hazlo **sobre el tapete de competencia**, no sobre una impresión casera: el
+naranja CMYK(0,60,100,0) de la lona oficial y el de una impresora doméstica no
+se parecen tanto como crees, y el sensor sí nota la diferencia.
+
+### Qué hace con los cruces
+
+Cuenta líneas y las publica en el panel web. Es **contraste**, no fuente
+principal: las vueltas siguen contándose por esquinas y por yaw acumulado, que
+están validadas.
+
+Hay además un atajo para deducir el sentido del **orden** de las dos primeras
+líneas, que llegaría antes que la primera esquina. Viene **desactivado**
+(`usar_para_sentido: false`) porque el reglamento 2026 especifica que las líneas
+existen, su grosor y su color, pero **no dónde están ni en qué orden** — eso solo
+aparece en el plano del campo. Cuenta las líneas sobre tu tapete, ajusta
+`lineas_por_vuelta` y `orden_horario`, y entonces actívalo.
 
 ## El giroscopio (opcional de verdad)
 

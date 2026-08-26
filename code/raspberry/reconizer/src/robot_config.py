@@ -201,6 +201,38 @@ POR_DEFECTO: Dict[str, Any] = {
         "invertir_yaw": False,
     },
 
+    # ---- TCS34725 mirando al suelo: cruces de linea naranja y azul ----
+    "piso": {
+        "activo": True,          # si no aparece el chip, se sigue sin el
+        "bus": 1,                # el mismo del MPU6050: 0x29 y 0x68 no chocan
+        # EL PARAMETRO QUE DECIDE TODO. A 0,4 m/s una linea de 20 mm pasa por
+        # debajo del sensor en 50 ms: con los 154 o 700 ms que traen por
+        # defecto muchas librerias, la linea se promedia con el piso blanco y
+        # no se ve NUNCA. Con 24 ms caben dos muestras dentro de la linea.
+        "integracion_ms": 24.0,
+        "ganancia": 4,           # 1, 4, 16 o 60
+        "clear_min": 60,         # por debajo, a oscuras: no se decide
+        "clear_max": 65000,      # saturado: la medida no vale
+        "muestras_min": 2,       # muestras seguidas para creerse una linea
+        "separacion_min_s": 0.35,  # antirrebote entre dos cruces
+        # Medidos con tools/calibrar_piso.py SOBRE EL TAPETE DE COMPETENCIA.
+        # Los de aqui son un punto de partida, no una calibracion.
+        "perfiles": [
+            {"nombre": "blanco", "r": 0.33, "g": 0.34, "b": 0.33, "tol": 0.05},
+            {"nombre": "naranja", "r": 0.55, "g": 0.30, "b": 0.15, "tol": 0.09},
+            {"nombre": "azul", "r": 0.20, "g": 0.32, "b": 0.48, "tol": 0.09},
+        ],
+        # Cuantas lineas se cruzan por vuelta. SIN VERIFICAR: el reglamento
+        # 2026 dice que las lineas existen, su grosor y su color, pero no
+        # donde estan. Cuentalas sobre el tapete antes de fiarte.
+        "lineas_por_vuelta": 4,
+        # Deducir el sentido del ORDEN de las dos primeras lineas. Desactivado
+        # a proposito hasta confirmar el orden real: el sentido se deduce de la
+        # primera esquina, que es geometrico y no depende de ningun plano.
+        "usar_para_sentido": False,
+        "orden_horario": ["naranja", "azul"],
+    },
+
     "red": {
         "puerto_http": 8080,
         "calidad_jpeg": 70,

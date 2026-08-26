@@ -23,7 +23,8 @@ from typing import Any, Callable, Dict, List, Optional
 import cv2
 import numpy as np
 
-from . import camera, color_config as cc, enlace as enl, imu as imu_mod
+from . import camera, color_config as cc, color_piso as cp, enlace as enl
+from . import imu as imu_mod
 from . import geometria as geo
 from . import navegacion as nav
 from . import obstaculos as obs
@@ -44,6 +45,8 @@ class Robot:
         self.senales = obs.DetectorSenales(cfg["obstaculos"])
         self.enlace = enl.Enlace(cfg["enlace"], simulado=simulado, al_log=self.log)
         self.imu = imu_mod.IMU(cfg["imu"])
+        self.piso = cp.SensorPiso(cfg.get("piso", {}))
+        self.lineas: List[str] = []          # colores cruzados, en orden
 
         # "abierto" = Open Challenge, "obstaculos" = Obstacle Challenge.
         # Los dos comparten la MISMA logica de muros y de giro; el modo de
@@ -128,6 +131,12 @@ class Robot:
         self.enlace.fijar_vmax(int(self.cfg["limites"]["vmax"]))
         self.enlace.iniciar()
 
+        if self.piso.iniciar():
+            self.log(f"[piso] {self.piso.motivo}")
+        else:
+            self.log(f"[piso] sin sensor de color: {self.piso.motivo} "
+                     f"(se sigue solo con camara)")
+
         if self.imu.iniciar():
             self.log(f"[imu] {self.imu.motivo}; calibrando, NO MUEVAS EL CARRO")
             threading.Thread(target=self._calibrar_imu, daemon=True).start()
@@ -155,6 +164,7 @@ class Robot:
             pass
         self.enlace.cerrar()
         self.imu.parar()
+        self.piso.parar()
         if self._cap is not None:
             self._cap.release()
 
@@ -165,6 +175,8 @@ class Robot:
             self.enlace.rearmar()
             self.navegador.reiniciar()
             self.senales.activa = None
+            self.piso.tomar_cruces()            # tirar los cruces de antes
+            self.lineas = []
             if self.imu.disponible:
                 self.navegador.rumbo_objetivo = self.imu.yaw
                 self.navegador.yaw_prev = self.imu.yaw
@@ -188,6 +200,34 @@ class Robot:
             self._t_manual = 0.0
             self.navegador.reiniciar()
             self.log(f"[robot] modo {modo}")
+
+    def _sentido_por_lineas(self) -> None:
+        """Deducir el sentido del orden de las dos primeras lineas.
+
+        Es la fuente MAS TEMPRANA que hay: llega antes de la primera esquina.
+        Pero depende de un dato que no esta en el reglamento -donde estan las
+        lineas y en que orden- asi que viene desactivada de fabrica. Mientras
+        no se confirme sobre el tapete, el sentido se deduce de la geometria
+        de la primera esquina, que no depende de ningun plano.
+        """
+        cfg = self.cfg.get("piso", {})
+        if not bool(cfg.get("usar_para_sentido", False)):
+            return
+        if self.navegador.lado_interno != 0 or len(self.lineas) < 2:
+            return
+        lado = cp.sentido_desde_orden(
+            self.lineas[0], self.lineas[1],
+            tuple(cfg.get("orden_horario", ("naranja", "azul"))))
+        if lado:
+            self.navegador.fijar_lado_interno(lado)
+            self.log(f"[piso] sentido por el orden de las lineas: "
+                     f"interno {'der' if lado > 0 else 'izq'}")
+
+    @property
+    def vueltas_por_lineas(self) -> float:
+        """Vueltas segun las lineas cruzadas. Contraste, no fuente principal."""
+        n = int(self.cfg.get("piso", {}).get("lineas_por_vuelta", 4)) or 4
+        return len(self.lineas) / float(n)
 
     def fijar_reto(self, reto: str) -> None:
         """Cambia entre Open Challenge y Obstacle Challenge.
@@ -266,6 +306,15 @@ class Robot:
 
             escaneo = geo.escanear(mascara, self.suelo, cfg_nav)
             yaw = self.imu.yaw if self.imu.disponible else None
+
+            # --- lineas del piso ------------------------------------------
+            # Se CONSUMEN, no se consultan: un cruce ocurre una sola vez y si
+            # el lazo se salta un frame no puede perderse.
+            for cruce in self.piso.tomar_cruces():
+                self.lineas.append(cruce.color)
+                self.log(f"[piso] linea {cruce.color} "
+                         f"({cruce.muestras} muestras, {cruce.duracion_s*1000:.0f} ms)")
+                self._sentido_por_lineas()
 
             # --- señales de trafico (solo en el reto de obstaculos) --------
             objetivo_lateral = None
@@ -394,6 +443,10 @@ class Robot:
             "navegacion": self.cfg["navegacion"],
             "enlace": self.enlace.estado(),
             "imu": self.imu.estado(),
+            "piso": dict(self.piso.estado(),
+                         lineas=len(self.lineas),
+                         ultimas=self.lineas[-4:],
+                         vueltas=round(self.vueltas_por_lineas, 2)),
             "camara_error": self.error_camara,
             "perfil_color": self.perfil_color.get("nombre", ""),
         }
