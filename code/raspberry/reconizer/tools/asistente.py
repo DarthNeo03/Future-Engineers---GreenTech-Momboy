@@ -161,11 +161,50 @@ def _desenrollar(muestras: List[Tuple[float, float]]) -> float:
 
 
 # ===========================================================================
-def paso1_hardware(cfg: Dict[str, Any]) -> Dict[str, bool]:
-    titulo(1, "Comprobaciones de hardware (no mueve nada)")
-    est = {}
+def _sensores_por_esp32(cfg: Dict[str, Any], est: Dict[str, bool]) -> None:
+    """Pregunta por los sensores AL ESP32, que es donde cuelgan ahora.
 
-    # --- I2C -------------------------------------------------------------
+    Escanear el I2C de la Raspberry aqui no sirve de nada: desde que los dos
+    sensores se movieron al ESP32, ese bus esta vacio A PROPOSITO. Preguntar
+    en el sitio equivocado daba un "no se ve el MPU6050" que asustaba y que
+    era mentira.
+    """
+    e = enl.Enlace(cfg["enlace"], al_log=lambda t: None)
+    e.iniciar()
+    print("  preguntando al ESP32...")
+    time.sleep(2.5)
+    try:
+        if not e.conectado:
+            mal(f"sin ESP32: {e.motivo}")
+            print("       Los sensores cuelgan de el, asi que sin enlace no se")
+            print("       puede saber si responden. Revisa el cruce TX/RX.")
+            est["imu"] = est["piso"] = False
+            return
+        ok(f"ESP32: {e.motivo}")
+        t = e.telemetria
+        if t.version < 3:
+            avi(f"firmware version {t.version}: es anterior a los sensores en el "
+                f"ESP32.\n       Sube firmware/esp32_carro/esp32_carro.ino "
+                f"(los cuatro archivos juntos)")
+            est["imu"] = est["piso"] = False
+            return
+        est["imu"] = bool(t.imu_ok)
+        est["piso"] = bool(t.piso_ok)
+        if t.imu_ok:
+            ok(f"MPU6050 en el ESP32   (yaw {t.yaw:+.1f} grados"
+               f"{', calibrando' if t.imu_calibrando else ''})")
+        else:
+            avi("el ESP32 NO ve el MPU6050. Revisa SDA=GPIO21, SCL=GPIO22 y 3V3")
+        if t.piso_ok:
+            ok(f"TCS34725 en el ESP32  ({t.lineas} lineas cruzadas)")
+        else:
+            avi("el ESP32 NO ve el TCS34725. Mismo bus, misma comprobacion")
+    finally:
+        e.cerrar()
+
+
+def _sensores_por_i2c(cfg: Dict[str, Any], est: Dict[str, bool]) -> None:
+    """Montaje anterior: los sensores en el I2C de la Raspberry."""
     try:
         from smbus2 import SMBus
         with SMBus(int(cfg["imu"]["bus"])) as bus:
@@ -176,21 +215,32 @@ def paso1_hardware(cfg: Dict[str, Any]) -> Dict[str, bool]:
                     vistos.append(dirn)
                 except Exception:
                     pass
-        if any(d in vistos for d in (0x68, 0x69)):
-            ok(f"MPU6050 en 0x{[d for d in vistos if d in (0x68,0x69)][0]:02X}")
-            est["imu"] = True
+        est["imu"] = any(d in vistos for d in (0x68, 0x69))
+        est["piso"] = 0x29 in vistos
+        if est["imu"]:
+            ok(f"MPU6050 en 0x{[d for d in vistos if d in (0x68, 0x69)][0]:02X} "
+               f"(I2C de la Pi)")
         else:
-            avi("no se ve el MPU6050 (0x68/0x69). Se puede correr sin el")
-            est["imu"] = False
-        if 0x29 in vistos:
-            ok("TCS34725 en 0x29")
-            est["piso"] = True
+            avi("no se ve el MPU6050 (0x68/0x69) en el I2C de la Pi")
+        if est["piso"]:
+            ok("TCS34725 en 0x29 (I2C de la Pi)")
         else:
-            avi("no se ve el TCS34725 (0x29). Se puede correr sin el")
-            est["piso"] = False
+            avi("no se ve el TCS34725 (0x29) en el I2C de la Pi")
     except Exception as e:
         avi(f"sin I2C ({e}). En Windows es normal")
         est["imu"] = est["piso"] = False
+
+
+def paso1_hardware(cfg: Dict[str, Any]) -> Dict[str, bool]:
+    titulo(1, "Comprobaciones de hardware (no mueve nada)")
+    est: Dict[str, bool] = {}
+
+    # --- sensores, donde toque segun la configuracion --------------------
+    fuente = str(cfg["imu"].get("fuente", "esp32"))
+    if fuente == "esp32":
+        _sensores_por_esp32(cfg, est)
+    else:
+        _sensores_por_i2c(cfg, est)
 
     # --- camara ----------------------------------------------------------
     c = cfg["camara"]
@@ -221,13 +271,16 @@ def paso1_hardware(cfg: Dict[str, Any]) -> Dict[str, bool]:
     ok(f"perfil de color activo: '{perfil.get('nombre','?')}'")
 
     piso_cfg = cfg.get("piso", {})
-    if any(p["nombre"] == "naranja" for p in piso_cfg.get("perfiles", [])):
-        nar = [p for p in piso_cfg["perfiles"] if p["nombre"] == "naranja"][0]
-        if abs(nar["r"] - 0.55) < 1e-9:
-            avi("el sensor de piso tiene los perfiles DE FABRICA: "
-                "calibra con tools/calibrar_piso.py")
-        else:
-            ok("sensor de piso con perfiles medidos")
+    nar = [q for q in piso_cfg.get("perfiles", []) if q["nombre"] == "naranja"]
+    if nar and abs(nar[0]["r"] - 0.55) < 1e-9:
+        avi("el sensor de piso tiene los perfiles DE FABRICA: calibra con "
+            "tools/calibrar_piso.py")
+        if str(piso_cfg.get("fuente", "esp32")) == "esp32":
+            print("       y acuerdate de copiarlos luego al array perfiles[] "
+                  "del .ino:\n       con el sensor en el ESP32, quien clasifica "
+                  "es el firmware")
+    elif nar:
+        ok("sensor de piso con perfiles medidos")
     return est
 
 
