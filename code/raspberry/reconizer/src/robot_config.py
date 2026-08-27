@@ -143,10 +143,18 @@ POR_DEFECTO: Dict[str, Any] = {
         "giro_min_ms": 700,      # solo para el cierre sin giroscopio
         "giro_paralelo_grados": 12.0,
         "dir_giro": 85.0,        # direccion fija si no hay giroscopio
+        # Guardia durante el giro: si la esquina interna se acerca mas que
+        # esto (holgura de CARROCERIA, no del centro) se afloja el volante y
+        # el arco se abre. Es la red que evita que un `radio_giro_mm` mal
+        # medido acabe en un golpe. Ver navegacion._abrir_si_roza.
+        "giro_min_interno_mm": 130.0,
+        "giro_mira_z_mm": 500.0,
+        "giro_abrir_min": 0.35,  # nunca se afloja mas: hay que seguir girando
         "min_recto_ms": 500,     # espera minima entre dos esquinas seguidas
 
         # --- velocidad y seguridad ---
         "semiancho_carro_mm": 110.0,
+        "semi_largo_carro_mm": 150.0,
         "frenar_mm": 650.0,
         # OJO: `parar_mm` tiene que estar POR ENCIMA de la distancia minima
         # medible (unos 200 mm con ignorar_abajo=0.06 y la camara a 200 mm).
