@@ -559,6 +559,20 @@ def buscar_salto(e: Escaneo, cfg: Dict[str, Any]) -> Optional[Salto]:
     """
     umbral = float(cfg.get("salto_min_mm", 260.0))
     corrida = int(cfg.get("salto_corrida", 6))
+    # ------------------------------------------------------------------
+    # EL BORDE DE LA IMAGEN NO ES UNA ESQUINA.
+    #
+    # Donde el perfil se sale del encuadre, el rango tambien "salta": pasa de
+    # la pared que se veia a nada, o a algo mucho mas lejano que asoma por el
+    # lateral. Es indistinguible de una esquina convexa mirando solo el rango,
+    # y como el borde SIEMPRE esta ahi, esa falsa esquina se vuelve a medir en
+    # cada frame y se queda clavada a una distancia fija.
+    #
+    # Se vio en pista: la esquina marcada a 1196 mm no se movia ni un
+    # milimetro despues de nueve segundos y un giro entero. No se estaba
+    # siguiendo nada; se estaba re-midiendo el borde del encuadre.
+    # ------------------------------------------------------------------
+    borde = int(cfg.get("salto_borde_px", 25))
 
     v = e.valido
     if v.sum() < corrida * 2 + 2:
@@ -581,6 +595,8 @@ def buscar_salto(e: Escaneo, cfg: Dict[str, Any]) -> Optional[Salto]:
             cerca, lado_col = b, slice(b, min(e.ancho, b + corrida + 1))
         if int(v[lado_col].sum()) < corrida:
             continue
+        if cerca < borde or cerca >= e.ancho - borde:
+            continue                       # pegado al borde: no es una esquina
         if not np.isfinite(e.x[cerca]) or not np.isfinite(e.z[cerca]):
             continue
         # Escaneando de izquierda a derecha, un salto POSITIVO significa que

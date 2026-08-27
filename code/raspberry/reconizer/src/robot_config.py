@@ -84,6 +84,17 @@ POR_DEFECTO: Dict[str, Any] = {
         "salto_corrida": 6,      # columnas validas pegadas exigidas al lado
                                  # cercano del salto (mata los saltos de ruido)
         "salto_z_max_mm": 1600.0,
+        # Columnas de los bordes donde NO se admite una esquina: ahi el perfil
+        # se sale del encuadre y el rango salta igual que en una esquina de
+        # verdad. Es una falsa esquina que ademas reaparece en cada frame.
+        "salto_borde_px": 25,
+        # La esquina interna es el borde del muro interno: su posicion lateral
+        # tiene que parecerse a la distancia medida a ese muro.
+        "esquina_tol_lateral_mm": 260.0,
+        # Cuanto puede saltar una medida nueva respecto a la prediccion antes
+        # de considerarla otra cosa y no la esquina que se venia siguiendo.
+        "esquina_gate_mm": 400.0,
+        "esquina_rechazos_max": 20,
         "frames_para_fijar_lado": 4,
         # La esquina se ve al principio de la recta y desaparece del encuadre
         # justo cuando te acercas. Se sigue por estima con yaw + velocidad.

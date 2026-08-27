@@ -426,6 +426,76 @@ def test_salto():
           None if s is None else s.lado)
 
 
+
+def test_esquina_falsa():
+    """Las dos trampas que congelaban la esquina en pista.
+
+    En el carro de verdad la esquina se quedo marcada a 1196 mm y no se movio
+    ni un milimetro despues de nueve segundos y un giro entero. No se estaba
+    siguiendo nada: se estaba re-midiendo el BORDE DEL ENCUADRE, que salta
+    igual que una esquina y ademas reaparece en cada frame.
+    """
+    print("\n[4b] Esquinas falsas: borde del encuadre y saltos incoherentes")
+    cfg = dict(robot_config.POR_DEFECTO["navegacion"])
+
+    # --- una discontinuidad pegada al borde no es una esquina -------------
+    ancho = 640
+    x = np.full(ancho, np.nan)
+    z = np.full(ancho, np.nan)
+    v = np.zeros(ancho, bool)
+    # pared cercana en las primeras columnas y nada mas: el "salto" queda en
+    # el borde izquierdo del encuadre.
+    for i in range(0, 40):
+        x[i], z[i], v[i] = -400.0, 500.0, True
+    for i in range(40, ancho):
+        x[i], z[i], v[i] = -100.0 + i, 1800.0, True
+    e = geo.Escaneo(x=x, z=z, valido=v, y_contacto=np.zeros(ancho, np.int32),
+                    ancho=ancho, alto=480)
+    s_borde = geo.buscar_salto(e, dict(cfg, salto_borde_px=60))
+    check(s_borde is None,
+          "un salto pegado al borde del encuadre NO cuenta como esquina")
+    s_sin = geo.buscar_salto(e, dict(cfg, salto_borde_px=0))
+    check(s_sin is not None,
+          "  (sin el margen si lo cogeria: por eso hacia falta el margen)")
+
+    # --- la puerta de seguimiento -----------------------------------------
+    n = _nav()
+    n.fijar_lado_interno(-1)
+    n.esq_x, n.esq_z, n.esq_edad_s = -250.0, 600.0, 0.1
+
+    lejos = geo.Salto(lado=-1, x=-250.0, z=1500.0, magnitud=900.0, columna=200)
+    n._seguir_esquina(lejos, -1, 0.0, 0.0, 0.03, 250.0)
+    check(abs(n.esq_z - 600.0) < 60.0,
+          "una medida que salta lejos de la prediccion se rechaza",
+          round(n.esq_z))
+
+    cerca = geo.Salto(lado=-1, x=-250.0, z=560.0, magnitud=900.0, columna=200)
+    n._seguir_esquina(cerca, -1, 0.0, 0.0, 0.03, 250.0)
+    check(abs(n.esq_z - 560.0) < 1.0 and n.esq_medida,
+          "y una coherente se acepta", round(n.esq_z))
+
+    # --- coherencia con el muro interno -----------------------------------
+    n2 = _nav()
+    n2.fijar_lado_interno(-1)
+    incoherente = geo.Salto(lado=-1, x=-900.0, z=600.0, magnitud=900.0, columna=200)
+    n2._seguir_esquina(incoherente, -1, 0.0, 0.0, 0.03, 250.0)
+    check(n2.esq_x is None,
+          "una esquina a 900 mm de lado con el muro a 250 se rechaza")
+    coherente = geo.Salto(lado=-1, x=-280.0, z=600.0, magnitud=900.0, columna=200)
+    n2._seguir_esquina(coherente, -1, 0.0, 0.0, 0.03, 250.0)
+    check(n2.esq_x is not None, "y una a 280 se acepta")
+
+    # --- y la estima AVANZA, que es lo que fallaba -------------------------
+    n3 = _nav()
+    n3.fijar_lado_interno(-1)
+    n3.esq_x, n3.esq_z = -250.0, 800.0
+    for _ in range(10):
+        n3._seguir_esquina(None, -1, 0.0, 30.0, 0.03, None)
+    check(abs(n3.esq_z - 500.0) < 1.0,
+          "sin medidas, la estima acerca la esquina segun se avanza",
+          round(n3.esq_z))
+
+
 # ===========================================================================
 # 5. Navegacion: los cuatro sintomas observados en pista
 # ===========================================================================
@@ -462,17 +532,30 @@ def test_navegacion():
               f"dir={d.direccion}")
 
     # --- 2) el giro se dispara por la ESQUINA INTERNA -------------------
+    # La esquina se ACERCA, no aparece de golpe: el seguimiento tiene una
+    # puerta que rechaza medidas que saltan lejos de la prediccion, asi que
+    # teletransportarla seria una prueba irreal que ademas la puerta frena.
     n = _nav(min_recto_ms=0, giro_z_mm=350.0, giro_frente_mm=120.0)
     n.fijar_lado_interno(-1)
     d = _correr(n, corredor(1000.0, lado_interno=-1, z_esquina=1200.0), veces=3)
     check(d.estado != nav.GIRO, "no gira solo porque haya muro de frente lejano",
           d.estado)
-    d = n.paso(escaneo_mundo(corredor(1000.0, lado_interno=-1, z_esquina=300.0)), 0.0)
+
+    t = 0.0
+    d = None
+    motivo_disparo = ""
+    for z in range(1150, 240, -30):
+        d = n.paso(escaneo_mundo(corredor(1000.0, lado_interno=-1,
+                                          z_esquina=float(z))), 0.0, ahora=t)
+        t += 0.08
+        if d.estado == nav.GIRO:
+            motivo_disparo = d.motivo
+            break
     check(d.estado == nav.GIRO, "gira cuando la ESQUINA INTERNA entra en rango",
           f"{d.estado} {d.motivo}")
-    check("esquina interna" in d.motivo,
+    check("esquina interna" in motivo_disparo,
           "  y el motivo dice que la referencia fue la esquina, no el frente",
-          d.motivo)
+          motivo_disparo)
 
     # --- 3) funciona en los dos sentidos --------------------------------
     for lado, nombre in ((-1, "antihorario"), (+1, "horario")):
@@ -1455,7 +1538,8 @@ def test_vuelta_completa():
 if __name__ == "__main__":
     print(f"OpenCV {cv2.__version__} · Python {sys.version.split()[0]}")
     for f in (test_protocolo_cruzado, test_lector_robusto, test_geometria,
-              test_calibracion_tablero, test_salto, test_navegacion, test_seguridad_y_vueltas,
+              test_calibracion_tablero, test_salto, test_esquina_falsa,
+              test_navegacion, test_seguridad_y_vueltas,
               test_desatasco, test_senales, test_piso, test_asistente,
               test_sensores_esp32,
               test_pipeline_imagen, test_enlace,
