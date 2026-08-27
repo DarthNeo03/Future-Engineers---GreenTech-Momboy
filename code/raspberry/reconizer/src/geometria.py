@@ -132,6 +132,24 @@ class Escaneo:
             return None
         return float(np.median(np.abs(self.x[sel])))
 
+    def mas_cerca(self, lado: int, z_max: float = 500.0,
+                  semi_largo: float = 150.0,
+                  semi_ancho: float = 100.0) -> Optional[float]:
+        """Holgura entre la CARROCERIA y lo mas cercano de un semiplano.
+
+        Medir desde el centro del carro no vale y es un error facil de
+        cometer: rodeando una esquina, el vertice puede estar a 40 mm del
+        morro y a 220 mm del centro. Lo que choca es la esquina delantera
+        interior, asi que se mide contra el rectangulo del carro.
+        """
+        sel = (self.valido & (np.sign(self.x) == np.sign(lado))
+               & (self.z > -semi_largo) & (self.z <= z_max))
+        if not sel.any():
+            return None
+        dz = np.maximum(0.0, np.abs(self.z[sel]) - semi_largo)
+        dx = np.maximum(0.0, np.abs(self.x[sel]) - semi_ancho)
+        return float(np.hypot(dz, dx).min())
+
     def recta(self, lado: int, z_desde: float = 100.0,
               z_hasta: float = 900.0) -> Optional[Tuple[float, float, int]]:
         """Ajusta una recta al muro de un lado.

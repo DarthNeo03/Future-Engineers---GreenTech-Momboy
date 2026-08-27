@@ -663,12 +663,48 @@ class Navegador:
             # aflojando. Mantener el volante clavado hasta la tolerancia es lo
             # que producia los sobregiros que se vieron en pista.
             direccion = _lim(err * float(cfg.get("giro_kp", 2.8)), -dir_max, dir_max)
-            return self._salida(v_giro, direccion, e, yaw,
-                                razon or f"giro {abs(err):5.1f} grados restantes", frente)
+            direccion, aviso = self._abrir_si_roza(e, lado, direccion)
+            return self._salida(
+                v_giro, direccion, e, yaw,
+                razon or f"giro {abs(err):5.1f} grados restantes{aviso}", frente)
 
         # Sin giroscopio: volante fijo y salida por vision.
-        return self._salida(v_giro, lado * float(cfg.get("dir_giro", 85.0)), e, yaw,
-                            razon or "giro (sin giroscopio)", frente)
+        direccion, aviso = self._abrir_si_roza(
+            e, lado, lado * float(cfg.get("dir_giro", 85.0)))
+        return self._salida(v_giro, direccion, e, yaw,
+                            razon or f"giro (sin giroscopio){aviso}", frente)
+
+    def _abrir_si_roza(self, e: geo.Escaneo, lado: int,
+                       direccion: float) -> Tuple[float, str]:
+        """Afloja el volante si la esquina interna se esta acercando demasiado.
+
+        La holgura con la que se sale de un giro es `radio_REAL - z_disparo`,
+        y `z_disparo` se calcula con el radio CONFIGURADO. Si el configurado
+        es MAYOR que el real, se dispara pronto y se sale pegado a la esquina.
+        Medido en el simulador, con el carro dando R = 346 mm de verdad:
+
+            radio_cfg 350  ->  holgura 138 mm     (bien)
+            radio_cfg 450  ->  holgura  43 mm     (roza)
+            radio_cfg 550  ->  holgura   4 mm     (choca, y toca el exterior)
+
+        Lo correcto es MEDIR el radio con el asistente. Este guardia es la
+        red: mira lo que hay de verdad por el lado de dentro y abre el arco si
+        se acerca. Con radio_cfg 550 sube la holgura de 4 a 29 mm y evita
+        tocar el muro exterior.
+
+        Se mide contra la CARROCERIA, no contra el centro del carro: rodeando
+        una esquina el vertice puede estar a 40 mm del morro y a 220 mm del
+        centro, y midiendo desde el centro el guardia no salta nunca.
+        """
+        cfg = self.cfg
+        umbral = float(cfg.get("giro_min_interno_mm", 130.0))
+        d = e.mas_cerca(lado, float(cfg.get("giro_mira_z_mm", 500.0)),
+                        float(cfg.get("semi_largo_carro_mm", 150.0)),
+                        float(cfg.get("semiancho_carro_mm", 110.0)))
+        if d is None or d >= umbral:
+            return direccion, ""
+        factor = max(float(cfg.get("giro_abrir_min", 0.35)), d / umbral)
+        return direccion * factor, f" | ABRO ({d:.0f} mm)"
 
     def _terminar_giro(self, yaw: Optional[float]) -> None:
         self.giros += 1
