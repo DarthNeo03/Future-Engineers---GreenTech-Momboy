@@ -168,6 +168,7 @@ class Navegador:
         self.esq_z: Optional[float] = None
         self.esq_edad_s = 0.0
         self.esq_medida = False               # True si se vio en este frame
+        self.esq_rechazos = 0                 # medidas incoherentes seguidas
         self._obj_lat = None                  # ultimo desvio pedido por una señal
         self.bloq_lado = 0                    # maniobra de desatasco
         self.bloq_t0 = 0.0
@@ -243,6 +244,17 @@ class Navegador:
         # la estima de la esquina no avanza y los temporizadores en ms no
         # llegan a cumplirse nunca. Ademas asi las pruebas son deterministas.
         ahora = time.time() if ahora is None else float(ahora)
+        # Si el reloj cambia de fuente -de time.time() a uno inyectado, que es
+        # lo que hacen el simulador y las pruebas- las marcas de tiempo que se
+        # pusieron con el reloj viejo quedan EN EL FUTURO. Entonces los
+        # "milisegundos transcurridos" salen negativos y todas las esperas
+        # minimas dejan de cumplirse jamas: el disparo del giro se queda
+        # desactivado sin que nada lo diga.
+        if self.t_estado > ahora or self.t_ultimo_paso > ahora + 1.0:
+            self.t_estado = ahora
+            self.t_ultimo_paso = ahora
+            self._frente_visto = ahora
+            self.bloq_t0 = ahora
         dt = min(0.2, max(1e-3, ahora - self.t_ultimo_paso))
         self.t_ultimo_paso = ahora
         self._t = ahora
@@ -257,7 +269,8 @@ class Navegador:
         if salto is not None:
             self.ultimo_salto = salto
         ds = float(cfg.get("mm_por_seg_a_100", 900.0)) * (self.ultimo.vel / 100.0) * dt
-        self._seguir_esquina(salto, self.lado_interno, self._dyaw, ds, dt)
+        self._seguir_esquina(salto, self.lado_interno, self._dyaw, ds, dt,
+                             e.lateral(self.lado_interno) if self.lado_interno else None)
 
         # --- el desvio por una señal se MANTIENE hasta haberla rebasado ----
         # El detector suelta la señal cuando la tiene tan cerca que ya no la ve
@@ -397,7 +410,8 @@ class Navegador:
 
     # -- seguimiento de la esquina interna --------------------------------
     def _seguir_esquina(self, salto: Optional[geo.Salto], lado: int,
-                        dyaw: float, ds: float, dt: float) -> None:
+                        dyaw: float, ds: float, dt: float,
+                        d_interno: Optional[float] = None) -> None:
         """Mantiene la esquina convexa en el marco del carro aunque no se vea.
 
         ====================================================================
@@ -442,11 +456,41 @@ class Navegador:
             self.esq_edad_s += dt
 
         if salto is not None and (lado == 0 or salto.lado == lado):
-            # Medida fresca: manda sobre la estima.
-            self.esq_x, self.esq_z = salto.x, salto.z
-            self.esq_edad_s = 0.0
-            self.esq_medida = True
-            return
+            # Una medida fresca NO manda automaticamente: tiene que ser
+            # COHERENTE con lo que ya se estaba siguiendo. Sin esta puerta,
+            # cualquier discontinuidad que aparezca en otro sitio de la pista
+            # secuestra el seguimiento, y como suele reaparecer en el mismo
+            # sitio, la esquina se queda congelada a una distancia fija.
+            aceptar = True
+            motivo = ""
+
+            # 1) La esquina interna ES el borde del muro interno, asi que su
+            #    posicion lateral tiene que parecerse a la distancia a ese muro.
+            if d_interno is not None:
+                tol = float(self.cfg.get("esquina_tol_lateral_mm", 260.0))
+                if abs(abs(salto.x) - d_interno) > tol:
+                    aceptar, motivo = False, "lateral incoherente con el muro"
+
+            # 2) Si ya se estaba siguiendo una y la estima es reciente, la
+            #    nueva tiene que caer cerca de la prediccion.
+            if aceptar and self.esq_x is not None and self.esq_edad_s < 2.0:
+                salto_max = float(self.cfg.get("esquina_gate_mm", 400.0))
+                d = math.hypot(salto.x - self.esq_x, salto.z - self.esq_z)
+                if d > salto_max:
+                    aceptar, motivo = False, "salta lejos de la prediccion"
+
+            if aceptar:
+                self.esq_x, self.esq_z = salto.x, salto.z
+                self.esq_edad_s = 0.0
+                self.esq_medida = True
+                self.esq_rechazos = 0
+                return
+            self.esq_rechazos += 1
+            # Si se rechazan muchas seguidas, puede que la buena sea la nueva:
+            # se suelta la vieja y se readquiere limpio.
+            if self.esq_rechazos > int(self.cfg.get("esquina_rechazos_max", 20)):
+                self.esq_x = self.esq_z = None
+                self.esq_rechazos = 0
 
         if self.esq_x is None:
             return
