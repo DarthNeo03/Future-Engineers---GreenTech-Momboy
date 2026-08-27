@@ -922,6 +922,39 @@ def test_sensores_esp32():
     check(len(pi.tomar_cruces()) == 4,
           "el contador se envuelve en 256 sin perder la cuenta")
 
+    # --- canales crudos, solo para calibrar --------------------------------
+    # Con el sensor en el ESP32 no hay chip I2C en la Pi: los crudos llegan
+    # por el enlace y SOLO mientras se piden. Sin esto no se podria calibrar.
+    pc = P.PisoCrudo(c=1234, r=500, g=400, b=334)
+    tr = P.Lector().alimentar(pc.a_bytes())
+    check(len(tr) == 1 and tr[0][0] == P.TIPO_PISO,
+          "los canales crudos viajan en su propia trama")
+    check(P.PisoCrudo.desde_payload(tr[0][1]) == pc, "y vuelven identicos")
+    m2 = P.Mando(piso_crudo=True)
+    check(P.Mando.desde_payload(m2.a_bytes()[4:-1]).piso_crudo,
+          "la peticion de crudos viaja en el mando")
+    check(not P.Mando().piso_crudo,
+          "y por defecto NO se piden: en marcha no hacen falta")
+
+    class _E2(_EnlaceFalso):
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            self.piso_crudo = P.PisoCrudo(c=1200, r=600, g=360, b=240)
+            self.pedidos = []
+
+        def pedir_piso_crudo(self, activo=True):
+            self.pedidos.append(activo)
+
+    e2 = _E2(sensores=P.S_PISO_OK)
+    pi2 = cp.PisoEnlace({}, e2)
+    check(pi2.crudo == (1200, 600, 360, 240), "PisoEnlace expone los crudos")
+    rn, gn, bn = pi2.cromatico
+    check(abs(rn - 0.5) < 1e-6 and abs(gn - 0.3) < 1e-6,
+          "y la cromaticidad normalizada", (round(rn, 3), round(gn, 3)))
+    pi2.pedir_crudo(True); pi2.parar()
+    check(e2.pedidos == [True, False],
+          "los pide al empezar y los deja de pedir al salir", e2.pedidos)
+
     # --- eleccion de fuente ------------------------------------------------
     cfg = robot_config.POR_DEFECTO
     check(cfg["imu"]["fuente"] == "esp32", "por defecto el giroscopio va al ESP32")

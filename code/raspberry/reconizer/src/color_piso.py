@@ -169,7 +169,28 @@ class PisoEnlace:
         return True
 
     def parar(self) -> None:
-        pass
+        if self.enlace is not None:
+            self.enlace.pedir_piso_crudo(False)
+
+    # -- crudos, solo para calibrar ---------------------------------------
+    def pedir_crudo(self, activo: bool = True) -> None:
+        if self.enlace is not None:
+            self.enlace.pedir_piso_crudo(activo)
+
+    @property
+    def crudo(self):
+        if self.enlace is None:
+            return (0, 0, 0, 0)
+        p = self.enlace.piso_crudo
+        return (p.c, p.r, p.g, p.b)
+
+    @property
+    def cromatico(self):
+        _c, r, g, b = self.crudo
+        s = float(r + g + b)
+        if s <= 0:
+            return (0.0, 0.0, 0.0)
+        return (r / s, g / s, b / s)
 
     def _sondear(self) -> None:
         if self.enlace is None:
@@ -199,13 +220,15 @@ class PisoEnlace:
 
     def estado(self) -> Dict[str, Any]:
         t = self.enlace.telemetria if self.enlace else None
+        c, r, g, b = self.crudo
+        rn, gn, bn = self.cromatico
         return {
             "disponible": self.disponible,
             "motivo": self.motivo if not self.disponible else "ok, en el ESP32",
             "color": self.color,
             "hz": 100.0 if self.disponible else 0.0,
-            "crudo": {"c": 0, "r": 0, "g": 0, "b": 0},
-            "cromatico": [0.0, 0.0, 0.0],
+            "crudo": {"c": c, "r": r, "g": g, "b": b},
+            "cromatico": [round(rn, 3), round(gn, 3), round(bn, 3)],
             "contador_esp32": int(t.lineas) if t else 0,
             "fuente": "esp32",
         }

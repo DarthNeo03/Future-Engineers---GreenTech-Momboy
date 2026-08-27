@@ -38,6 +38,9 @@ TIPO_CONFIG = 0x03    # Pi -> ESP32 (6 bytes) ajustes en caliente
 TIPO_TELE = 0x81      # ESP32 -> Pi (13 bytes)
 TIPO_LOG = 0x82       # ESP32 -> Pi (texto)
 TIPO_PONG = 0x83      # ESP32 -> Pi (1 byte: seq eco)
+TIPO_PISO = 0x84      # ESP32 -> Pi (8 bytes) c,r,g,b crudos del
+                      # TCS34725. Solo mientras la Pi lo pida:
+                      # es para calibrar, no para navegar.
 
 # --- banderas del mando ----------------------------------------------------
 F_ARMADO = 0x01       # sin esto el ESP32 no mueve el motor pase lo que pase
@@ -45,6 +48,7 @@ F_PARADA = 0x02       # parada de emergencia: ignora vel
 F_CENTRAR = 0x04      # lleva el servo al centro
 F_LIMPIAR = 0x08      # reinicia los contadores de error
 F_CAL_IMU = 0x10      # recalibrar el giroscopio (con el carro QUIETO)
+F_PISO_CRUDO = 0x20   # manda los canales crudos del sensor de color
 
 # --- bits de estado en la telemetria --------------------------------------
 E_ARMADO = 0x01
@@ -107,6 +111,7 @@ class Mando:
     centrar: bool = False
     limpiar: bool = False
     cal_imu: bool = False
+    piso_crudo: bool = False
 
     def banderas(self) -> int:
         f = 0
@@ -120,6 +125,8 @@ class Mando:
             f |= F_LIMPIAR
         if self.cal_imu:
             f |= F_CAL_IMU
+        if self.piso_crudo:
+            f |= F_PISO_CRUDO
         return f
 
     def a_bytes(self) -> bytes:
@@ -142,7 +149,8 @@ class Mando:
                      parada=bool(flags & F_PARADA),
                      centrar=bool(flags & F_CENTRAR),
                      limpiar=bool(flags & F_LIMPIAR),
-                     cal_imu=bool(flags & F_CAL_IMU))
+                     cal_imu=bool(flags & F_CAL_IMU),
+                     piso_crudo=bool(flags & F_PISO_CRUDO))
 
 
 # --- bits del byte `sensores` de la telemetria ------------------------------
@@ -238,6 +246,30 @@ class Telemetria:
                               yaw, sens, lin, col)
         (seq, estado, pwm, ang, ms, malas, ver) = struct.unpack("<BBBBHBB", payload[:8])
         return Telemetria(seq, estado, pwm, ang, ms, malas, ver)
+
+
+@dataclass
+class PisoCrudo:
+    """Canales crudos del TCS34725. Solo se piden para CALIBRAR.
+
+    No van en la telemetria normal por dos razones: ocuparian 8 bytes de los
+    16 del payload en algo que la navegacion no usa, y para navegar no hacen
+    falta -el ESP32 ya clasifica y manda el resultado-. Se piden con la
+    bandera F_PISO_CRUDO solo mientras el calibrador esta abierto.
+    """
+    c: int = 0
+    r: int = 0
+    g: int = 0
+    b: int = 0
+
+    def a_bytes(self) -> bytes:
+        return empaquetar(TIPO_PISO, struct.pack(
+            "<HHHH", self.c & 0xFFFF, self.r & 0xFFFF,
+            self.g & 0xFFFF, self.b & 0xFFFF))
+
+    @staticmethod
+    def desde_payload(payload: bytes) -> "PisoCrudo":
+        return PisoCrudo(*struct.unpack("<HHHH", payload[:8]))
 
 
 def empaquetar_config(servo_centro: int, servo_min: int, servo_max: int,

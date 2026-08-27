@@ -98,6 +98,8 @@ sens::DetectorLinea linea;
 volatile bool imu_ok = false;
 volatile bool piso_ok = false;
 volatile bool pedir_cal_imu = false;
+volatile bool mandar_piso_crudo = false;
+volatile uint16_t piso_c = 0, piso_r = 0, piso_g = 0, piso_b = 0;
 uint8_t mpu_dir = 0;
 
 // Perfiles de color. El indice 0 tiene que ser el BLANCO: el detector de
@@ -263,6 +265,7 @@ void tareaRx(void *) {
               linea.reiniciar();
             }
             if (m.flags & proto::F_CAL_IMU) pedir_cal_imu = true;
+            mandar_piso_crudo = (m.flags & proto::F_PISO_CRUDO) != 0;
           }
         } else if (tipo == proto::TIPO_PING) {
           uint8_t eco = lectores[e].len() ? lectores[e].payload()[0] : 0;
@@ -392,6 +395,7 @@ void tareaSensores(void *) {
       uint16_t c, r, g, b;
       if (leerTCS(c, r, g, b)) {
         fallos_tcs = 0;
+        piso_c = c; piso_r = r; piso_g = g; piso_b = b;
         const uint8_t idx = sens::clasificar(c, r, g, b, perfiles, 3,
                                              CLEAR_MIN, CLEAR_MAX);
         linea.paso(idx, ahora);
@@ -427,6 +431,13 @@ void tareaTelemetria(void *) {
     uint8_t n = proto::empaquetarTelemetria(t, buf);
     int8_t e = enlaceActivo;
     if (e >= 0) enlaces[e]->write(buf, n);
+
+    // Los canales crudos del color solo se mandan mientras la Pi los pida,
+    // que es cuando el calibrador esta abierto. En marcha no hacen falta.
+    if (mandar_piso_crudo && piso_ok && e >= 0) {
+      n = proto::empaquetarPisoCrudo(piso_c, piso_r, piso_g, piso_b, buf);
+      enlaces[e]->write(buf, n);
+    }
   }
 }
 
