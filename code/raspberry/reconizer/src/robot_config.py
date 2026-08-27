@@ -51,10 +51,19 @@ POR_DEFECTO: Dict[str, Any] = {
     },
 
     "limites": {
+        # SIN CALIBRAR EL SUELO, estos tres se recortan solos a los valores de
+        # `sin_calibrar`. Toda la navegacion trabaja en milimetros, y sin
+        # homografia esos milimetros son inventados: correr con distancias
+        # inventadas es como se choca. Ver Robot._revisar_calibracion.
         "vmax": 130,             # tope de PWM 0-255 que el ESP32 nunca supera
         "vel_crucero": 45,       # % de vmax en recta
         "vel_giro": 32,          # % de vmax girando
         "dir_max": 100,          # % de direccion que se permite pedir
+
+        # Techo mientras el suelo no este calibrado. No es una preferencia:
+        # es lo unico que hace que un error de escala se traduzca en un roce
+        # en vez de en un golpe.
+        "sin_calibrar": {"vmax": 110, "vel_crucero": 30, "vel_giro": 25},
     },
 
     # "abierto" = Open Challenge, "obstaculos" = Obstacle Challenge

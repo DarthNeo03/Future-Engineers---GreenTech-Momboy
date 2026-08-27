@@ -303,8 +303,9 @@ function estado(){
          m.esquina_z===undefined ? 'avi' : 'ok');
     fila(t,'Cobertura del muro', (m.cobertura!==undefined? m.cobertura : '-'),
          (m.cobertura!==undefined && m.cobertura < 0.25) ? 'mal' : 'ok');
-    fila(t,'Suelo', s.suelo.calibrado ? 'homografia medida' : 'SIN CALIBRAR (aproximado)',
-         s.suelo.calibrado ? 'ok' : 'avi');
+    fila(t,'Suelo', s.suelo.calibrado ? 'homografia medida'
+                                      : 'SIN CALIBRAR - velocidad recortada',
+         s.suelo.calibrado ? 'ok' : 'mal');
     if (s.senal) fila(t,'Señal activa',
          s.senal.color+' a '+s.senal.z+' mm, paso por '+s.senal.lado,
          s.senal.color=='rojo'?'mal':'ok');

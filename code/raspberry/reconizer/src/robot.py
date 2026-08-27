@@ -86,6 +86,7 @@ class Robot:
         self.decision = nav.Decision()
         self.fps = 0.0
         self.error_camara = ""
+        self.aviso_calibracion = ""
         self.registro: List[str] = []
 
         self._cap = None
@@ -129,6 +130,7 @@ class Robot:
             float(nav_cfg.get("pared_objetivo_mm", 250.0))))
         if not self.suelo.calibrado:
             self.log("[suelo] SIN CALIBRAR: corre tools/calibrar_suelo.py")
+        self._revisar_calibracion()
         z_min = self.suelo.z_minimo_medible(int(self.cfg["camara"]["alto"]),
                                             float(nav_cfg.get("ignorar_abajo", 0.0)))
         parar = float(nav_cfg.get("parar_mm", 280.0))
@@ -156,6 +158,48 @@ class Robot:
         self._parar.clear()
         self._hilo = threading.Thread(target=self._bucle, daemon=True, name="control")
         self._hilo.start()
+
+    def _revisar_calibracion(self) -> None:
+        """Sin homografia del suelo, recortar la velocidad. Y decirlo alto.
+
+        ESTO ES UNA LECCION APRENDIDA A GOLPES. La version anterior del
+        navegador trabajaba con un perfil normalizado 0..1, asi que funcionaba
+        razonablemente SIN calibrar: todo era relativo. La version metrica es
+        mucho mejor cuando esta calibrada, pero sin `suelo.json` los
+        milimetros que maneja son inventados por un modelo aproximado a partir
+        de una altura, un cabeceo y un FOV que probablemente nadie ha medido.
+
+        Y con distancias inventadas, la distancia de disparo del giro, el
+        frenado y el guardia del muro exterior estan todos mal a la vez. El
+        carro no navega peor: navega hacia otra pista.
+
+        Sustituir un sistema que no necesitaba calibracion por otro que si la
+        necesita, sin avisar a gritos, fue un error de diseño. Aqui se corrige:
+        mientras no haya homografia se recorta la velocidad a algo con lo que
+        un error de escala sea un roce y no un golpe.
+        """
+        if self.suelo.calibrado:
+            self.aviso_calibracion = ""
+            return
+        tope = dict(self.cfg["limites"].get("sin_calibrar", {}))
+        lim = self.cfg["limites"]
+        recortes = []
+        for clave, valor in tope.items():
+            if float(lim.get(clave, 0)) > float(valor):
+                recortes.append(f"{clave} {lim[clave]}->{valor}")
+                lim[clave] = valor
+        self.aviso_calibracion = (
+            "SUELO SIN CALIBRAR: las distancias en mm son estimadas, no medidas")
+        self.log("[suelo] " + "=" * 58)
+        self.log("[suelo] " + self.aviso_calibracion)
+        self.log("[suelo] toda la navegacion trabaja en milimetros; sin "
+                 "homografia son inventados")
+        if recortes:
+            self.log(f"[suelo] velocidad recortada por seguridad: "
+                     f"{', '.join(recortes)}")
+        self.log("[suelo] arreglalo con:  python3 tools/calibrar_suelo.py "
+                 "--aruco 100")
+        self.log("[suelo] " + "=" * 58)
 
     def _calibrar_imu(self):
         if self.imu.calibrar():
@@ -258,7 +302,12 @@ class Robot:
         self._t_manual = time.monotonic()
 
     def aplicar_config(self) -> None:
-        """Releer limites tras cambiarlos desde la interfaz."""
+        """Releer limites tras cambiarlos desde la interfaz.
+
+        El recorte por falta de calibracion se vuelve a aplicar aqui: si no,
+        bastaria con mover un slider para saltarselo sin enterarse.
+        """
+        self._revisar_calibracion()
         self.enlace.fijar_vmax(int(self.cfg["limites"]["vmax"]))
         self.navegador.cfg = self.cfg["navegacion"]
         self.navegador.lim = self.cfg["limites"]
@@ -415,6 +464,9 @@ class Robot:
                 txt += " FAILSAFE"
         cv2.putText(img, txt, (8, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
                     (0, 255, 0) if e.conectado else (0, 0, 255), 1, cv2.LINE_AA)
+        if self.aviso_calibracion:
+            cv2.putText(img, "SUELO SIN CALIBRAR", (8, H - 112),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (60, 60, 255), 2, cv2.LINE_AA)
         if self.imu.disponible:
             cv2.putText(img, f"yaw {self.imu.yaw:+6.1f}", (W - 110, 16),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 200, 0), 1, cv2.LINE_AA)
@@ -432,7 +484,8 @@ class Robot:
             "modo": self.modo,
             "reto": self.reto,
             "fps": round(self.fps, 1),
-            "suelo": {"calibrado": self.suelo.calibrado, "origen": self.suelo.origen},
+            "suelo": {"calibrado": self.suelo.calibrado, "origen": self.suelo.origen,
+                      "aviso": self.aviso_calibracion},
             "carrera": {
                 "vueltas": self.navegador.vueltas,
                 "giros": self.navegador.giros,

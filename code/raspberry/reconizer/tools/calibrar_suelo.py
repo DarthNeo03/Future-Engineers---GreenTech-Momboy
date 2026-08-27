@@ -2,16 +2,28 @@
 """
 calibrar_suelo.py — Mide la homografia imagen -> suelo. Se hace UNA vez.
 
-    python3 tools/calibrar_suelo.py --tablero          # AUTOMATICO (recomendado)
+    python3 tools/calibrar_suelo.py --aruco 100        # AUTOMATICO, un marcador
+    python3 tools/calibrar_suelo.py --generar marcador.png   # imprimelo
+    python3 tools/calibrar_suelo.py --tablero          # AUTOMATICO, tablero
     python3 tools/calibrar_suelo.py --tablero --cuadro 40 --distancias 250 550 900
     python3 tools/calibrar_suelo.py                    # a mano, cuatro clics
     python3 tools/calibrar_suelo.py --imagen foto.png
 
-DOS MODOS
----------
-`--tablero` detecta un tablero de ajedrez y saca ~54 esquinas por toma, sin
-clics. Es el bueno, por dos razones que no son comodidad:
+TRES MODOS, Y NINGUNO NECESITA COMPRAR NADA
+-------------------------------------------
+  --aruco 100   UN marcador cuadrado de 100 mm, que cabe en media hoja A4 y
+                lo genera esta misma herramienta con --generar. Es el que
+                menos hay que imprimir y el que menos hay que medir: solo la
+                distancia a su borde cercano.
+  --tablero     Un tablero de ajedrez. Da ~54 esquinas por toma en vez de 4,
+                asi que el ajuste sale algo mejor. Si no tienes impresora
+                vale uno hecho con cinta negra sobre carton: lo unico que
+                importa es que las casillas sean cuadradas e iguales.
+  (sin nada)    Cuatro marcas de cinta adhesiva en el suelo y cuatro clics.
+                No hace falta imprimir NADA, solo cinta metrica.
 
+Los dos automaticos comparten lo que de verdad importa, y que el modo manual
+no puede dar:
   * COBERTURA. Se toman varias capturas con el tablero a distintas
     distancias, y la homografia se ajusta a TODAS las esquinas a la vez. El
     metodo de cuatro marcas solo cubre el rectangulo que forman: mas alla
@@ -22,7 +34,8 @@ clics. Es el bueno, por dos razones que no son comodidad:
     construccion, midieras bien o mal. Con ciento y pico el ajuste es por
     minimos cuadrados y el error que sale es una medida de verdad.
 
-El modo manual se queda por si no tienes tablero a mano.
+Con cuatro marcas a mano no hay forma de saber si mediste bien; con un
+marcador a tres distancias, si.
 
 POR QUE NO PUEDE SER AUTOMATICO DEL TODO
 ----------------------------------------
@@ -113,6 +126,10 @@ def main() -> int:
     ap.add_argument("--intrinsecos", default=None,
                     help="JSON con K y dist de cv2.calibrateCamera")
     ap.add_argument("--salida", default=None)
+    ap.add_argument("--aruco", type=float, default=None,
+                    help="modo automatico con UN marcador. Lado del marcador en mm")
+    ap.add_argument("--generar", default=None,
+                    help="guarda un PNG del marcador para imprimir y sale")
     ap.add_argument("--tablero", nargs="?", const="9x6", default=None,
                     help="modo automatico. Esquinas INTERNAS, p.ej. 9x6")
     ap.add_argument("--cuadro", type=float, default=40.0,
@@ -133,7 +150,9 @@ def main() -> int:
         [-args.x, args.z2],
     ], dtype=np.float64)
 
-    if args.tablero:
+    if args.generar:
+        return generar_marcador(args.generar, args.aruco or 100.0)
+    if args.tablero or args.aruco:
         return modo_tablero(args, cfg, cam_cfg)
 
     K = dist = None
@@ -231,6 +250,36 @@ def main() -> int:
 
 
 
+def generar_marcador(ruta: str, lado_mm: float) -> int:
+    """Guarda un PNG del marcador, con su marco blanco y las medidas escritas.
+
+    El marco blanco NO es decoracion: ArUco necesita un borde claro alrededor
+    del cuadro negro para encontrarlo. Recortar justo por el borde negro es la
+    forma mas comun de que luego no se detecte.
+    """
+    if not hasattr(cv2, "aruco"):
+        print("Este OpenCV no trae ArUco. Usa --tablero o el modo manual.")
+        return 2
+    px = 1200
+    d = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+    marca = cv2.aruco.generateImageMarker(d, 7, px)
+    borde = px // 5
+    img = np.full((px + 2 * borde, px + 2 * borde), 255, np.uint8)
+    img[borde:borde + px, borde:borde + px] = marca
+    cv2.putText(img, f"lado del cuadro negro = {lado_mm:.0f} mm",
+                (borde, borde - 24), cv2.FONT_HERSHEY_SIMPLEX, 1.1, 0, 2, cv2.LINE_AA)
+    cv2.putText(img, "imprime SIN ajustar a pagina y comprueba el lado con regla",
+                (borde, px + borde + 52), cv2.FONT_HERSHEY_SIMPLEX, 0.8, 0, 2,
+                cv2.LINE_AA)
+    cv2.imwrite(ruta, img)
+    print(f"marcador guardado en {ruta}")
+    print(f"  Imprimelo de modo que el CUADRO NEGRO mida {lado_mm:.0f} mm de lado,")
+    print( "  comprueba con una regla, y pegalo sobre carton para que quede plano.")
+    print( "  NO recortes el marco blanco: ArUco lo necesita para encontrarlo.")
+    print(f"\n  Luego:  python3 tools/calibrar_suelo.py --aruco {lado_mm:.0f}")
+    return 0
+
+
 def modo_tablero(args, cfg, cam_cfg) -> int:
     """Calibracion automatica: tablero de ajedrez a varias distancias.
 
@@ -247,11 +296,18 @@ def modo_tablero(args, cfg, cam_cfg) -> int:
     """
     import cv2
 
-    try:
-        nx, ny = (int(v) for v in str(args.tablero).lower().split("x"))
-    except Exception:
-        print(f"--tablero mal escrito: '{args.tablero}'. Se espera algo como 9x6")
-        return 2
+    usa_aruco = bool(args.aruco)
+    nx = ny = 0
+    if usa_aruco:
+        if not hasattr(cv2, "aruco"):
+            print("Este OpenCV no trae ArUco. Usa --tablero o el modo manual.")
+            return 2
+    else:
+        try:
+            nx, ny = (int(v) for v in str(args.tablero).lower().split("x"))
+        except Exception:
+            print(f"--tablero mal escrito: '{args.tablero}'. Se espera algo como 9x6")
+            return 2
 
     cap = None
     fija = None
@@ -268,12 +324,15 @@ def modo_tablero(args, cfg, cam_cfg) -> int:
             print("No se pudo abrir la camara")
             return 2
 
+    que = (f"Marcador ArUco de {args.aruco:.0f} mm de lado." if usa_aruco
+           else f"Tablero de {nx}x{ny} esquinas internas, casillas de "
+                f"{args.cuadro:.0f} mm.")
+    borde = "su borde MAS CERCANO" if usa_aruco else "la fila de esquinas MAS CERCANA"
     print(f"""
-Tablero de {nx}x{ny} esquinas internas, casillas de {args.cuadro:.0f} mm.
+{que}
 
-Colocalo PLANO en el suelo, con las filas ATRAVESADAS respecto a la marcha
-y centrado en el eje del carro. Para cada distancia de la lista, mide del
-carro a la fila de esquinas MAS CERCANA.
+Colocalo PLANO en el suelo y centrado en el eje del carro. Para cada
+distancia de la lista, mide del carro a {borde}.
 
   espacio  capturar (solo si el tablero esta detectado, en verde)
   s        saltarse esta distancia
@@ -300,19 +359,25 @@ carro a la fila de esquinas MAS CERCANA.
                 frame = cv2.flip(frame, -1)
 
         gris = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        esq = geo.detectar_tablero(gris, nx, ny)
+        esq = (geo.detectar_aruco(gris) if usa_aruco
+               else geo.detectar_tablero(gris, nx, ny))
 
         if esq is not None:
-            cv2.drawChessboardCorners(frame, (nx, ny),
-                                      esq.reshape(-1, 1, 2), True)
+            if usa_aruco:
+                cv2.polylines(frame, [esq.reshape(-1, 2)[[0, 1, 3, 2]].astype(int)],
+                              True, (0, 255, 0), 2)
+            else:
+                cv2.drawChessboardCorners(frame, (nx, ny),
+                                          esq.reshape(-1, 1, 2), True)
             # La esquina de referencia (fila 0, columna 0) marcada aparte: si
             # sale en el sitio equivocado, el tablero esta mal puesto.
             cv2.circle(frame, tuple(esq[0, 0].astype(int)), 9, (0, 255, 255), 2)
 
         z0 = pendientes[0] if pendientes else None
         cv2.rectangle(frame, (0, 0), (frame.shape[1], 46), (0, 0, 0), -1)
+        nombre = "marcador" if usa_aruco else "tablero"
         if z0 is not None:
-            txt = f"tablero a {z0:.0f} mm  |  {'DETECTADO' if esq is not None else 'no se ve'}"
+            txt = f"{nombre} a {z0:.0f} mm  |  {'DETECTADO' if esq is not None else 'no se ve'}"
         else:
             txt = "todas las distancias hechas: pulsa g para guardar"
         cv2.putText(frame, txt, (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
@@ -335,7 +400,8 @@ carro a la fila de esquinas MAS CERCANA.
         elif t == ord("v"):
             ver_rejilla = not ver_rejilla
         elif t == ord(" ") and esq is not None and z0 is not None:
-            mundo = geo.mundo_tablero(nx, ny, args.cuadro, z0)
+            mundo = (geo.mundo_aruco(args.aruco, z0) if usa_aruco
+                     else geo.mundo_tablero(nx, ny, args.cuadro, z0))
             vistas.append((esq, mundo))
             pendientes.pop(0)
             print(f"  capturada a {z0:.0f} mm  ({esq.size // 2} esquinas, "
@@ -348,9 +414,14 @@ carro a la fila de esquinas MAS CERCANA.
                 except Exception as e:
                     print(f"    aun no se puede ajustar: {e}")
         elif t == ord("g"):
-            if len(vistas) < 2:
-                print("  hacen falta al menos 2 tomas a distintas distancias: "
-                      "con una sola, la homografia extrapola y se va lejos")
+            minimo = 3 if usa_aruco else 2
+            if len(vistas) < minimo:
+                print(f"  hacen falta al menos {minimo} tomas a distintas "
+                      f"distancias.")
+                if usa_aruco:
+                    print("  Con un solo marcador son 4 esquinas por toma: con "
+                          "menos de 3 tomas\n  el ajuste pasa casi exacto por "
+                          "los puntos y el error deja de\n  significar nada.")
                 continue
             try:
                 H, err, peor = geo.homografia_desde_tableros(vistas)
@@ -368,8 +439,10 @@ carro a la fila de esquinas MAS CERCANA.
             su = geo.Suelo(cam_cfg)
             su.H = H
             ruta = su.guardar(Path(args.salida) if args.salida else None,
-                              notas=f"tablero {nx}x{ny} de {args.cuadro:.0f} mm, "
-                                    f"{len(vistas)} tomas, error medio {err:.1f} mm")
+                              notas=(f"aruco {args.aruco:.0f} mm" if usa_aruco
+                                     else f"tablero {nx}x{ny} de {args.cuadro:.0f} mm")
+                                    + f", {len(vistas)} tomas, "
+                                      f"error medio {err:.1f} mm")
             print(f"  guardado en {ruta}")
             print("  Pulsa v para superponer la rejilla y comprobarlo sobre el suelo.")
             ver_rejilla = True
