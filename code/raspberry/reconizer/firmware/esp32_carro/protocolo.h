@@ -30,6 +30,7 @@ static const uint8_t TIPO_CONFIG = 0x03;   // Pi -> ESP32, 6 bytes
 static const uint8_t TIPO_TELE   = 0x81;   // ESP32 -> Pi, 13 bytes
 static const uint8_t TIPO_LOG    = 0x82;   // ESP32 -> Pi, texto
 static const uint8_t TIPO_PONG   = 0x83;   // ESP32 -> Pi, 1 byte
+static const uint8_t TIPO_PISO   = 0x84;   // ESP32 -> Pi, 8 bytes crudos
 
 // Banderas del mando
 static const uint8_t F_ARMADO  = 0x01;
@@ -37,6 +38,7 @@ static const uint8_t F_PARADA  = 0x02;
 static const uint8_t F_CENTRAR = 0x04;
 static const uint8_t F_LIMPIAR = 0x08;
 static const uint8_t F_CAL_IMU = 0x10;   // recalibrar el giroscopio
+static const uint8_t F_PISO_CRUDO = 0x20; // mandar canales crudos del color
 
 // Bits de estado de la telemetria
 static const uint8_t E_ARMADO        = 0x01;
@@ -129,6 +131,17 @@ struct Telemetria {
   uint8_t  lineas;        // contador circular de cruces de linea
   uint8_t  color_linea;   // LINEA_* del ultimo cruce
 };
+
+// Canales crudos del TCS34725, solo para calibrar desde la Pi.
+inline uint8_t empaquetarPisoCrudo(uint16_t c, uint16_t r, uint16_t g,
+                                   uint16_t b, uint8_t *salida) {
+  uint8_t p[8];
+  p[0] = (uint8_t)(c & 0xFF);  p[1] = (uint8_t)(c >> 8);
+  p[2] = (uint8_t)(r & 0xFF);  p[3] = (uint8_t)(r >> 8);
+  p[4] = (uint8_t)(g & 0xFF);  p[5] = (uint8_t)(g >> 8);
+  p[6] = (uint8_t)(b & 0xFF);  p[7] = (uint8_t)(b >> 8);
+  return empaquetar(TIPO_PISO, p, 8, salida);
+}
 
 inline uint8_t empaquetarTelemetria(const Telemetria &t, uint8_t *salida) {
   uint8_t p[13];

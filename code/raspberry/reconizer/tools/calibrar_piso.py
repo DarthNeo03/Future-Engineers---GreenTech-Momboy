@@ -30,6 +30,17 @@ mediana, que ignora el ruido y algun destello.
     g  guardar en config/robot.json
     q  salir sin guardar
 
+DE DONDE SE LEE EL SENSOR
+-------------------------
+Desde que el TCS34725 cuelga del ESP32, aqui no hay ningun chip I2C que leer:
+los canales crudos llegan por el enlace serie y solo mientras se piden. O sea
+que para calibrar hace falta el ESP32 encendido y con su firmware subido.
+
+Y OJO: con el sensor en el ESP32, quien CLASIFICA el color es el firmware. Los
+perfiles que salgan de aqui se guardan en robot.json, pero hay que copiarlos
+tambien al array `perfiles[]` de esp32_carro.ino y volver a subirlo. Al
+terminar se imprimen ya en formato C++ para copiar y pegar.
+
 CONSEJO QUE AHORRA UNA TARDE
 ----------------------------
 Calibra sobre el TAPETE DE COMPETENCIA, no sobre una impresion casera. El
@@ -50,7 +61,7 @@ RAIZ = Path(__file__).resolve().parent.parent
 if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
-from src import color_piso as cp, robot_config  # noqa: E402
+from src import color_piso as cp, enlace as enl, robot_config  # noqa: E402
 
 TECLAS = {"b": cp.BLANCO, "n": "naranja", "a": "azul"}
 
@@ -109,11 +120,38 @@ def main() -> int:
         piso["ganancia"] = args.ganancia
     piso["activo"] = True
 
-    sensor = cp.SensorPiso(piso)
-    if not sensor.iniciar():
-        print(f"No hay sensor: {sensor.motivo}")
-        print("Comprueba con:  i2cdetect -y 1   (debe salir 29)")
-        return 2
+    # De donde se lee el sensor. Con `fuente: esp32` -que es lo normal desde
+    # que los dos sensores I2C cuelgan del ESP32- aqui no hay ningun chip que
+    # leer: los canales crudos llegan por el enlace serie, y solo mientras se
+    # piden con la bandera F_PISO_CRUDO.
+    fuente = str(piso.get("fuente", "esp32"))
+    enlace = None
+    if fuente == "esp32":
+        enlace = enl.Enlace(cfg["enlace"], al_log=lambda t: print(f"  {t}"))
+        enlace.iniciar()
+        print("  buscando el ESP32...")
+        time.sleep(2.5)
+        if not enlace.conectado:
+            print(f"No hay ESP32: {enlace.motivo}")
+            print("El sensor de color cuelga de el, asi que sin enlace no se "
+                  "puede calibrar.")
+            enlace.cerrar()
+            return 2
+        sensor = cp.PisoEnlace(piso, enlace)
+        sensor.iniciar()
+        sensor.pedir_crudo(True)
+        time.sleep(0.5)
+        if not sensor.disponible:
+            print("El ESP32 responde pero dice que NO ve el TCS34725.")
+            print("Comprueba el cableado a GPIO21/22 y que el firmware este subido.")
+            enlace.cerrar()
+            return 2
+    else:
+        sensor = cp.SensorPiso(piso)
+        if not sensor.iniciar():
+            print(f"No hay sensor: {sensor.motivo}")
+            print("Comprueba con:  i2cdetect -y 1   (debe salir 29)")
+            return 2
     print(f"[piso] {sensor.motivo}")
     time.sleep(0.3)
 
@@ -130,6 +168,8 @@ def main() -> int:
         except KeyboardInterrupt:
             print()
         sensor.parar()
+        if enlace is not None:
+            enlace.cerrar()
         return 0
 
     medidos: Dict[str, Dict[str, float]] = {}
@@ -182,6 +222,8 @@ def main() -> int:
                 break
     finally:
         sensor.parar()
+        if enlace is not None:
+            enlace.cerrar()
     return 0
 
 

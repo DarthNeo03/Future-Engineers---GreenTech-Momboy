@@ -87,6 +87,8 @@ class Enlace:
         self._parada = False
         self._centrar = False
         self._cal_imu = 0            # tramas que quedan pidiendo calibracion
+        self._piso_crudo = False     # pedir los canales crudos del sensor de color
+        self.piso_crudo = P.PisoCrudo()
         self._t_mando = 0.0
         self._config_pendiente: Optional[bytes] = None
         self._ping_t: Dict[int, float] = {}
@@ -119,6 +121,15 @@ class Enlace:
     def centrar_servo(self, activo: bool = True) -> None:
         with self._lock:
             self._centrar = bool(activo)
+
+    def pedir_piso_crudo(self, activo: bool = True) -> None:
+        """Pide al ESP32 los canales crudos del sensor de color.
+
+        Solo mientras se calibra: en marcha no hacen falta y ocuparian ancho
+        de banda del enlace en algo que la navegacion no usa.
+        """
+        with self._lock:
+            self._piso_crudo = bool(activo)
 
     def calibrar_imu(self, tramas: int = 10) -> None:
         """Pide al ESP32 que recalibre el giroscopio. El carro tiene que estar
@@ -268,6 +279,7 @@ class Enlace:
                         parada=self._parada,
                         centrar=self._centrar,
                         cal_imu=self._cal_imu > 0,
+                        piso_crudo=self._piso_crudo,
                     )
                     if self._cal_imu > 0:
                         self._cal_imu -= 1
@@ -309,6 +321,8 @@ class Enlace:
                         t = self._ping_t.pop(pl[0], None)
                         if t:
                             self.latencia_ms = (time.time() - t) * 1000.0
+                    elif tipo == P.TIPO_PISO and len(pl) >= 8:
+                        self.piso_crudo = P.PisoCrudo.desde_payload(pl)
                     elif tipo == P.TIPO_LOG:
                         self.al_log("[esp32] " + pl.decode("ascii", "replace"))
                 self.errores_crc = self._lector.crc_malos
