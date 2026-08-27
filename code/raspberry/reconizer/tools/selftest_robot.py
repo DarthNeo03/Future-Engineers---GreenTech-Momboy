@@ -360,6 +360,33 @@ def test_calibracion_tablero():
           f"medio {err:.1f} mm, peor {peor:.1f} mm")
     check(peor >= err, "el peor error nunca es menor que el medio")
 
+    # --- la alternativa: UN marcador ArUco --------------------------------
+    if hasattr(cv2, "aruco"):
+        m4 = geo.mundo_aruco(120.0, 300.0)
+        check(m4.shape == (2, 2, 2), "el marcador da 4 esquinas", m4.shape)
+        check(abs(m4[0, 0, 1] - 300.0) < 1e-6,
+              "la fila cercana queda a la distancia medida", m4[0, 0, 1])
+        check(abs(m4[1, 0, 1] - 420.0) < 1e-6,
+              "y la lejana, un lado mas alla", m4[1, 0, 1])
+        check(abs(m4[0, :, 0].sum()) < 1e-6, "centrado en el eje del carro")
+
+        dic = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        marca = cv2.aruco.generateImageMarker(dic, 7, 300)
+        lienzo = np.full((480, 640), 255, np.uint8)
+        lienzo[90:390, 170:470] = marca
+        e4 = geo.detectar_aruco(lienzo)
+        check(e4 is not None, "detecta el marcador")
+        if e4 is not None:
+            check(e4.shape == (2, 2, 2), "y devuelve las 4 esquinas ordenadas",
+                  e4.shape)
+            # El orden hay que imponerlo: ArUco entrega las esquinas en el
+            # orden de SU marcador, que depende de como este girado.
+            check(e4[0, :, 1].mean() > e4[1, :, 1].mean(),
+                  "fila 0 = la cercana (mas abajo en la imagen)")
+            check(e4[0, 0, 0] < e4[0, 1, 0], "columna 0 = la de la izquierda")
+        check(geo.detectar_aruco(np.full((480, 640), 255, np.uint8)) is None,
+              "y no se inventa un marcador donde no lo hay")
+
     # Con menos de 8 esquinas no hay ajuste que valga.
     try:
         geo.homografia_desde_tableros([(esq[:1, :2], mundo[:1, :2])])
@@ -1189,6 +1216,28 @@ def test_robot_y_web():
     url_base = f"http://127.0.0.1:{cfg['red']['puerto_http']}"
     srv.iniciar()
     time.sleep(0.8)
+
+    # --- sin calibrar, la velocidad se recorta sola ----------------------
+    # La version anterior del navegador iba en 0..1 y funcionaba sin calibrar.
+    # La metrica es mejor calibrada, pero sin homografia los milimetros son
+    # inventados y el disparo del giro, el frenado y el guardia del muro
+    # exterior estan mal A LA VEZ. Recortar la velocidad convierte un error de
+    # escala en un roce en vez de en un golpe.
+    check(not r.suelo.calibrado, "en la prueba el suelo NO esta calibrado")
+    check(r.aviso_calibracion != "", "y el robot lo avisa", r.aviso_calibracion)
+    tope = robot_config.POR_DEFECTO["limites"]["sin_calibrar"]
+    check(r.cfg["limites"]["vel_crucero"] <= tope["vel_crucero"],
+          "la velocidad de crucero queda recortada",
+          r.cfg["limites"]["vel_crucero"])
+    check(r.cfg["limites"]["vmax"] <= tope["vmax"],
+          "y el tope de PWM tambien", r.cfg["limites"]["vmax"])
+
+    # Y no se puede saltar moviendo un slider: aplicar_config lo revisa otra vez.
+    r.cfg["limites"]["vel_crucero"] = 90
+    r.aplicar_config()
+    check(r.cfg["limites"]["vel_crucero"] <= tope["vel_crucero"],
+          "y subirlo desde la web no se lo salta",
+          r.cfg["limites"]["vel_crucero"])
 
     check(r.frame_anotado is not None, "el hilo de control produce imagen anotada")
     check(not r.armado, "el robot NACE DESARMADO (esto es lo importante)")

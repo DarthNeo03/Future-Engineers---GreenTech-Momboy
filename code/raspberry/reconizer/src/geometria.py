@@ -406,6 +406,49 @@ def homografia_desde_tableros(vistas: Sequence[Tuple[np.ndarray, np.ndarray]]
     err = np.linalg.norm(est - mun, axis=1)
     return H, float(err.mean()), float(err.max())
 
+
+def detectar_aruco(gris: np.ndarray, dic: int = 0) -> Optional[np.ndarray]:
+    """Las 4 esquinas del marcador ArUco mas grande que se vea, ORDENADAS:
+    fila 0 la cercana al carro, columna 0 la de la izquierda.
+
+    Devuelve (2, 2, 2): [[cerca-izq, cerca-der], [lejos-izq, lejos-der]].
+
+    Igual que con el tablero, el orden hay que imponerlo: ArUco entrega las
+    esquinas en el orden de SU marcador, que depende de como este girado. Si
+    lo pones al reves, sin reordenar saldria la calibracion reflejada.
+    """
+    if not hasattr(cv2, "aruco"):
+        return None
+    diccionario = cv2.aruco.getPredefinedDictionary(dic or cv2.aruco.DICT_4X4_50)
+    detector = cv2.aruco.ArucoDetector(diccionario, cv2.aruco.DetectorParameters())
+    esquinas, ids, _ = detector.detectMarkers(gris)
+    if ids is None or len(esquinas) == 0:
+        return None
+
+    # Si hay varios, el mas grande: es el que esta mas cerca y mejor definido.
+    areas = [cv2.contourArea(np.asarray(e).reshape(4, 2).astype(np.float32))
+             for e in esquinas]
+    e = np.asarray(esquinas[int(np.argmax(areas))]).reshape(4, 2).astype(np.float32)
+
+    # Ordenar por posicion en la IMAGEN, no por el orden del marcador.
+    orden_v = e[np.argsort(e[:, 1])]          # por fila: los dos ultimos, abajo
+    lejos, cerca = orden_v[:2], orden_v[2:]
+    lejos = lejos[np.argsort(lejos[:, 0])]    # dentro de cada par, por columna
+    cerca = cerca[np.argsort(cerca[:, 0])]
+    return np.stack([cerca, lejos]).astype(np.float32)
+
+
+def mundo_aruco(lado_mm: float, z0_mm: float) -> np.ndarray:
+    """Coordenadas reales de las 4 esquinas de un marcador cuadrado.
+
+    Se coloca plano en el suelo, centrado en el eje del carro, y `z0_mm` es la
+    distancia a su borde MAS CERCANO. Solo hay que medir eso.
+    """
+    h = lado_mm / 2.0
+    return np.array([[[-h, z0_mm], [h, z0_mm]],
+                     [[-h, z0_mm + lado_mm], [h, z0_mm + lado_mm]]],
+                    dtype=np.float32)
+
 # ---------------------------------------------------------------------------
 def contacto_muro(mascara: np.ndarray, cfg: Dict[str, Any]
                   ) -> Tuple[np.ndarray, np.ndarray]:
