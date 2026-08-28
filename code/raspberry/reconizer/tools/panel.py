@@ -65,7 +65,7 @@ class Panel:
         barra.pack(side="top", fill="x")
 
         self.btn_armar = tk.Button(barra, text="ARMAR", font=("Arial", 13, "bold"),
-                                   bg="#1a7f37", fg="white", width=16, height=2,
+                                   bg="#1a7f37", fg="white", width=26, height=2,
                                    command=self.alternar_armado)
         self.btn_armar.pack(side="left", padx=(0, 6))
         tk.Button(barra, text="PARAR", font=("Arial", 13, "bold"),
@@ -138,18 +138,29 @@ class Panel:
         self._campo(f, "vel_giro", "limites", "en giro %", 0, 100)
         self._campo(f, "dir_max", "limites", "dir max %", 0, 100)
 
-        f = ttk.LabelFrame(cont, text="Estrategia", padding=4)
+        f = ttk.LabelFrame(cont, text="Mezcla de navegaciones", padding=4)
         f.pack(fill="x", pady=2)
-        self.var_est = tk.StringVar(value=self.r.cfg["navegacion"]["estrategia"])
-        for txt, val in (("Centrado por espacio libre", "centrado"),
-                         ("Seguir una pared", "pared")):
-            ttk.Radiobutton(f, text=txt, value=val, variable=self.var_est,
-                            command=self._cambiar_estrategia).pack(anchor="w")
+        ttk.Label(f, text="Pesos: se suman las tres a la vez",
+                  foreground="#555").pack(anchor="w")
+        self.campos_mezcla = {}
+        for clave, etiqueta in (("centrado", "centrado"), ("pared", "pared ext."),
+                                ("hueco", "hueco")):
+            c = Campo(f, etiqueta, 0.0, 1.0,
+                      float((self.r.cfg["navegacion"].get("mezcla") or {}).get(clave, 0.0)),
+                      resolucion=0.05, decimales=2, ancho_etiqueta=11,
+                      al_cambiar=lambda v, k=clave: self._peso(k, v))
+            c.pack(fill="x")
+            self.campos_mezcla[clave] = c
+        botones_m = ttk.Frame(f)
+        botones_m.pack(fill="x", pady=2)
+        for clave in ("centrado", "pared", "hueco"):
+            ttk.Button(botones_m, text=f"solo {clave}", width=11,
+                       command=lambda k=clave: self._solo(k)).pack(side="left", padx=1)
         self.var_lado = tk.StringVar(value=self.r.cfg["navegacion"]["lado_pared"])
         sub = ttk.Frame(f)
         sub.pack(anchor="w")
         ttk.Label(sub, text="   pared:").pack(side="left")
-        for txt, val in (("izq", "izq"), ("der", "der")):
+        for txt, val in (("auto", "auto"), ("izq", "izq"), ("der", "der")):
             ttk.Radiobutton(sub, text=txt, value=val, variable=self.var_lado,
                             command=lambda: self._fijar("navegacion", "lado_pared",
                                                         self.var_lado.get())).pack(side="left")
@@ -178,6 +189,54 @@ class Panel:
         self._campo(f, "ruedas_izq", "navegacion", "rueda izq", 0.0, 0.5, 0.01, 2)
         self._campo(f, "ruedas_der", "navegacion", "rueda der", 0.5, 1.0, 0.01, 2)
 
+        f = ttk.LabelFrame(cont, text="Hueco pasable y esquina interna", padding=4)
+        f.pack(fill="x", pady=2)
+        self._campo(f, "umbral_hueco", "navegacion", "umbral hueco", 0.0, 1.0, 0.01, 2)
+        self._campo(f, "margen_hueco", "navegacion", "margen ruedas", 1.0, 2.5, 0.05, 2)
+        self._campo(f, "y_horizonte", "navegacion", "horizonte", 0.0, 0.9, 0.01, 2)
+        self._campo(f, "peso_siguiente", "navegacion", "peso sig. obst", 0.0, 3.0, 0.1, 1)
+        self._campo(f, "salto_min", "navegacion", "salto minimo", 0.02, 0.6, 0.01, 2)
+        self._campo(f, "interno_libre", "navegacion", "interno libre", 0.2, 1.0, 0.01, 2)
+        self._campo(f, "retardo_giro_ms", "navegacion", "retardo giro", 0, 1500, 50, 0)
+        self._campo(f, "dir_giro_abierto", "navegacion", "giro abierto %", 10, 100, 1, 0)
+        self.var_esq = tk.BooleanVar(value=self.r.cfg["navegacion"]["usar_esquina_interna"])
+        ttk.Checkbutton(f, text="girar cuando el muro interno desaparece",
+                        variable=self.var_esq,
+                        command=lambda: self._fijar("navegacion", "usar_esquina_interna",
+                                                    self.var_esq.get())).pack(anchor="w")
+
+        f = ttk.LabelFrame(cont, text="Anticipacion y escape", padding=4)
+        f.pack(fill="x", pady=2)
+        self._campo(f, "ttc_min", "navegacion", "seg. al muro", 0.0, 4.0, 0.1, 1)
+        self._campo(f, "vel_escape", "navegacion", "vel escape %", 0, 60, 1, 0)
+        self._campo(f, "escape_evaluar_ms", "navegacion", "evaluar cada", 200, 2000, 50, 0)
+        self._campo(f, "mejora_min", "navegacion", "mejora minima", 0.0, 0.2, 0.005, 3)
+        self.var_auto = tk.BooleanVar(value=self.r.cfg["navegacion"]["autocalibrar_carril"])
+        ttk.Checkbutton(f, text="calibrar el ancho del carril solo",
+                        variable=self.var_auto,
+                        command=lambda: self._fijar("navegacion", "autocalibrar_carril",
+                                                    self.var_auto.get())).pack(anchor="w")
+
+        f = ttk.LabelFrame(cont, text="Vueltas", padding=4)
+        f.pack(fill="x", pady=2)
+        self._campo(f, "objetivo", "vueltas", "vueltas ida", 1, 10, 1, 0)
+        self._campo(f, "esquinas_por_vuelta", "vueltas", "esq/vuelta", 1, 8, 1, 0)
+        self.var_mv = tk.BooleanVar(value=self.r.cfg["vueltas"]["hacer_media_vuelta"])
+        ttk.Checkbutton(f, text="media vuelta y volver", variable=self.var_mv,
+                        command=lambda: self._fijar("vueltas", "hacer_media_vuelta",
+                                                    self.var_mv.get())).pack(anchor="w")
+        self.var_tmv = tk.StringVar(value=self.r.cfg["vueltas"]["tipo_media_vuelta"])
+        for txt, val in (("en recta, 3 tiempos", "recta_3t"), ("en la esquina", "esquina")):
+            ttk.Radiobutton(f, text=txt, value=val, variable=self.var_tmv,
+                            command=lambda: self._fijar("vueltas", "tipo_media_vuelta",
+                                                        self.var_tmv.get())).pack(anchor="w")
+        bv = ttk.Frame(f)
+        bv.pack(fill="x", pady=2)
+        ttk.Button(bv, text="Reiniciar contador",
+                   command=self.r.nueva_carrera).pack(side="left")
+        ttk.Button(bv, text="Media vuelta ya",
+                   command=self.r.navegador.pedir_media_vuelta).pack(side="left", padx=3)
+
         f = ttk.LabelFrame(cont, text="Giroscopio", padding=4)
         f.pack(fill="x", pady=2)
         self.var_yaw = tk.BooleanVar(value=self.r.cfg["navegacion"]["usar_yaw"])
@@ -191,6 +250,8 @@ class Panel:
         botones.pack(fill="x", pady=2)
         ttk.Button(botones, text="Calibrar", command=self._calibrar_imu).pack(side="left")
         ttk.Button(botones, text="Yaw a cero", command=self._cero_yaw).pack(side="left", padx=3)
+        ttk.Button(botones, text="Calibrar color",
+                   command=self._calibrar_color).pack(side="left")
 
         f = ttk.LabelFrame(cont, text="Manual", padding=4)
         f.pack(fill="x", pady=2)
@@ -208,18 +269,30 @@ class Panel:
         ttk.Button(f, text="Recargar colores", command=self.r.recargar_colores).pack(fill="x")
 
     # ------------------------------------------------------------------
-    def _cambiar_estrategia(self):
-        self.r.cfg["navegacion"]["estrategia"] = self.var_est.get()
+    def _peso(self, clave, valor):
+        mez = dict(self.r.cfg["navegacion"].get("mezcla") or {})
+        mez[clave] = float(valor)
+        self.r.cfg["navegacion"]["mezcla"] = mez
+        self.r.aplicar_config()
+
+    def _solo(self, clave):
+        for k, campo in self.campos_mezcla.items():
+            campo.fijar(1.0 if k == clave else 0.0)
+        self.r.cfg["navegacion"]["mezcla"] = {
+            k: (1.0 if k == clave else 0.0) for k in self.campos_mezcla}
+        self.r.cfg["navegacion"]["estrategia"] = clave
         self.r.navegador.reiniciar()
         self.r.aplicar_config()
 
     def _calibrar_imu(self):
-        import threading
-        threading.Thread(target=self.r.imu.calibrar, daemon=True).start()
+        self.r.sensores.calibrar_rumbo(self.r.enlace)
 
     def _cero_yaw(self):
-        self.r.imu.poner_cero()
+        self.r.sensores.poner_cero(self.r.enlace)
         self.r.navegador.rumbo_objetivo = 0.0
+
+    def _calibrar_color(self):
+        self.r.sensores.calibrar_color(self.r.enlace)
 
     def _manual(self):
         self.r.mando_manual(int(self.c_mvel.obtener()), int(self.c_mdir.obtener()))
@@ -261,7 +334,7 @@ class Panel:
             self.lienzo.image = tkimg
 
         armado = self.r.armado
-        self.btn_armar.configure(text="ARMADO — pulsa para soltar" if armado else "ARMAR",
+        self.btn_armar.configure(text="ARMADO (pulsa para soltar)" if armado else "ARMAR",
                                  bg="#1a7f37" if armado else "#37474f")
 
         e = self.r.enlace
@@ -272,8 +345,15 @@ class Panel:
                f"ESP32 {'OK ' + e.puerto if e.conectado else 'sin conexion'} "
                f"{e.latencia_ms:.0f}ms pwm={t.pwm} ang={t.angulo}"
                f"{' FAILSAFE' if t.failsafe else ''}")
-        if self.r.imu.disponible:
-            est += f" | yaw {self.r.imu.yaw:+.1f}"
+        c = self.r.contador
+        est += (f" | vuelta {c.vueltas}/{c.objetivo}"
+                f" esq {c.esquinas % c.esquinas_por_vuelta}/{c.esquinas_por_vuelta}")
+        if self.r.sensores.hay_rumbo:
+            est += f" | yaw {self.r.sensores.yaw:+.1f} ({self.r.sensores.origen_rumbo})"
+        s_ = self.r.navegador.sentido.estado()
+        est += f" | {s_['nombre']}"
+        if self.r.navegador.carril.listo:
+            est += f" | carril {self.r.navegador.carril.ancho:.2f}"
         self.estado_lbl.configure(text=est)
 
         reg = self.r.registro[-8:]

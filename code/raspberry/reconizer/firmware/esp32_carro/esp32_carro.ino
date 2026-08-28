@@ -26,8 +26,11 @@
 // ===========================================================================
 
 #include <Arduino.h>
+#include <Wire.h>
 #include "protocolo.h"
 #include "seguridad.h"
+#include "lineas.h"
+#include "sensores_i2c.h"
 
 // ======================= PINES =======================
 // Puente H (tal cual tu montaje actual)
@@ -43,6 +46,13 @@ const int PIN_SERVO = 32;
 const int PIN_RX2 = 16;   // <- TX de la Pi (GPIO14)
 const int PIN_TX2 = 17;   // -> RX de la Pi (GPIO15)
 const uint32_t BAUDIOS = 115200;
+
+// Sensores I2C (los dos en el mismo bus: 0x68 el MPU, 0x29 el TCS)
+const int PIN_SDA = 21;
+const int PIN_SCL = 22;
+const int PIN_INT_MPU = 34;   // solo entrada, perfecto para una interrupcion
+const int PIN_INT_TCS = 35;   // idem. Pon -1 si no lo cableas
+const bool USAR_INT_MPU = true;
 
 // Si el carro avanza al reves, cambia esto a 1 en vez de recablear.
 #define INVERTIR_MOTOR 0
@@ -61,8 +71,13 @@ const uint32_t TICK_CONTROL_MS = 10;    // 100 Hz
 const uint32_t PERIODO_TELE_MS = 50;    // 20 Hz
 const uint32_t FAILSAFE_MS     = 300;   // silencio tolerado de la Pi
 const uint32_t VIGILANTE_MS    = 200;   // silencio tolerado del propio control
+const uint32_t PERIODO_IMU_MS  = 5;     // 200 Hz de integracion del rumbo
+const uint32_t ENVIO_IMU_MS    = 20;    // 50 Hz de publicacion a la Pi
+const float    ENVIO_IMU_GRADOS = 0.4f; // ...o antes si el rumbo se mueve mas
+const uint32_t PERIODO_COLOR_MS = 16;   // ~60 Hz de muestreo del color
+const uint32_t PERIODO_SENSORES_MS = 2000;
 
-const uint8_t VERSION_FIRMWARE = 2;
+const uint8_t VERSION_FIRMWARE = 3;
 
 // ======================= ESTADO COMPARTIDO =======================
 QueueHandle_t colaMando = NULL;         // longitud 1, el nuevo pisa al viejo
@@ -79,8 +94,28 @@ volatile int8_t   enlaceActivo    = -1;  // 0 = USB, 1 = GPIO, -1 = ninguno aun
 seg::ControlServo servo;
 seg::ControlMotor motor;
 
+MPU6050 mpu;
+TCS34725 tcs;
+lineas::Detector detectorLinea;
+volatile uint8_t ordenSensores = 0;      // AUX_* pendientes de atender
+volatile uint8_t sensoresPresentes = 0;
+volatile uint8_t hzImu = 0, hzColor = 0;
+volatile bool intMpu = false;
+
+void IRAM_ATTR isrMpu() { intMpu = true; }
+
 HardwareSerial *enlaces[2] = { &Serial, &Serial2 };
 proto::Lector lectores[2];
+
+// ======================= PROTOTIPOS =======================
+void enviarTrama(uint8_t tipo, const uint8_t *payload, uint8_t n);
+void enviarLog(const char *txt);
+void enviarComandoParada();
+void tareaRx(void *);
+void tareaControl(void *);
+void tareaVigilante(void *);
+void tareaTelemetria(void *);
+void tareaSensores(void *);
 
 // ======================= HARDWARE =======================
 static inline void escribirServoHW(int angulo) {
@@ -129,6 +164,13 @@ void enviarTrama(uint8_t tipo, const uint8_t *payload, uint8_t n) {
   }
 }
 
+// Fuerza el failsafe: la tarea de control ve el silencio y para el motor.
+// Se usa antes de calibrar el giroscopo, que exige el carro completamente
+// quieto y tarda algo mas de un segundo.
+void enviarComandoParada() {
+  msUltimoMando = millis() - FAILSAFE_MS - 1;
+}
+
 void enviarLog(const char *txt) {
   uint8_t n = 0;
   while (txt[n] && n < proto::MAX_PAYLOAD) n++;
@@ -156,6 +198,7 @@ void tareaRx(void *) {
               tramasMalas = 0;
               lectores[0].crcMalos = lectores[1].crcMalos = 0;
             }
+            if (m.aux) ordenSensores |= m.aux;   // cero de yaw, calibraciones
           }
         } else if (tipo == proto::TIPO_PING) {
           uint8_t eco = lectores[e].len() ? lectores[e].payload()[0] : 0;
@@ -246,6 +289,113 @@ void tareaVigilante(void *) {
   }
 }
 
+// ======================= TAREA: SENSORES =======================
+// Vive en el nucleo 1 pero con prioridad BAJA: si hay que elegir entre leer el
+// giroscopo y atender el lazo de control, gana el control. Un rumbo que llega
+// 5 ms tarde no rompe nada; un PWM que llega 5 ms tarde, si.
+//
+// Filosofia de envio: datos ya masticados y solo cuando importan.
+//   - el rumbo se integra aqui a 200 Hz y se publica a 50 Hz (o antes si se
+//     movio mas de 0.4 grados). La Pi recibe grados, no muestras crudas.
+//   - el color solo se manda CUANDO CAMBIA: cruzar una linea son dos tramas
+//     de 11 bytes, no un chorro continuo.
+void tareaSensores(void *) {
+  uint32_t tAnterior = millis();
+  uint32_t tEnvioImu = 0, tColor = 0, tEstado = 0, tHz = 0;
+  uint16_t cuentaImu = 0, cuentaColor = 0;
+  float yawEnviado = 0.0f;
+  bool calibrandoImu = false;
+
+  for (;;) {
+    // ---- ordenes que llegaron desde la Pi ----------------------------
+    uint8_t ordenes = ordenSensores;
+    if (ordenes) {
+      ordenSensores = 0;
+      if ((ordenes & proto::AUX_CERO_YAW) && mpu.presente) {
+        mpu.cero();
+        enviarLog("YAW=0");
+      }
+      if ((ordenes & proto::AUX_CALIB_IMU) && mpu.presente) {
+        calibrandoImu = true;
+        enviarLog("CALIB IMU...");
+        // Bloquea esta tarea ~1.2 s, pero NO el control ni el serial: son
+        // tareas distintas. Aun asi el motor se para por seguridad.
+        enviarComandoParada();
+        bool ok = mpu.calibrar(400);
+        calibrandoImu = false;
+        enviarLog(ok ? "CALIB IMU OK" : "CALIB IMU MAL");
+      }
+      if ((ordenes & proto::AUX_CALIB_COLOR) && tcs.presente) {
+        detectorLinea.calibrarBlanco();
+        enviarLog("BLANCO OK");
+      }
+    }
+
+    const uint32_t ahora = millis();
+
+    // ---- rumbo --------------------------------------------------------
+    if (mpu.presente && !calibrandoImu) {
+      const float dt = (ahora - tAnterior) / 1000.0f;
+      if (dt > 0.0f && mpu.actualizar(dt > 0.2f ? 0.2f : dt)) cuentaImu++;
+      tAnterior = ahora;
+      const bool porTiempo = (ahora - tEnvioImu) >= ENVIO_IMU_MS;
+      const bool porCambio = fabsf(mpu.yaw - yawEnviado) >= ENVIO_IMU_GRADOS;
+      if (porTiempo || porCambio) {
+        tEnvioImu = ahora;
+        yawEnviado = mpu.yaw;
+        uint8_t buf[5 + proto::MAX_PAYLOAD];
+        uint8_t n = proto::empaquetarIMU(mpu.yaw, mpu.giroZ, mpu.calibrado,
+                                         (uint8_t)mpu.temp, buf);
+        int8_t e = enlaceActivo;
+        if (e >= 0) enlaces[e]->write(buf, n);
+      }
+    } else {
+      tAnterior = ahora;
+    }
+
+    // ---- color del suelo ----------------------------------------------
+    if (tcs.presente && (ahora - tColor) >= PERIODO_COLOR_MS) {
+      tColor = ahora;
+      // Si el pin INT esta cableado y activo, el sensor ya avisa de que el
+      // color se salio de la ventana; leemos igual porque necesitamos valores.
+      if (tcs.leerColor()) {
+        cuentaColor++;
+        if (detectorLinea.actualizar(tcs.r, tcs.g, tcs.b, tcs.c)) {
+          uint8_t buf[5 + proto::MAX_PAYLOAD];
+          uint8_t n = proto::empaquetarColor(
+              detectorLinea.estado(), detectorLinea.r(), detectorLinea.g(),
+              detectorLinea.b(), detectorLinea.luzComprimida(), buf);
+          int8_t e = enlaceActivo;
+          if (e >= 0) enlaces[e]->write(buf, n);
+        }
+      }
+    }
+
+    // ---- que sensores hay, cada 2 s -----------------------------------
+    if ((ahora - tEstado) >= PERIODO_SENSORES_MS) {
+      tEstado = ahora;
+      uint8_t buf[5 + proto::MAX_PAYLOAD];
+      uint8_t n = proto::empaquetarSensores(sensoresPresentes, hzImu, hzColor, buf);
+      int8_t e = enlaceActivo;
+      if (e >= 0) enlaces[e]->write(buf, n);
+    }
+    if ((ahora - tHz) >= 1000) {
+      tHz = ahora;
+      hzImu = (uint8_t)(cuentaImu > 255 ? 255 : cuentaImu);
+      hzColor = (uint8_t)(cuentaColor > 255 ? 255 : cuentaColor);
+      cuentaImu = cuentaColor = 0;
+    }
+
+    // Si hay pin INT del MPU y ya llego el flanco, no esperamos el tick entero
+    if (USAR_INT_MPU && intMpu) {
+      intMpu = false;
+      vTaskDelay(1);
+    } else {
+      vTaskDelay(pdMS_TO_TICKS(PERIODO_IMU_MS));
+    }
+  }
+}
+
 // ======================= TAREA: TELEMETRIA =======================
 void tareaTelemetria(void *) {
   TickType_t ultimo = xTaskGetTickCount();
@@ -297,6 +447,19 @@ void setup() {
   Serial.begin(BAUDIOS);
   Serial2.begin(BAUDIOS, SERIAL_8N1, PIN_RX2, PIN_TX2);
 
+  // --- Sensores I2C: si no estan, no pasa nada -----------------------------
+  Wire.begin(PIN_SDA, PIN_SCL, 400000);
+  if (mpu.iniciar(Wire, USAR_INT_MPU, PIN_INT_MPU)) {
+    sensoresPresentes |= proto::S_MPU;
+    if (USAR_INT_MPU && PIN_INT_MPU >= 0)
+      attachInterrupt(digitalPinToInterrupt(PIN_INT_MPU), isrMpu, RISING);
+  }
+  if (tcs.iniciar(Wire, PIN_INT_TCS)) {
+    sensoresPresentes |= proto::S_TCS;
+    lineas::Config lc;
+    detectorLinea.configurar(lc);
+  }
+
   colaMando = xQueueCreate(1, sizeof(proto::Mando));
   if (colaMando == NULL) {
     // Sin cola no hay control posible: mejor quedarse parado y gritando.
@@ -310,8 +473,12 @@ void setup() {
   xTaskCreatePinnedToCore(tareaTelemetria,  "Tele",     3072, NULL, 2, NULL, 0);
   xTaskCreatePinnedToCore(tareaControl,     "Control",  4096, NULL, 4, NULL, 1);
   xTaskCreatePinnedToCore(tareaVigilante,   "Vigilante",2048, NULL, 6, NULL, 1);
+  xTaskCreatePinnedToCore(tareaSensores,    "Sensores", 4096, NULL, 2, NULL, 1);
 
   enviarLog("ESP32 listo");
+  if (sensoresPresentes & proto::S_MPU) enviarLog("MPU6050 OK");
+  if (sensoresPresentes & proto::S_TCS) enviarLog("TCS34725 OK");
+  if (!sensoresPresentes) enviarLog("sin sensores I2C");
 }
 
 // Nada que hacer aqui: todo vive en las tareas. Se deja dormir para no

@@ -30,6 +30,23 @@ static const uint8_t TIPO_CONFIG = 0x03;   // Pi -> ESP32, 6 bytes
 static const uint8_t TIPO_TELE   = 0x81;   // ESP32 -> Pi, 8 bytes
 static const uint8_t TIPO_LOG    = 0x82;   // ESP32 -> Pi, texto
 static const uint8_t TIPO_PONG   = 0x83;   // ESP32 -> Pi, 1 byte
+static const uint8_t TIPO_IMU    = 0x84;   // ESP32 -> Pi, 6 bytes (rumbo)
+static const uint8_t TIPO_COLOR  = 0x85;   // ESP32 -> Pi, 6 bytes (evento linea)
+static const uint8_t TIPO_SENSORES = 0x86; // ESP32 -> Pi, 4 bytes (que hay)
+
+// Ordenes hacia los sensores, en el byte 'aux' del mando
+static const uint8_t AUX_CERO_YAW    = 0x01;
+static const uint8_t AUX_CALIB_IMU   = 0x02;
+static const uint8_t AUX_CALIB_COLOR = 0x04;
+
+// Lineas del suelo
+static const uint8_t LINEA_NINGUNA = 0;
+static const uint8_t LINEA_NARANJA = 1;
+static const uint8_t LINEA_AZUL    = 2;
+
+// Bits de 'presentes'
+static const uint8_t S_MPU = 0x01;
+static const uint8_t S_TCS = 0x02;
 
 // Banderas del mando
 static const uint8_t F_ARMADO  = 0x01;
@@ -114,6 +131,39 @@ struct Telemetria {
   uint8_t  tramas_malas;
   uint8_t  version;
 };
+
+// --------------------------------------------------------------------------
+// Rumbo ya integrado por el ESP32. Se manda masticado, no crudo: el MPU escupe
+// cientos de muestras por segundo y mandarlas todas saturaria el serial para
+// nada. Aqui se integra a 200 Hz y se publican 6 bytes cuando toca.
+inline uint8_t empaquetarIMU(float yaw, float giroZ, bool calibrado,
+                             uint8_t temp, uint8_t *salida) {
+  int32_t y = (int32_t)(yaw * 10.0f);
+  if (y >  1800) y =  1800;
+  if (y < -1800) y = -1800;
+  int32_t g = (int32_t)(giroZ * 10.0f);
+  if (g >  32000) g =  32000;
+  if (g < -32000) g = -32000;
+  uint8_t p[6];
+  p[0] = (uint8_t)(y & 0xFF);   p[1] = (uint8_t)((y >> 8) & 0xFF);
+  p[2] = (uint8_t)(g & 0xFF);   p[3] = (uint8_t)((g >> 8) & 0xFF);
+  p[4] = calibrado ? 1 : 0;     p[5] = temp;
+  return empaquetar(TIPO_IMU, p, 6, salida);
+}
+
+// Evento de linea. SOLO se manda cuando cambia: cruzar una linea son dos
+// tramas de 11 bytes por esquina, no un chorro continuo.
+inline uint8_t empaquetarColor(uint8_t linea, uint8_t r, uint8_t g, uint8_t b,
+                               uint8_t luz, uint8_t *salida) {
+  uint8_t p[6] = { linea, r, g, b, luz, 0 };
+  return empaquetar(TIPO_COLOR, p, 6, salida);
+}
+
+inline uint8_t empaquetarSensores(uint8_t presentes, uint8_t hzImu,
+                                  uint8_t hzColor, uint8_t *salida) {
+  uint8_t p[4] = { presentes, hzImu, hzColor, 0 };
+  return empaquetar(TIPO_SENSORES, p, 4, salida);
+}
 
 inline uint8_t empaquetarTelemetria(const Telemetria &t, uint8_t *salida) {
   uint8_t p[8];

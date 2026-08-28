@@ -57,10 +57,17 @@ class Enlace:
     """Envio periodico + recepcion de telemetria, en un hilo aparte."""
 
     def __init__(self, cfg: Dict[str, Any], simulado: bool = False,
-                 al_log: Optional[Callable[[str], None]] = None):
+                 al_log: Optional[Callable[[str], None]] = None,
+                 al_imu: Optional[Callable[[Any], None]] = None,
+                 al_color: Optional[Callable[[Any], None]] = None,
+                 al_sensores: Optional[Callable[[Any], None]] = None):
         self.cfg = cfg or {}
         self.simulado = simulado
         self.al_log = al_log or (lambda s: None)
+        self.al_imu = al_imu or (lambda d: None)
+        self.al_color = al_color or (lambda d: None)
+        self.al_sensores = al_sensores or (lambda d: None)
+        self.sensores = P.EstadoSensores()
 
         self.conectado = False
         self.puerto: str = ""
@@ -83,6 +90,7 @@ class Enlace:
         self._vel = 0
         self._dir = 0
         self._vmax = 130
+        self._aux = 0
         self._armado = False
         self._parada = False
         self._centrar = False
@@ -108,6 +116,13 @@ class Enlace:
     def rearmar(self) -> None:
         with self._lock:
             self._parada = False
+
+    def pedir_a_sensores(self, aux: int) -> None:
+        """Ordenes para los sensores del ESP32 (AUX_CERO_YAW, AUX_CALIB_IMU,
+        AUX_CALIB_COLOR). Viajan en el byte libre del mando, no en una trama
+        nueva: son ordenes raras y asi no hay otra ruta que mantener."""
+        with self._lock:
+            self._aux |= int(aux) & 0xFF
 
     def fijar_vmax(self, vmax: int) -> None:
         """Tope absoluto de PWM. Viaja en cada trama, asi que el ESP32 lo aplica
@@ -259,7 +274,9 @@ class Enlace:
                         armado=self._armado and not vencido and not self._parada,
                         parada=self._parada,
                         centrar=self._centrar,
+                        aux=self._aux,
                     )
+                    self._aux = 0          # las ordenes de sensores van una vez
                     cfg_pend = self._config_pendiente
                     self._config_pendiente = None
                 self._seq = (self._seq + 1) & 0xFF
@@ -300,6 +317,13 @@ class Enlace:
                             self.latencia_ms = (time.time() - t) * 1000.0
                     elif tipo == P.TIPO_LOG:
                         self.al_log("[esp32] " + pl.decode("ascii", "replace"))
+                    elif tipo == P.TIPO_IMU and len(pl) >= 6:
+                        self.al_imu(P.DatosIMU.desde_payload(pl))
+                    elif tipo == P.TIPO_COLOR and len(pl) >= 6:
+                        self.al_color(P.EventoColor.desde_payload(pl))
+                    elif tipo == P.TIPO_SENSORES and len(pl) >= 4:
+                        self.sensores = P.EstadoSensores.desde_payload(pl)
+                        self.al_sensores(self.sensores)
                 self.errores_crc = self._lector.crc_malos
 
             if self.ultima_tele and (time.time() - self.ultima_tele) > timeout_tele:
