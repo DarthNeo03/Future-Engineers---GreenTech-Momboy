@@ -16,7 +16,9 @@ reconizer/
 │   ├── protocolo.py      trama binaria hacia el ESP32
 │   ├── enlace.py         hilo serie con autodetección de puerto
 │   ├── imu.py            MPU6050 opcional por I2C
-│   ├── navegacion.py     perfil del muro y estrategias de esquive
+│   ├── sensores.py       rumbo y color: del ESP32, de la Pi, o de ninguno
+│   ├── navegacion.py     perfil del muro, 3 estrategias, esquinas y escape
+│   ├── vueltas.py        contador de vueltas fusionando 3 fuentes
 │   ├── robot.py          el núcleo que lo une todo
 │   ├── robot_config.py   robot.json
 │   └── servidor.py       carrito.local: vídeo + control desde el móvil
@@ -24,13 +26,17 @@ reconizer/
 │   ├── calibrador.py     interfaz de calibración HSV
 │   ├── panel.py          panel de pruebas de escritorio
 │   ├── selftest.py       51 pruebas de visión, sin cámara
-│   ├── selftest_robot.py 102 pruebas del sistema, sin carro
-│   ├── test_firmware.cpp 49 pruebas de la lógica del ESP32, sin ESP32
+│   ├── selftest_robot.py 189 pruebas del sistema, sin carro
+│   ├── test_firmware.cpp 59 pruebas de la lógica del ESP32, sin ESP32
 │   └── carrito_wifi.sh   AP, mDNS, UART, I2C y servicio de arranque
+├── docs/
+│   └── metodos_navegacion.html   análisis de los 5 métodos
 └── firmware/esp32_carro/
-    ├── esp32_carro.ino   firmware nuevo (sin WiFi)
+    ├── esp32_carro.ino   firmware (sin WiFi, con sensores)
     ├── protocolo.h       gemelo en C++ de protocolo.py
-    └── seguridad.h       límites del servo y del motor
+    ├── seguridad.h       límites del servo y del motor
+    ├── lineas.h          clasificador naranja/azul del TCS34725
+    └── sensores_i2c.h    MPU6050 y TCS34725 autodetectados
 ```
 
 ---
@@ -60,7 +66,7 @@ python main.py --simulado --imagen capturas\pista.png
 ```
 
 **ESP32**: abre `firmware/esp32_carro/esp32_carro.ino` en el IDE de Arduino
-(los tres archivos tienen que estar en la misma carpeta) y súbelo. Ya no hace
+(los cinco archivos tienen que estar en la misma carpeta) y súbelo. Ya no hace
 falta ninguna librería externa: fuera WiFiManager, WebSockets y ESPmDNS.
 
 **Cableado del serie** (cruzado, ambos a 3,3 V, sin divisor):
@@ -80,9 +86,10 @@ contesta por la que recibió la última trama válida.
 
 Enciende, entra a **http://carrito.local:8080/** desde el móvil (o
 `http://192.168.50.1:8080/` si el mDNS no resuelve) y verás lo que ve el carro
-con el muro detectado, el perfil de distancia, por dónde pasan las ruedas y la
-decisión que está tomando. Desde ahí armas, paras, cambias la velocidad máxima,
-la estrategia y las ganancias, en caliente.
+con el muro detectado, el perfil de distancia, los huecos por los que cabe, por
+dónde pasan las ruedas y la decisión que está tomando. Desde ahí armas, paras,
+cambias la velocidad máxima, la mezcla de navegaciones, el número de vueltas y
+las ganancias, en caliente.
 
 El panel de escritorio (`main.py` lo abre solo si hay pantalla) muestra lo mismo
 más los parámetros finos que en el móvil estorban.
@@ -97,51 +104,180 @@ tope. `python3 main.py --vmax 90` lo fija desde la línea de órdenes.
 
 ---
 
-## Cómo no chocar con los muros: qué opciones hay
+## Cómo no chocar con los muros
 
-Lo exploré en `src/navegacion.py`, que lleva el razonamiento completo. Resumen:
+Todo sale del mismo sitio: el **perfil de contacto muro–piso**, columna por
+columna. Para cada columna se busca el píxel negro más bajo, que es donde el
+muro toca el suelo: cuanto más abajo, más cerca. Sale un perfil de distancia de
+ancho completo, como un LIDAR pobre. Encima de eso van tres estrategias que se
+pueden **mezclar con pesos** desde la web o el panel:
 
-| Opción | Qué tal | Estado |
+| Estrategia | Qué hace | Cuándo brilla |
 |---|---|---|
-| **Área de negro en dos ventanas** | Cuatro líneas, pero el muro del fondo (lejos, inofensivo) pesa igual que el de al lado (cerca, peligroso). No distingue distancia. | Descartada |
-| **Perfil de contacto muro-piso, columna por columna** | Para cada columna, el píxel negro más bajo es donde el muro toca el suelo: cuanto más abajo, más cerca. Sale un perfil de distancia de ancho completo, como un LIDAR pobre. | **Implementada, por defecto** |
-| **Seguir una pared a distancia fija** | Trayectorias muy limpias y repetibles, pero hay que decirle qué pared y se pierde si esa pared desaparece. | **Implementada, seleccionable** |
-| **Vista de pájaro (homografía) + pure pursuit** | Es lo "correcto" y lo que hacen los equipos fuertes, pero exige calibrar la homografía con un patrón. El perfil de arriba ya es su entrada natural. | Siguiente paso |
-| **Giroscopio como rumbo** | La pista es un cuadrado: los giros son de 90° exactos. La cámara decide *cuándo* girar, el giroscopio decide *cuánto*. Es lo que más sube la fiabilidad. | **Implementada como capa encima** |
-| **Ultrasonidos laterales** | Un muro de 100 mm visto en ángulo rebota el eco hacia otro lado y devuelve "sin obstáculo" justo cuando vas a chocar. | Solo como red de último metro |
+| **Centrado** | Compara el espacio libre de la banda izquierda y la derecha y gira hacia la despejada con un PD | Es la más tolerante a una calibración imperfecta. Por defecto |
+| **Seguir pared externa** | Mantiene la pared exterior a una distancia fija con un PD | Trayectorias limpias y repetibles. En `auto` deduce sola cuál es la externa |
+| **Hueco pasable** | Busca los tramos por los que el carro **cabe de verdad**, contando el ancho de las ruedas a la distancia del obstáculo | Reto de obstáculos. Es lo que propusiste tú |
 
-Tu idea de medir el negro en la franja central en vez del píxel más bajo está
-generalizada: se mide en **todas** las columnas y luego se agrega por zonas
-(izquierda / pasillo de las ruedas / derecha). Las dos líneas verticales
-blancas del vídeo son por dónde pasan las ruedas, calibrables con `rueda izq` y
-`rueda der` porque la cámara no las ve.
+Los pesos se suman: `centrado 1.0 + hueco 0.5` es una combinación válida y se
+ve el aporte de cada una en la telemetría.
 
-La capa de **seguridad** es independiente de la estrategia: si el pasillo de las
-ruedas baja de `frenar_bajo` se reduce la velocidad, y si baja de `parar_bajo`
-el carro retrocede girando al revés para reencuadrar. Eso corre siempre,
-incluso en modo manual: no te deja empotrar el carro aunque se lo pidas.
+### Lo que se arregló de la primera prueba
+
+**La inercia.** Antes solo se miraba la distancia: cuando el umbral saltaba, el
+carro ya llevaba la velocidad encima. Ahora hay dos capas:
+
+- **Envolvente de velocidad** por distancia, como antes.
+- **Tiempo hasta el muro**: se mide la *velocidad de cierre* del pasillo (cuánto
+  se reduce por segundo) y se calcula cuántos segundos faltan para llegar. Si
+  bajan de `ttc_min` (1.1 s por defecto) se frena **aunque la distancia todavía
+  parezca aceptable**. Es lo que hace que llegue a la esquina ya frenado.
+- **Estado `pre_giro`**: al detectar la esquina no se gira de golpe. Primero se
+  va recto y frenando durante `retardo_giro_ms`, y solo entonces se gira. Ese
+  retardo es además lo que deja pasar las ruedas traseras por la esquina interna.
+
+**El escape.** Retroceder a ciegas era el problema: en una esquina hay otro muro
+detrás que la cámara no ve, y el carro se quedaba encajado empujando. Ahora:
+
+1. **Primero, giro hacia adelante** alejándose del muro externo (si se conoce el
+   sentido de la vuelta, hacia el lado del muro interno). Casi siempre resuelve.
+2. Si en `escape_evaluar_ms` (700 ms) el espacio **no mejora**, prueba marcha atrás.
+3. Si atrás tampoco mejora — el caso de la esquina de atrás — vuelve a adelante,
+   y a la tercera cambia de lado. Cuenta los cambios y avisa de `ATASCADO`.
+
+**El giro tardío del seguimiento de pared.** No era cuestión de ganancias: en la
+esquina no hay pared que seguir. La solución es el disparador nuevo.
+
+### La esquina del muro interno
+
+El muro externo siempre se ve; el interno **se acaba** en cada esquina. Ese final
+es un **escalón brusco en el perfil**: delante hay muro cerca, y de golpe la
+columna siguiente ve piso o el muro de enfrente, mucho más lejos.
+
+```
+libre  ────────────╮
+                   │  ← escalón: aquí se acabó el muro interno
+     ──────────────╯
+        columnas de la imagen  →
+```
+
+Ese escalón llega **bastante antes** de que el muro de enfrente esté encima, que
+es justo el aviso que faltaba. Cuando salta, el carro entra en `pre_giro` y luego
+gira con `dir_giro_abierto` (65 % por defecto, no a tope) para que las ruedas
+traseras no barran la esquina.
+
+### El sentido de la vuelta
+
+Yendo en sentido horario el centro de la pista queda a la derecha, así que el
+**muro interno está a la derecha** y los giros son a la derecha. El programa lo
+deduce por votos de tres fuentes:
+
+- el signo de los giros que ya ha hecho,
+- el lado donde aparece el escalón del muro interno,
+- el orden de las líneas del suelo (naranja y luego azul = horario, configurable).
+
+Con el sentido conocido, `lado_pared: auto` sigue sola la pared externa y el
+escape sabe hacia dónde salir. Tras la media vuelta todo se invierte solo.
+
+### El ancho de carril se calibra solo
+
+En competencia abierta el carril cambia de una pista a otra, así que los
+umbrales fijos no valen. En recta, con poca dirección y el frente despejado, la
+**suma del espacio libre de las dos bandas laterales es prácticamente constante**
+y no depende de por dónde vayas dentro del carril: esa suma *es* el ancho del
+carril en las unidades del perfil.
+
+Con ella se derivan `parar_bajo`, `girar_bajo` y `frenar_bajo`, acotados a
+valores sensatos. En la web aparece `(auto)` al lado del umbral cuando está
+mandando la medida. Se puede desactivar con `autocalibrar_carril`.
 
 ### Parámetros que vas a tocar en la pista
 
 | Parámetro | Qué hace |
 |---|---|
-| `girar_bajo` | Espacio libre por debajo del cual asume que hay esquina y gira |
-| `frenar_bajo` / `parar_bajo` | Dónde empieza a frenar y dónde se planta |
-| `kp` / `kd` | PD del centrado. Sube `kp` si va lento a corregir, sube `kd` si oscila |
-| `dir_giro` | Cuánto vuelca la dirección en las esquinas |
-| `min_recto_ms` | Espera mínima entre dos esquinas: evita que encadene giros sobre sí mismo |
+| `ttc_min` | Segundos hasta el muro por debajo de los cuales frena. **Súbelo si sigue llegando rápido a las esquinas** |
+| `interno_libre` | Cuánto tiene que despejarse la banda interna para dar la esquina por buena |
+| `retardo_giro_ms` | Espera entre detectar la esquina y girar. Súbelo si las ruedas traseras rozan |
+| `dir_giro_abierto` | Cuánto vuelca la dirección en la esquina. Bájalo para un giro más abierto |
+| `margen_hueco` | Cuánto más ancho que el carro se exige un hueco (1.15 = 15 % de margen) |
+| `y_horizonte` | Fila del horizonte. Escala la perspectiva del ancho del carro. **Reajústalo si mueves la cámara** |
+| `kp` / `kd` | PD del centrado. Sube `kp` si corrige lento, sube `kd` si oscila |
 | `px_min_columna` | Píxeles negros mínimos en una columna para creerse que hay muro |
-| `ignorar_abajo` | Franja inferior tapada por el chasis |
 
----
+## Vueltas, y media vuelta
+
+En la pista hay una línea naranja y una azul en cada esquina. El contador fusiona
+**tres fuentes**, porque una sola falla:
+
+1. **La cámara** ve las líneas del suelo (colores ya calibrados). Falla si la luz
+   cambia o la línea queda fuera del recorte de abajo.
+2. **El TCS34725** las ve por contacto. Falla si el carro pasa por el borde.
+3. **Los giros de 90°** que cuenta la navegación. No falla casi nunca, pero no
+   distingue una esquina de un esquive brusco.
+
+Una esquina se da por buena cuando se completa un **par** de líneas (naranja +
+azul en cualquier orden dentro de una ventana) o cuando termina un giro. Ver la
+misma esquina por los tres caminos suma **una**. Cuatro esquinas = una vuelta.
+
+Al llegar al objetivo (3 por defecto, ajustable en la web y el panel) pide la
+media vuelta, y al terminarla cuenta otras tantas en sentido contrario. Hay dos
+maniobras, elegibles en caliente:
+
+- **`recta_3t`** — tres tiempos en la recta: adelante girando, atrás girando al
+  revés, adelante otra vez, con el yaw controlando los 180°. Lo más seguro en un
+  carril estrecho, ~4 s.
+- **`esquina`** — espera a llegar a una esquina, donde sobra sitio, y encadena
+  dos giros. Más rápido y elegante, depende de detectar bien la esquina.
+
+Ojo con un detalle que costó encontrar: para medir 180° **no sirve** la diferencia
+angular contra el rumbo inicial, porque se envuelve y al pasar de 180 empieza a
+bajar. Hay que acumular el giro paso a paso; así está hecho.
+
+## Los sensores
+
+Hoy el **MPU6050** y el **TCS34725** van al ESP32, con sus pines INT. El firmware
+los **autodetecta**: si el chip no contesta al arrancar, no se usa y todo sigue
+igual. Puedes enchufarlos cuando quieras sin recompilar.
+
+```
+ESP32          MPU6050 / TCS34725
+GPIO21  ──►    SDA
+GPIO22  ──►    SCL
+GPIO34  ◄──    INT del MPU6050
+GPIO35  ◄──    INT del TCS34725
+3V3 / GND      alimentación
+```
+
+**Qué manda el ESP32 y qué no.** No manda muestras crudas: eso saturaría el
+serial para nada.
+
+- **Rumbo**: el ESP32 integra el giroscopio a 200 Hz y publica el yaw **ya en
+  grados** a 50 Hz, o antes si se movió más de 0.4°. La Pi recibe un número, no
+  un chorro de lecturas.
+- **Color**: solo se manda **cuando cambia**. Cruzar una línea son dos tramas de
+  11 bytes por esquina, no un flujo continuo.
+
+**Y si mañana los pasas a la Raspberry**, solo cambias una palabra en
+`robot.json`:
+
+```json
+"sensores": { "origen_rumbo": "pi", "origen_color": "camara" }
+```
+
+En `auto` gana el ESP32 si reporta que tiene el chip; si no, se prueba el I2C de
+la Pi; si tampoco, se sigue sin él. El cambio es **en caliente**: si desenchufas
+el sensor a mitad de prueba, a los pocos segundos se cae a la alternativa sin
+que nadie reinicie nada.
+
+El clasificador de líneas trabaja **en relativo**, no con umbrales fijos de RGB:
+primero toma una muestra del piso blanco (botón *Calibrar color*) y después solo
+importa cuánto se aleja el color medido de ese blanco. Así el mismo umbral vale
+con luz de tubo, de LED o de ventana — probado, sin calibrar da falso positivo
+con luz cálida y calibrando no.
 
 ## El giroscopio (opcional de verdad)
 
-El MPU6050 va al **I2C de la Raspberry**, no al ESP32: escupe cientos de
-muestras por segundo y lo que hace falta es integrarlas y filtrarlas, no
-reaccionar a cada una. Metiendo eso en el ESP32 le robas tiempo al lazo de
-control, que sí es crítico. En la Pi corre en su propio hilo a 100 Hz y cuesta
-menos del 2% de un núcleo.
+Si prefieres el MPU6050 en el **I2C de la Raspberry** en vez del ESP32, pon
+`"origen_rumbo": "pi"` y cablea:
 
 ```
 VCC -> pin 1 (3V3)     SDA -> pin 3 (GPIO2)
@@ -248,8 +384,16 @@ hardware y software libres.
 
 ## Qué sigue
 
-1. Probar vueltas a la pista vacía y ajustar `girar_bajo` y `kp`/`kd`.
-2. Contar vueltas con las líneas naranja y azul del piso (los colores ya están).
-3. Reto de obstáculos: pasar el rojo por la derecha y el verde por la izquierda,
+El análisis de los cinco métodos de navegación, con los tres mejores a fondo y
+en qué orden implementarlos, está en `docs/metodos_navegacion.html`. Resumen:
+
+1. **Medir primero** con lo que ya hay: da vueltas con el centrado y mira en
+   `carrito.local` el ancho de carril autocalibrado, los segundos hasta el muro
+   en las esquinas y cuántas veces entra en escape.
+2. **Mezcla por confianza**: que cada estrategia diga cuánto se fía de sí misma
+   y su peso se multiplique por eso. Barato y reversible.
+3. **Arcos de dirección**: evaluar la curva que el carro puede recorrer de
+   verdad, no un punto. Lo que más mejoraría, y lo que más cuesta.
+4. Reto de obstáculos: el rojo por la derecha y el verde por la izquierda,
    usando `Deteccion.base_y` como distancia y `desviacion()` como error lateral.
-4. Estacionamiento en la zona magenta.
+5. Estacionamiento en la zona magenta.

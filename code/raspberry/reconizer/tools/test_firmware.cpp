@@ -15,6 +15,7 @@
 
 #include "protocolo.h"
 #include "seguridad.h"
+#include "lineas.h"
 
 static int fallos = 0, oks = 0;
 static void check(bool c, const char *nombre, const char *detalle = "") {
@@ -261,6 +262,96 @@ static void testPwmDesdePorcentaje() {
 }
 
 // ---------------------------------------------------------------------------
+// Colores tipicos del tapete WRO medidos por un TCS34725 (canal claro incluido)
+struct Muestra { uint16_t r, g, b, c; };
+static const Muestra PISO_BLANCO = { 1000, 1000, 1000, 3000 };
+static const Muestra LINEA_NARANJA = { 1500,  900,  400, 3000 };
+static const Muestra LINEA_AZUL    = {  350,  650, 1100, 2000 };
+static const Muestra A_OSCURAS     = {   30,   30,   30,   90 };
+// Mismo tapete pero con luz calida: todo tira a rojo
+static const Muestra BLANCO_CALIDO = { 1300,  980,  720, 3000 };
+static const Muestra NARANJA_CALIDO= { 1800,  850,  350, 3000 };
+
+static int alimentar(lineas::Detector &d, const Muestra &m, int veces) {
+  int eventos = 0;
+  for (int i = 0; i < veces; i++)
+    if (d.actualizar(m.r, m.g, m.b, m.c)) eventos++;
+  return eventos;
+}
+
+static void testLineas() {
+  printf("\n[C8] Clasificador de lineas del suelo (TCS34725)\n");
+  lineas::Detector d;
+  lineas::Config c;              // umbral 22, confirmar 2, soltar 3
+  d.configurar(c);
+
+  alimentar(d, PISO_BLANCO, 5);
+  check(d.estado() == lineas::NINGUNA, "el piso blanco no es ninguna linea");
+
+  int ev = alimentar(d, LINEA_NARANJA, 2);
+  check(d.estado() == lineas::NARANJA && ev == 1,
+        "dos lecturas seguidas de naranja = un evento", std::to_string(ev).c_str());
+
+  ev = alimentar(d, LINEA_NARANJA, 10);
+  check(ev == 0, "mientras sigue encima de la linea NO repite el evento", std::to_string(ev).c_str());
+
+  ev = alimentar(d, PISO_BLANCO, 3);
+  check(d.estado() == lineas::NINGUNA && ev == 1, "al salir, un solo evento", std::to_string(ev).c_str());
+
+  ev = alimentar(d, LINEA_AZUL, 2);
+  check(d.estado() == lineas::AZUL && ev == 1, "y el azul se distingue del naranja");
+  alimentar(d, PISO_BLANCO, 3);
+
+  // Un destello suelto no cuenta: es lo que hacia que el contador de vueltas
+  // sumara dos por cada linea.
+  lineas::Detector d2;
+  d2.configurar(c);
+  alimentar(d2, PISO_BLANCO, 5);
+  ev = alimentar(d2, LINEA_NARANJA, 1);
+  ev += alimentar(d2, PISO_BLANCO, 5);
+  check(ev == 0 && d2.estado() == lineas::NINGUNA,
+        "un reflejo de una sola lectura no cuenta como cruce", std::to_string(ev).c_str());
+
+  // A oscuras (sombra del muro) no inventa lineas
+  lineas::Detector d3;
+  d3.configurar(c);
+  alimentar(d3, A_OSCURAS, 6);
+  check(d3.estado() == lineas::NINGUNA, "a oscuras no inventa lineas");
+
+  // Con luz calida el blanco ya no es neutro: sin calibrar da falso positivo,
+  // calibrando funciona. Esto es el motivo de que el clasificador sea relativo.
+  lineas::Detector d4;
+  d4.configurar(c);
+  alimentar(d4, BLANCO_CALIDO, 4);
+  bool falso = (d4.estado() != lineas::NINGUNA);
+
+  lineas::Detector d5;
+  d5.configurar(c);
+  alimentar(d5, BLANCO_CALIDO, 2);
+  d5.calibrarBlanco();
+  alimentar(d5, BLANCO_CALIDO, 4);
+  check(d5.estado() == lineas::NINGUNA,
+        "tras calibrar el blanco, la luz calida ya no es una linea");
+  alimentar(d5, NARANJA_CALIDO, 3);
+  check(d5.estado() == lineas::NARANJA,
+        "y la naranja de verdad se sigue detectando con esa luz");
+  printf("       (sin calibrar, el blanco calido %s daba falso positivo)\n",
+         falso ? "SI" : "no");
+
+  // Barrido: ningun color posible debe romper nada
+  lineas::Detector d6;
+  d6.configurar(c);
+  bool roto = false;
+  for (uint32_t cc = 0; cc <= 65000; cc += 4093)
+    for (uint32_t rr = 0; rr <= 65000; rr += 8191) {
+      d6.actualizar((uint16_t)rr, (uint16_t)(rr / 2), (uint16_t)(cc / 3),
+                    (uint16_t)cc);
+      if (d6.estado() > lineas::AZUL) roto = true;
+    }
+  check(!roto, "ningun color devuelve un estado invalido");
+}
+
+// ---------------------------------------------------------------------------
 // Vectores para cruzar con Python
 static void imprimirVectores() {
   struct Caso { int seq, flags, vel, dir, vmax; };
@@ -288,6 +379,36 @@ static void imprimirVectores() {
     for (uint8_t i = 0; i < n; i++) printf("%02X", buf[i]);
     printf("\n");
   }
+  // Tramas de sensores
+  struct CasoImu { int yaw10, gz10, cal, temp; };
+  CasoImu imus[] = { {0,0,0,0}, {-1234, 987, 1, 31}, {1800, -32000, 1, 255} };
+  for (CasoImu &ci : imus) {
+    uint8_t buf[32];
+    uint8_t n = proto::empaquetarIMU(ci.yaw10 / 10.0f, ci.gz10 / 10.0f,
+                                     ci.cal != 0, (uint8_t)ci.temp, buf);
+    printf("IMU %d %d %d %d ", ci.yaw10, ci.gz10, ci.cal, ci.temp);
+    for (uint8_t i = 0; i < n; i++) printf("%02X", buf[i]);
+    printf("\n");
+  }
+  int cols[][5] = { {0,85,85,85,11}, {1,127,76,34,11}, {2,44,82,140,7} };
+  for (auto &v : cols) {
+    uint8_t buf[32];
+    uint8_t n = proto::empaquetarColor((uint8_t)v[0], (uint8_t)v[1], (uint8_t)v[2],
+                                       (uint8_t)v[3], (uint8_t)v[4], buf);
+    printf("COLOR %d %d %d %d %d ", v[0], v[1], v[2], v[3], v[4]);
+    for (uint8_t i = 0; i < n; i++) printf("%02X", buf[i]);
+    printf("\n");
+  }
+  int sens[][3] = { {0,0,0}, {1,200,60}, {3,255,255} };
+  for (auto &v : sens) {
+    uint8_t buf[32];
+    uint8_t n = proto::empaquetarSensores((uint8_t)v[0], (uint8_t)v[1],
+                                          (uint8_t)v[2], buf);
+    printf("SENSORES %d %d %d ", v[0], v[1], v[2]);
+    for (uint8_t i = 0; i < n; i++) printf("%02X", buf[i]);
+    printf("\n");
+  }
+
   // Vectores del servo: porcentaje -> grados con la config real del carro
   seg::ControlServo s;
   seg::ConfigServo c; c.centro = 100; c.izquierda = 65; c.derecha = 135;
@@ -307,6 +428,7 @@ int main(int argc, char **argv) {
   testServoVelocidad();
   testMotor();
   testPwmDesdePorcentaje();
+  testLineas();
   printf("\n%d pruebas ok, %d fallos\n", oks, fallos);
   return fallos ? 1 : 0;
 }

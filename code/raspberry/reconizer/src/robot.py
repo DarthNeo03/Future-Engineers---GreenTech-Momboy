@@ -5,13 +5,13 @@ Un solo objeto Robot al que se enganchan las dos interfaces (el panel de
 escritorio y la web de carrito.local). Las dos leen el mismo estado y mandan
 las mismas ordenes, asi que no hay dos verdades.
 
-Hilo de control: captura, procesa el color del muro, calcula el perfil, decide
-y manda. El envio al ESP32 lo hace `enlace` en su propio hilo a 50 Hz; aqui
-solo se refresca la orden. Si este hilo se atasca, el enlace manda ceros a los
-250 ms y el ESP32 corta a los 300 ms.
+Hilo de control: captura, saca el muro y las lineas del suelo, calcula el
+perfil, decide y manda. El envio al ESP32 lo hace `enlace` en su propio hilo a
+50 Hz. Si este hilo se atasca, el enlace manda ceros a los 250 ms y el ESP32
+corta a los 300 ms.
 
-ARRANQUE SEGURO: el robot nace DESARMADO. Hay que pulsar ARMAR (en el panel o
-en la web) para que el motor pueda moverse, y cualquier cosa rara lo desarma.
+ARRANQUE SEGURO: el robot nace DESARMADO. Hay que pulsar ARMAR para que el
+motor pueda moverse, y cualquier cosa rara lo desarma.
 """
 
 from __future__ import annotations
@@ -23,9 +23,10 @@ from typing import Any, Callable, Dict, List, Optional
 import cv2
 import numpy as np
 
-from . import camera, color_config as cc, enlace as enl, imu as imu_mod
+from . import camera, color_config as cc, enlace as enl
 from . import navegacion as nav
-from . import robot_config, vision
+from . import protocolo as P
+from . import robot_config, sensores as sens_mod, vision, vueltas as vueltas_mod
 
 
 class Robot:
@@ -37,9 +38,16 @@ class Robot:
         self.fuente_imagen = fuente_imagen
 
         self.vision = vision.Vision(perfil_color["colores"])
-        self.navegador = nav.Navegador(cfg["navegacion"], cfg["limites"])
-        self.enlace = enl.Enlace(cfg["enlace"], simulado=simulado, al_log=self.log)
-        self.imu = imu_mod.IMU(cfg["imu"])
+        self.navegador = nav.Navegador(cfg["navegacion"], cfg["limites"],
+                                       cfg.get("vueltas", {}))
+        self.sensores = sens_mod.Sensores(cfg.get("sensores", {}), al_log=self.log)
+        self.enlace = enl.Enlace(
+            cfg["enlace"], simulado=simulado, al_log=self.log,
+            al_imu=self.sensores.desde_esp32_imu,
+            al_color=self._color_esp32,
+            al_sensores=self.sensores.desde_esp32_estado)
+        self.contador = vueltas_mod.ContadorVueltas(cfg.get("vueltas", {}), al_log=self.log)
+        self.lineas_camara = vueltas_mod.DetectorLineasCamara(cfg.get("vueltas", {}))
 
         self.armado = False
         self.modo = "auto"          # "auto" | "manual" | "parado"
@@ -62,12 +70,16 @@ class Robot:
 
     # -- registro ---------------------------------------------------------
     def log(self, txt: str) -> None:
-        marca = time.strftime("%H:%M:%S")
-        linea = f"{marca} {txt}"
+        linea = f"{time.strftime('%H:%M:%S')} {txt}"
         print(linea)
         self.registro.append(linea)
         if len(self.registro) > 200:
             del self.registro[:100]
+
+    def _color_esp32(self, ev: P.EventoColor) -> None:
+        self.sensores.desde_esp32_color(ev)
+        if ev.linea != P.LINEA_NINGUNA:
+            self.contador.evento_linea(ev.linea, "tcs")
 
     # -- arranque ---------------------------------------------------------
     def iniciar(self) -> None:
@@ -87,22 +99,11 @@ class Robot:
 
         self.enlace.fijar_vmax(int(self.cfg["limites"]["vmax"]))
         self.enlace.iniciar()
-
-        if self.imu.iniciar():
-            self.log(f"[imu] {self.imu.motivo}; calibrando, NO MUEVAS EL CARRO")
-            threading.Thread(target=self._calibrar_imu, daemon=True).start()
-        else:
-            self.log(f"[imu] sin giroscopio: {self.imu.motivo} (se sigue solo con camara)")
+        self.sensores.iniciar_respaldo_pi()
 
         self._parar.clear()
         self._hilo = threading.Thread(target=self._bucle, daemon=True, name="control")
         self._hilo.start()
-
-    def _calibrar_imu(self):
-        if self.imu.calibrar():
-            self.log("[imu] calibrado, yaw a cero")
-        else:
-            self.log("[imu] no se pudo calibrar")
 
     def cerrar(self) -> None:
         self._parar.set()
@@ -114,7 +115,7 @@ class Robot:
         except Exception:
             pass
         self.enlace.cerrar()
-        self.imu.parar()
+        self.sensores.parar()
         if self._cap is not None:
             self._cap.release()
 
@@ -124,8 +125,8 @@ class Robot:
         if si:
             self.enlace.rearmar()
             self.navegador.reiniciar()
-            if self.imu.disponible:
-                self.navegador.rumbo_objetivo = self.imu.yaw
+            if self.sensores.hay_rumbo:
+                self.navegador.rumbo_objetivo = self.sensores.yaw
             self.log("[robot] ARMADO")
         else:
             self.enlace.parar()
@@ -146,11 +147,23 @@ class Robot:
     def mando_manual(self, vel: int, direccion: int) -> None:
         self.manual = {"vel": int(vel), "dir": int(direccion)}
 
+    def nueva_carrera(self) -> None:
+        """Contadores a cero para volver a empezar sin reiniciar el programa."""
+        self.contador.reiniciar()
+        self.navegador.reiniciar(todo=True)
+        self.sensores.poner_cero(self.enlace)
+        self.log("[robot] carrera reiniciada")
+
     def aplicar_config(self) -> None:
-        """Releer limites tras cambiarlos desde la interfaz."""
         self.enlace.fijar_vmax(int(self.cfg["limites"]["vmax"]))
         self.navegador.cfg = self.cfg["navegacion"]
         self.navegador.lim = self.cfg["limites"]
+        self.navegador.cfg_vueltas = self.cfg.get("vueltas", {})
+        self.navegador.carril.cfg = self.cfg["navegacion"]
+        self.navegador.sentido.cfg = self.cfg["navegacion"]
+        self.contador.cfg = self.cfg.get("vueltas", {})
+        self.lineas_camara.cfg = self.cfg.get("vueltas", {})
+        self.sensores.cfg = self.cfg.get("sensores", {})
 
     def guardar_config(self) -> None:
         robot_config.guardar(self.cfg)
@@ -190,30 +203,61 @@ class Robot:
                 continue
             sin_frame = 0
 
+            self.sensores.actualizar()
+
             color_muro = str(self.cfg["navegacion"].get("color_muro", "negro"))
-            dets, masks = self.vision.procesar(frame, solo=[color_muro])
+            quiere = [color_muro]
+            usar_lineas_camara = self.sensores.origen_color in ("camara", "auto")
+            if usar_lineas_camara:
+                quiere += ["naranja", "azul"]
+            quiere = [c for c in quiere if c in self.perfil_color["colores"]]
+            dets, masks = self.vision.procesar(frame, solo=quiere)
             mascara = masks.get(color_muro)
             if mascara is None:
                 mascara = np.zeros(frame.shape[:2], np.uint8)
 
-            perfil = nav.perfil_desde_mascara(mascara, self.cfg["navegacion"])
-            yaw = self.imu.yaw if self.imu.disponible else None
+            # ---- lineas del suelo por camara -----------------------------
+            if usar_lineas_camara:
+                cruce = self.lineas_camara.procesar(masks)
+                if cruce != P.LINEA_NINGUNA:
+                    self.sensores.desde_camara(cruce)
+                    self.contador.evento_linea(cruce, "camara")
 
+            perfil = nav.perfil_desde_mascara(mascara, self.cfg["navegacion"])
+            yaw = self.sensores.yaw_o_none()
+
+            # ---- vueltas y media vuelta ----------------------------------
+            lado = self.navegador.tomar_giro()
+            if lado is not None:
+                self.contador.evento_giro(lado)
+            if self.contador.sentido_lineas and not self.navegador.sentido.sentido:
+                self.navegador.sentido._votar("lineas", self.contador.sentido_lineas, 2.0)
+            if self.contador.media_vuelta_pendiente and not self.navegador.media_vuelta_pedida:
+                self.navegador.pedir_media_vuelta()
+            if self.navegador.media_vuelta_hecha and self.contador.media_vuelta_pendiente:
+                self.contador.media_vuelta_completada()
+                self.navegador.media_vuelta_hecha = False
+            if self.contador.terminado:
+                self.navegador.terminado = True
+
+            # ---- decision -------------------------------------------------
             if self.modo == "auto" and self.armado:
                 d = self.navegador.paso(perfil, yaw)
             elif self.modo == "manual" and self.armado:
                 d = nav.Decision(vel=self.manual["vel"], direccion=self.manual["dir"],
                                  estado="manual", motivo="mando manual",
                                  metricas=self.navegador._metricas(perfil, yaw))
-                # La seguridad manda incluso en manual: si el pasillo se cierra
-                # de verdad, no dejamos que el mando meta el carro en la pared.
-                if perfil.pasillo < float(self.cfg["navegacion"]["parar_bajo"]) and d.vel > 0:
+                if perfil.pasillo < self.navegador._umbral("parar_bajo") and d.vel > 0:
                     d.vel = 0
                     d.motivo = "manual bloqueado: muro delante"
             else:
                 d = nav.Decision(vel=0, direccion=0, estado="parado",
                                  motivo="desarmado" if not self.armado else self.modo,
                                  metricas=self.navegador._metricas(perfil, yaw))
+
+            if self.contador.terminado and self.armado:
+                self.armar(False)
+                self.log("[robot] recorrido completo: desarmado")
 
             self.enlace.mandar(d.vel, d.direccion,
                                armado=self.armado and self.modo != "parado")
@@ -222,7 +266,7 @@ class Robot:
             vision.dibujar_detecciones(anotado, dets.get(color_muro, []),
                                        self.perfil_color["colores"][color_muro]["color_dibujo"],
                                        etiqueta=False)
-            nav.dibujar_navegacion(anotado, perfil, d, self.cfg["navegacion"])
+            nav.dibujar_navegacion(anotado, perfil, d, self.cfg["navegacion"], self.navegador)
             self._pie(anotado, d)
 
             ahora = time.perf_counter()
@@ -252,9 +296,16 @@ class Robot:
                 txt += " FAILSAFE"
         cv2.putText(img, txt, (8, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
                     (0, 255, 0) if e.conectado else (0, 0, 255), 1, cv2.LINE_AA)
-        if self.imu.disponible:
-            cv2.putText(img, f"yaw {self.imu.yaw:+6.1f}", (W - 110, 16),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 200, 0), 1, cv2.LINE_AA)
+
+        c = self.contador
+        v = f"vuelta {c.vueltas}/{c.objetivo} ({'ida' if c.tramo == 0 else 'vuelta'})"
+        v += f"  esq {c.esquinas % c.esquinas_por_vuelta}/{c.esquinas_por_vuelta}"
+        cv2.putText(img, v, (W - 260, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                    (255, 255, 0), 1, cv2.LINE_AA)
+        if self.sensores.hay_rumbo:
+            cv2.putText(img, f"yaw {self.sensores.yaw:+6.1f} ({self.sensores.origen_rumbo})",
+                        (W - 260, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                        (255, 200, 0), 1, cv2.LINE_AA)
 
     # -- lectura para las interfaces ---------------------------------------
     def instantanea(self):
@@ -272,8 +323,11 @@ class Robot:
                          "motivo": d.motivo, "metricas": d.metricas},
             "limites": self.cfg["limites"],
             "navegacion": self.cfg["navegacion"],
+            "vueltas_cfg": self.cfg.get("vueltas", {}),
+            "vueltas": self.contador.estado(),
             "enlace": self.enlace.estado(),
-            "imu": self.imu.estado(),
+            "sensores": self.sensores.estado(),
+            "lineas_camara": self.lineas_camara.fracciones,
             "camara_error": self.error_camara,
             "perfil_color": self.perfil_color.get("nombre", ""),
         }

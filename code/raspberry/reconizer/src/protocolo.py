@@ -38,6 +38,26 @@ TIPO_CONFIG = 0x03    # Pi -> ESP32 (6 bytes) ajustes en caliente
 TIPO_TELE = 0x81      # ESP32 -> Pi (8 bytes)
 TIPO_LOG = 0x82       # ESP32 -> Pi (texto)
 TIPO_PONG = 0x83      # ESP32 -> Pi (1 byte: seq eco)
+TIPO_IMU = 0x84       # ESP32 -> Pi (6 bytes) rumbo del MPU6050
+TIPO_COLOR = 0x85     # ESP32 -> Pi (6 bytes) evento del TCS34725
+TIPO_SENSORES = 0x86  # ESP32 -> Pi (4 bytes) que sensores hay conectados
+
+# --- comandos hacia los sensores, en el byte 'aux' del mando ---------------
+# Van ahi en vez de en una trama nueva: son ordenes raras (una al arrancar) y
+# asi no hay una segunda ruta de escritura que mantener.
+AUX_CERO_YAW = 0x01       # pone el rumbo actual como cero
+AUX_CALIB_IMU = 0x02      # recalibra la deriva del giroscopio (carro quieto)
+AUX_CALIB_COLOR = 0x04    # toma el color actual como "piso blanco"
+
+# --- identificadores de linea del suelo ------------------------------------
+LINEA_NINGUNA = 0
+LINEA_NARANJA = 1
+LINEA_AZUL = 2
+NOMBRE_LINEA = {LINEA_NINGUNA: "ninguna", LINEA_NARANJA: "naranja", LINEA_AZUL: "azul"}
+
+# --- bits de 'presentes' en TIPO_SENSORES ---------------------------------
+S_MPU = 0x01
+S_TCS = 0x02
 
 # --- banderas del mando ----------------------------------------------------
 F_ARMADO = 0x01       # sin esto el ESP32 no mueve el motor pase lo que pase
@@ -105,6 +125,7 @@ class Mando:
     parada: bool = False
     centrar: bool = False
     limpiar: bool = False
+    aux: int = 0                 # ordenes para los sensores (AUX_*)
 
     def banderas(self) -> int:
         f = 0
@@ -126,18 +147,19 @@ class Mando:
             _lim(int(self.vel), -100, 100),
             _lim(int(self.direccion), -100, 100),
             _lim(int(self.vmax), 0, 255),
-            0,
+            _lim(int(self.aux), 0, 255),
         )
         return empaquetar(TIPO_MANDO, payload)
 
     @staticmethod
     def desde_payload(payload: bytes) -> "Mando":
-        seq, flags, vel, direccion, vmax, _aux = struct.unpack("<BBbbBB", payload[:6])
+        seq, flags, vel, direccion, vmax, aux = struct.unpack("<BBbbBB", payload[:6])
         return Mando(seq=seq, vel=vel, direccion=direccion, vmax=vmax,
                      armado=bool(flags & F_ARMADO),
                      parada=bool(flags & F_PARADA),
                      centrar=bool(flags & F_CENTRAR),
-                     limpiar=bool(flags & F_LIMPIAR))
+                     limpiar=bool(flags & F_LIMPIAR),
+                     aux=aux)
 
 
 @dataclass
@@ -177,6 +199,83 @@ class Telemetria:
     def desde_payload(payload: bytes) -> "Telemetria":
         (seq, estado, pwm, ang, ms, malas, ver) = struct.unpack("<BBBBHBB", payload[:8])
         return Telemetria(seq, estado, pwm, ang, ms, malas, ver)
+
+
+@dataclass
+class DatosIMU:
+    """Rumbo que calcula el ESP32 con el MPU6050 y manda ya masticado.
+
+    Se manda el YAW INTEGRADO, no las muestras crudas: el MPU escupe cientos de
+    lecturas por segundo y mandarlas todas saturaria el serial para nada. El
+    ESP32 integra a 200 Hz y publica 6 bytes a 50 Hz (o antes si el rumbo se
+    mueve mas de un umbral). Eso es lo que la navegacion necesita.
+    """
+    yaw: float = 0.0          # grados, -180..180
+    giro_z: float = 0.0       # grados/s
+    calibrado: bool = False
+    temp: int = 0             # grados C, util para ver la deriva termica
+
+    def a_bytes(self) -> bytes:
+        return empaquetar(TIPO_IMU, struct.pack(
+            "<hhBB",
+            _lim(int(round(self.yaw * 10)), -1800, 1800),
+            _lim(int(round(self.giro_z * 10)), -32000, 32000),
+            1 if self.calibrado else 0,
+            _lim(int(self.temp), 0, 255)))
+
+    @staticmethod
+    def desde_payload(pl: bytes) -> "DatosIMU":
+        yaw, gz, cal, temp = struct.unpack("<hhBB", pl[:6])
+        return DatosIMU(yaw / 10.0, gz / 10.0, bool(cal), temp)
+
+
+@dataclass
+class EventoColor:
+    """Cambio de linea visto por el TCS34725. Solo se manda cuando CAMBIA."""
+    linea: int = LINEA_NINGUNA
+    r: int = 0                # normalizados 0..255 contra el canal claro
+    g: int = 0
+    b: int = 0
+    luz: int = 0              # canal claro / 256, para ver si esta cegado
+
+    @property
+    def nombre(self) -> str:
+        return NOMBRE_LINEA.get(self.linea, "?")
+
+    def a_bytes(self) -> bytes:
+        return empaquetar(TIPO_COLOR, struct.pack(
+            "<BBBBBB", _lim(self.linea, 0, 255), _lim(self.r, 0, 255),
+            _lim(self.g, 0, 255), _lim(self.b, 0, 255), _lim(self.luz, 0, 255), 0))
+
+    @staticmethod
+    def desde_payload(pl: bytes) -> "EventoColor":
+        linea, r, g, b, luz, _ = struct.unpack("<BBBBBB", pl[:6])
+        return EventoColor(linea, r, g, b, luz)
+
+
+@dataclass
+class EstadoSensores:
+    presentes: int = 0
+    hz_imu: int = 0
+    hz_color: int = 0
+
+    @property
+    def mpu(self) -> bool:
+        return bool(self.presentes & S_MPU)
+
+    @property
+    def tcs(self) -> bool:
+        return bool(self.presentes & S_TCS)
+
+    def a_bytes(self) -> bytes:
+        return empaquetar(TIPO_SENSORES, struct.pack(
+            "<BBBB", _lim(self.presentes, 0, 255), _lim(self.hz_imu, 0, 255),
+            _lim(self.hz_color, 0, 255), 0))
+
+    @staticmethod
+    def desde_payload(pl: bytes) -> "EstadoSensores":
+        presentes, hz_i, hz_c, _ = struct.unpack("<BBBB", pl[:4])
+        return EstadoSensores(presentes, hz_i, hz_c)
 
 
 def empaquetar_config(servo_centro: int, servo_min: int, servo_max: int,
