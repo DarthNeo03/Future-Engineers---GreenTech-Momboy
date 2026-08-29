@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>WRO Future Engineers - Panel</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header>
+  <div class="brand">WRO<span>FE 2026</span></div>
+  <div id="pills" class="pills"></div>
+  <div class="modes">
+    <button class="mode" data-mode="open">Reto Abierto</button>
+    <button class="mode" data-mode="obstacle">Obstaculos</button>
+    <button class="mode" data-mode="manual">Manual</button>
+  </div>
+  <div class="actions">
+    <button id="btnArm" class="arm">ARMAR</button>
+    <button id="btnStop" class="stop">PARAR</button>
+  </div>
+</header>
+
+<main>
+  <section class="col video">
+    <div class="tabs" id="viewTabs">
+      <button data-view="overlay" class="on">Superposicion</button>
+      <button data-view="bev">Vista de pajaro</button>
+      <button data-view="mask">Mascara</button>
+      <button data-view="raw">Cruda</button>
+    </div>
+    <div class="framewrap"><img id="stream" src="/stream.mjpg?view=overlay" alt="video"></div>
+
+    <div id="joystick" class="joy hidden">
+      <div class="joyhead">Mando manual &mdash; arrastra dentro del cuadro o usa las flechas del teclado</div>
+      <div class="joybody">
+        <div id="pad" class="pad"><div id="knob" class="knob"></div>
+          <div class="axis ah"></div><div class="axis av"></div></div>
+        <div class="joyinfo">
+          <div>Direccion <b id="jsSteer">0</b>%</div>
+          <div>Velocidad <b id="jsSpeed">0</b>%</div>
+          <label>Tope de velocidad <input id="jsMax" type="range" min="10" max="100" value="45">
+            <b id="jsMaxV">45</b>%</label>
+          <p class="hint">Se suelta = para. Si el mando deja de enviar durante
+             0,6 s el robot frena solo (dead-man).</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="col side">
+    <div class="card">
+      <h3>Estado</h3>
+      <div id="tState" class="grid"></div>
+    </div>
+    <div class="card">
+      <h3>Vision</h3>
+      <div id="tVision" class="grid"></div>
+    </div>
+    <div class="card">
+      <h3>ESP32 / sensores</h3>
+      <div id="tEsp" class="grid"></div>
+    </div>
+    <div class="card">
+      <h3>Calibrar inclinacion de la camara</h3>
+      <p class="hint">Pon el robot mirando de frente a un muro, mide con cinta
+        desde el punto de referencia del robot hasta la BASE del muro y pulsa
+        calibrar. Se resuelve la inclinacion para que la distancia medida por
+        vision coincida.</p>
+      <div class="row">
+        <input id="calDist" type="number" value="400" min="120" max="2000" step="10">
+        <span>mm</span>
+        <button id="btnCal">Calibrar</button>
+      </div>
+      <div id="calMsg" class="hint"></div>
+    </div>
+  </section>
+</main>
+
+<section class="cfg">
+  <div class="cfghead">
+    <h2>Calibracion</h2>
+    <input id="filter" type="search" placeholder="buscar parametro...">
+    <label class="chk"><input type="checkbox" id="showAdv"> avanzados</label>
+    <button id="btnSave">Guardar</button>
+    <button id="btnDefaults" class="danger">Valores por defecto</button>
+    <span id="cfgMsg" class="hint"></span>
+  </div>
+  <div id="cfgGroups"></div>
+</section>
+
+<footer>
+  Recuerda: el reglamento (11.10) prohibe Wi-Fi durante las rondas.
+  Este panel es solo para pruebas &mdash; arranca con <code>--no-web</code> y
+  apaga la Wi-Fi para competir.
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
