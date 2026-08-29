@@ -26,6 +26,7 @@ import numpy as np
 from . import camera, color_config as cc, enlace as enl
 from . import navegacion as nav
 from . import protocolo as P
+from . import obstaculos as obst_mod
 from . import robot_config, sensores as sens_mod, vision, vueltas as vueltas_mod
 
 
@@ -48,6 +49,7 @@ class Robot:
             al_sensores=self.sensores.desde_esp32_estado)
         self.contador = vueltas_mod.ContadorVueltas(cfg.get("vueltas", {}), al_log=self.log)
         self.lineas_camara = vueltas_mod.DetectorLineasCamara(cfg.get("vueltas", {}))
+        self.esquiva = obst_mod.EsquivaPilares(cfg.get("obstaculos", {}))
 
         self.armado = False
         self.modo = "auto"          # "auto" | "manual" | "parado"
@@ -67,6 +69,7 @@ class Robot:
         self._parar = threading.Event()
         self._lock = threading.Lock()
         self._imagen_fija: Optional[np.ndarray] = None
+        self._sentido_lineas_visto = 0
 
     # -- registro ---------------------------------------------------------
     def log(self, txt: str) -> None:
@@ -151,6 +154,7 @@ class Robot:
         """Contadores a cero para volver a empezar sin reiniciar el programa."""
         self.contador.reiniciar()
         self.navegador.reiniciar(todo=True)
+        self.esquiva.reiniciar()
         self.sensores.poner_cero(self.enlace)
         self.log("[robot] carrera reiniciada")
 
@@ -164,6 +168,17 @@ class Robot:
         self.contador.cfg = self.cfg.get("vueltas", {})
         self.lineas_camara.cfg = self.cfg.get("vueltas", {})
         self.sensores.cfg = self.cfg.get("sensores", {})
+        self.esquiva.cfg = self.cfg.get("obstaculos", {})
+
+    def reintentar_sensores(self) -> None:
+        """Le dice al ESP32 que vuelva a buscar el MPU6050 y el TCS34725.
+
+        Hace falta porque los chips a veces tardan mas que el ESP32 en arrancar
+        (sobre todo si comparten alimentacion con el motor) y se quedan fuera
+        del sondeo inicial.
+        """
+        self.sensores.reintentar(self.enlace)
+        self.log("[robot] reintentando la conexion de los sensores")
 
     def guardar_config(self) -> None:
         robot_config.guardar(self.cfg)
@@ -210,6 +225,9 @@ class Robot:
             usar_lineas_camara = self.sensores.origen_color in ("camara", "auto")
             if usar_lineas_camara:
                 quiere += ["naranja", "azul"]
+            hay_obstaculos = bool(self.cfg.get("obstaculos", {}).get("activo", False))
+            if hay_obstaculos:
+                quiere += ["rojo", "verde"]
             quiere = [c for c in quiere if c in self.perfil_color["colores"]]
             dets, masks = self.vision.procesar(frame, solo=quiere)
             mascara = masks.get(color_muro)
@@ -230,8 +248,13 @@ class Robot:
             lado = self.navegador.tomar_giro()
             if lado is not None:
                 self.contador.evento_giro(lado)
-            if self.contador.sentido_lineas and not self.navegador.sentido.sentido:
-                self.navegador.sentido._votar("lineas", self.contador.sentido_lineas, 2.0)
+            if self._sentido_lineas_visto != self.contador.sentido_lineas:
+                self._sentido_lineas_visto = self.contador.sentido_lineas
+                if self.contador.sentido_lineas:
+                    # horario segun las lineas -> pared externa a la derecha
+                    self.navegador.paredes._votar(
+                        "lineas",
+                        nav.DER if self.contador.sentido_lineas > 0 else nav.IZQ, 2.0)
             if self.contador.media_vuelta_pendiente and not self.navegador.media_vuelta_pedida:
                 self.navegador.pedir_media_vuelta()
             if self.navegador.media_vuelta_hecha and self.contador.media_vuelta_pendiente:
@@ -240,9 +263,13 @@ class Robot:
             if self.contador.terminado:
                 self.navegador.terminado = True
 
+            # ---- esquiva de pilares ---------------------------------------
+            res_esquiva = self.esquiva.paso(dets, perfil, self.cfg["navegacion"]) \
+                if hay_obstaculos else None
+
             # ---- decision -------------------------------------------------
             if self.modo == "auto" and self.armado:
-                d = self.navegador.paso(perfil, yaw)
+                d = self.navegador.paso(perfil, yaw, esquiva=res_esquiva)
             elif self.modo == "manual" and self.armado:
                 d = nav.Decision(vel=self.manual["vel"], direccion=self.manual["dir"],
                                  estado="manual", motivo="mando manual",
@@ -267,6 +294,8 @@ class Robot:
                                        self.perfil_color["colores"][color_muro]["color_dibujo"],
                                        etiqueta=False)
             nav.dibujar_navegacion(anotado, perfil, d, self.cfg["navegacion"], self.navegador)
+            if hay_obstaculos and res_esquiva is not None:
+                obst_mod.dibujar_pilares(anotado, dets, res_esquiva)
             self._pie(anotado, d)
 
             ahora = time.perf_counter()
@@ -327,6 +356,8 @@ class Robot:
             "vueltas": self.contador.estado(),
             "enlace": self.enlace.estado(),
             "sensores": self.sensores.estado(),
+            "obstaculos": self.esquiva.estado(),
+            "obstaculos_cfg": self.cfg.get("obstaculos", {}),
             "lineas_camara": self.lineas_camara.fracciones,
             "camara_error": self.error_camara,
             "perfil_color": self.perfil_color.get("nombre", ""),

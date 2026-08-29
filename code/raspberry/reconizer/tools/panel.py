@@ -209,13 +209,40 @@ class Panel:
         f.pack(fill="x", pady=2)
         self._campo(f, "ttc_min", "navegacion", "seg. al muro", 0.0, 4.0, 0.1, 1)
         self._campo(f, "vel_escape", "navegacion", "vel escape %", 0, 60, 1, 0)
-        self._campo(f, "escape_evaluar_ms", "navegacion", "evaluar cada", 200, 2000, 50, 0)
+        self._campo(f, "escape_atras_min_ms", "navegacion", "atras minimo", 200, 3000, 50, 0)
+        self._campo(f, "escape_atras_extra_ms", "navegacion", "atras extra", 0, 4000, 100, 0)
+        self._campo(f, "escape_atascado_ms", "navegacion", "atascado tras", 300, 4000, 100, 0)
+        self._campo(f, "escape_salir_factor", "navegacion", "salir con x", 1.0, 2.0, 0.05, 2)
         self._campo(f, "mejora_min", "navegacion", "mejora minima", 0.0, 0.2, 0.005, 3)
         self.var_auto = tk.BooleanVar(value=self.r.cfg["navegacion"]["autocalibrar_carril"])
         ttk.Checkbutton(f, text="calibrar el ancho del carril solo",
                         variable=self.var_auto,
                         command=lambda: self._fijar("navegacion", "autocalibrar_carril",
                                                     self.var_auto.get())).pack(anchor="w")
+
+        f = ttk.LabelFrame(cont, text="Esquivar pilares de colores", padding=4)
+        f.pack(fill="x", pady=2)
+        ttk.Label(f, text="rojo -> por su derecha · verde -> por su izquierda",
+                  foreground="#555").pack(anchor="w")
+        self.var_obs = tk.BooleanVar(value=self.r.cfg["obstaculos"]["activo"])
+        ttk.Checkbutton(f, text="ESQUIVAR OBSTACULOS", variable=self.var_obs,
+                        command=self._alternar_obstaculos).pack(anchor="w")
+        self._campo(f, "margen_lateral", "obstaculos", "separacion", 0.5, 2.5, 0.05, 2)
+        self._campo(f, "activar_desde", "obstaculos", "hacer caso", 0.1, 0.9, 0.01, 2)
+        self._campo(f, "mandar_desde", "obstaculos", "manda desde", 0.2, 0.99, 0.01, 2)
+        self._campo(f, "area_min_pilar", "obstaculos", "area min", 50, 4000, 25, 0)
+        self._campo(f, "kp", "obstaculos", "Kp pilar", 0, 300, 1, 0)
+
+        f = ttk.LabelFrame(cont, text="Sentido de la vuelta", padding=4)
+        f.pack(fill="x", pady=2)
+        ttk.Label(f, text="externa a la izq = antihorario · a la der = horario",
+                  foreground="#555").pack(anchor="w")
+        self.var_sen = tk.IntVar(value=self.r.navegador.paredes.forzado)
+        for txt, val in (("automatico", 0), ("forzar antihorario", -1),
+                         ("forzar horario", 1)):
+            ttk.Radiobutton(f, text=txt, value=val, variable=self.var_sen,
+                            command=lambda: self.r.navegador.paredes.forzar(
+                                self.var_sen.get())).pack(anchor="w")
 
         f = ttk.LabelFrame(cont, text="Vueltas", padding=4)
         f.pack(fill="x", pady=2)
@@ -252,6 +279,8 @@ class Panel:
         ttk.Button(botones, text="Yaw a cero", command=self._cero_yaw).pack(side="left", padx=3)
         ttk.Button(botones, text="Calibrar color",
                    command=self._calibrar_color).pack(side="left")
+        ttk.Button(f, text="REINTENTAR SENSORES I2C",
+                   command=self._reintentar_sensores).pack(fill="x", pady=(4, 0))
 
         f = ttk.LabelFrame(cont, text="Manual", padding=4)
         f.pack(fill="x", pady=2)
@@ -290,6 +319,14 @@ class Panel:
     def _cero_yaw(self):
         self.r.sensores.poner_cero(self.r.enlace)
         self.r.navegador.rumbo_objetivo = 0.0
+
+    def _alternar_obstaculos(self):
+        self.r.cfg["obstaculos"]["activo"] = bool(self.var_obs.get())
+        self.r.esquiva.reiniciar()
+        self.r.aplicar_config()
+
+    def _reintentar_sensores(self):
+        self.r.reintentar_sensores()
 
     def _calibrar_color(self):
         self.r.sensores.calibrar_color(self.r.enlace)
@@ -350,8 +387,11 @@ class Panel:
                 f" esq {c.esquinas % c.esquinas_por_vuelta}/{c.esquinas_por_vuelta}")
         if self.r.sensores.hay_rumbo:
             est += f" | yaw {self.r.sensores.yaw:+.1f} ({self.r.sensores.origen_rumbo})"
-        s_ = self.r.navegador.sentido.estado()
-        est += f" | {s_['nombre']}"
+        s_ = self.r.navegador.paredes.estado()
+        est += f" | ext {s_['externa']} ({s_['nombre']})"
+        o = self.r.esquiva.estado()
+        if o.get("siguiendo"):
+            est += f" | {o['motivo']}"
         if self.r.navegador.carril.listo:
             est += f" | carril {self.r.navegador.carril.ancho:.2f}"
         self.estado_lbl.configure(text=est)

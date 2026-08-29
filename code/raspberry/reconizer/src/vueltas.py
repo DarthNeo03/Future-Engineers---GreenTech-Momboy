@@ -62,6 +62,7 @@ class ContadorVueltas:
         self._par_abierto: Optional[Cruce] = None
         self.sentido_lineas = 0          # +1 horario segun el orden de lineas
         self.ultima_esquina_por = ""
+        self.ignoradas = 0               # esquinas descartadas por el refractario
 
     @property
     def objetivo(self) -> int:
@@ -77,6 +78,11 @@ class ContadorVueltas:
         if linea == P.LINEA_NINGUNA or self.terminado:
             return
         ahora = time.time()
+        # Dentro del periodo refractario no se apunta nada: son rebotes de la
+        # esquina que se acaba de contar.
+        refractario = float(self.cfg.get("refractario_ms", 3000)) / 1000.0
+        if ahora - self._t_ultima_esquina < refractario:
+            return
         deb = float(self.cfg.get("debounce_ms", 900)) / 1000.0
         # el mismo color otra vez enseguida es la misma linea vista dos veces
         if ahora - self._t_ultimo_cruce.get(linea, 0.0) < deb:
@@ -90,11 +96,16 @@ class ContadorVueltas:
             del self.historial[:20]
 
         ventana = float(self.cfg.get("ventana_par_ms", 2500)) / 1000.0
-        if self._par_abierto and self._par_abierto.linea != linea and \
-                (ahora - self._par_abierto.t) <= ventana:
+        if self._par_abierto and (ahora - self._par_abierto.t) > ventana:
+            self._par_abierto = None          # el par se quedo a medias, caduca
+        if self._par_abierto and self._par_abierto.linea != linea:
             self._deducir_sentido(self._par_abierto.linea, linea)
             self._par_abierto = None
             self._registrar_esquina("lineas")
+        elif bool(self.cfg.get("una_linea_basta", False)):
+            # Modo tolerante: si el tapete solo deja ver una de las dos lineas,
+            # una sola ya cuenta como esquina (el refractario evita el triple).
+            self._registrar_esquina("linea suelta")
         else:
             self._par_abierto = c
 
@@ -114,11 +125,27 @@ class ContadorVueltas:
             self.sentido_lineas = -1
 
     def _registrar_esquina(self, por: str) -> None:
+        """Una esquina, una cuenta.
+
+        QUE FALLABA: la ventana de deduplicacion era de 2.2 s y solo tapaba lo
+        que llegaba MUY seguido. Al cruzar una esquina real llegan la linea
+        naranja, la azul, a veces otra vez la naranja porque el carro entra en
+        diagonal y la fraccion de pixeles sube y baja, y ademas el giro. Con
+        2.2 s eso son dos o tres esquinas contadas.
+
+        Ahora hay un PERIODO REFRACTARIO de verdad: tras registrar una esquina
+        no se admite otra hasta pasados 'refractario_ms' (3 s por defecto), da
+        igual de que fuente venga. En una vuelta las esquinas estan separadas
+        varios segundos, asi que no se pierde ninguna real.
+        """
         ahora = time.time()
-        ventana = float(self.cfg.get("ventana_esquina_ms", 2200)) / 1000.0
-        if ahora - self._t_ultima_esquina < ventana:
-            return                    # esta esquina ya la conto otra fuente
+        refractario = float(self.cfg.get("refractario_ms",
+                                         self.cfg.get("ventana_esquina_ms", 3000)))
+        if ahora - self._t_ultima_esquina < refractario / 1000.0:
+            self.ignoradas += 1
+            return
         self._t_ultima_esquina = ahora
+        self._par_abierto = None      # empezamos limpios para la siguiente
         self.esquinas += 1
         self.ultima_esquina_por = por
         if self.esquinas % self.esquinas_por_vuelta == 0:
@@ -161,6 +188,7 @@ class ContadorVueltas:
             "media_vuelta_pendiente": self.media_vuelta_pendiente,
             "sentido_lineas": self.sentido_lineas,
             "ultima_por": self.ultima_esquina_por,
+            "ignoradas": self.ignoradas,
             "historial": self.historial[-8:],
         }
 
@@ -180,30 +208,65 @@ class DetectorLineasCamara:
         self.estado_actual = P.LINEA_NINGUNA
         self.fracciones: Dict[str, float] = {"naranja": 0.0, "azul": 0.0}
         self._t_ultimo = 0.0
+        self._candidato = P.LINEA_NINGUNA
+        self._repeticiones = 0
 
     def procesar(self, mascaras: Dict[str, Any]) -> int:
-        """Devuelve la linea recien cruzada, o LINEA_NINGUNA."""
+        """Devuelve la linea recien cruzada, o LINEA_NINGUNA.
+
+        Tres cosas que evitan contar de mas:
+          * DOMINANCIA: cerca de una esquina se ven las dos lineas a la vez. Si
+            la ganadora no es claramente mayor que la otra, no se declara nada;
+            si no, el maximo va saltando entre naranja y azul y cada salto
+            parecia un cruce nuevo.
+          * CONFIRMACION: hacen falta varios frames seguidos para declarar.
+          * HISTERESIS: para soltar la linea la fraccion tiene que bajar bien
+            por debajo del umbral, no solo rozarlo.
+        """
         import numpy as np
         umbral = float(self.cfg.get("umbral_linea_camara", 0.02))
         arriba = float(self.cfg.get("roi_linea_arriba", 0.78))
-        mejor, mejor_frac = P.LINEA_NINGUNA, 0.0
+        dominancia = float(self.cfg.get("dominancia_linea", 1.6))
+        conf = int(self.cfg.get("frames_confirmar_linea", 2))
+        soltar = float(self.cfg.get("histeresis_linea", 0.55))
+
+        fracs: Dict[int, float] = {}
         for nombre, ident in (("naranja", P.LINEA_NARANJA), ("azul", P.LINEA_AZUL)):
             m = mascaras.get(nombre)
             if m is None:
                 self.fracciones[nombre] = 0.0
+                fracs[ident] = 0.0
                 continue
             H = m.shape[0]
             recorte = m[int(H * arriba):]
             frac = float(np.count_nonzero(recorte)) / max(1, recorte.size)
             self.fracciones[nombre] = round(frac, 4)
-            if frac > mejor_frac:
-                mejor_frac, mejor = frac, ident
+            fracs[ident] = frac
 
-        nuevo = mejor if mejor_frac >= umbral else P.LINEA_NINGUNA
+        orden = sorted(fracs.items(), key=lambda kv: -kv[1])
+        mejor, mejor_frac = orden[0]
+        segunda = orden[1][1] if len(orden) > 1 else 0.0
+
+        if self.estado_actual != P.LINEA_NINGUNA:
+            # ya estamos encima de una: se suelta con histeresis
+            nuevo = (self.estado_actual
+                     if fracs.get(self.estado_actual, 0.0) >= umbral * soltar
+                     else P.LINEA_NINGUNA)
+        elif mejor_frac >= umbral and mejor_frac >= segunda * dominancia:
+            nuevo = mejor
+        else:
+            nuevo = P.LINEA_NINGUNA
+
+        if nuevo == self._candidato:
+            self._repeticiones += 1
+        else:
+            self._candidato = nuevo
+            self._repeticiones = 1
+
         salida = P.LINEA_NINGUNA
-        if nuevo != self.estado_actual:
-            # flanco de subida: acabamos de pisar la linea
+        hacen_falta = 1 if nuevo == P.LINEA_NINGUNA else conf
+        if nuevo != self.estado_actual and self._repeticiones >= hacen_falta:
             if nuevo != P.LINEA_NINGUNA:
-                salida = nuevo
+                salida = nuevo          # flanco de subida: acabamos de pisarla
             self.estado_actual = nuevo
         return salida

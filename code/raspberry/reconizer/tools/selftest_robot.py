@@ -293,8 +293,8 @@ def test_estrategias():
     d2, p2, n2 = decidir(pista([(0, 425), (430, 425), (520, 200), (639, 150)]), cfg_esq)
     check(n2.estado == nav.ESCAPE, "si ya esta encima, escape en vez de giro",
           f"{n2.estado} pasillo={p2.pasillo:.2f}")
-    check(d2.vel > 0 and d2.direccion > 0,
-          "y el escape es HACIA ADELANTE girando al hueco, no marcha atras",
+    check(d2.vel < 0 and abs(d2.direccion) > 50,
+          "y el escape retrocede comprometido girando para reencuadrar",
           f"vel={d2.vel} dir={d2.direccion}")
 
     # --- muro encima: parada / retroceso ---
@@ -729,50 +729,66 @@ def test_anticipacion():
 
 
 def test_escape():
-    print("\n[11] Escape: hacia adelante primero, marcha atras solo si hace falta")
-    cfg = _cfg(escape_evaluar_ms=120, mejora_min=0.05)
+    print("\n[11] Escape: retroceso comprometido, no vaiven")
+    cfg = _cfg(escape_atras_min_ms=300, escape_atras_extra_ms=200,
+               escape_atascado_ms=250, mejora_min=0.05)
     lim = dict(robot_config.POR_DEFECTO["limites"])
     encima = _perfil(pista([(0, 455), (639, 455)]), cfg)
 
     n = nav.Navegador(cfg, lim)
     d = n.paso(encima, None)
     check(n.estado == nav.ESCAPE, "muro encima -> estado escape", n.estado)
-    check(d.vel > 0, "el PRIMER intento es hacia adelante, no marcha atras", d.vel)
-    check(abs(d.direccion) > 50, "girando a tope hacia el lado libre", d.direccion)
+    check(d.vel < 0, "con el muro encima RETROCEDE (antes se quedaba en vaiven)", d.vel)
+    check(abs(d.direccion) > 50, "girando para reencuadrar el morro", d.direccion)
+    check(n._escape_compromiso >= 300,
+          "y se compromete a un tiempo minimo de marcha atras",
+          f"{n._escape_compromiso:.0f} ms")
 
-    # No mejora: al cabo de un rato prueba marcha atras
-    hubo_atras = False
-    for _ in range(12):
+    # Cuanto mas encima el muro, mas tiempo de retroceso se compromete
+    n_lejos = nav.Navegador(cfg, lim)
+    casi = _perfil(pista([(0, 370), (639, 370)]), dict(cfg, parar_bajo=0.30))
+    n_lejos.cfg = dict(cfg, parar_bajo=0.30)
+    n_lejos.paso(casi, None)
+    check(n_lejos._escape_compromiso < n._escape_compromiso,
+          "con el muro menos encima, el retroceso comprometido es mas corto",
+          f"{n_lejos._escape_compromiso:.0f} vs {n._escape_compromiso:.0f} ms")
+
+    # No abandona la marcha atras a las primeras de cambio
+    signos = []
+    for _ in range(4):
         time.sleep(0.05)
-        d = n.paso(encima, None)
-        if d.vel < 0:
-            hubo_atras = True
-            break
-    check(hubo_atras, "si adelante no mejora, prueba marcha atras")
+        signos.append(1 if n.paso(encima, None).vel > 0 else -1)
+    check(all(x < 0 for x in signos),
+          "no cambia de idea a mitad del retroceso", signos)
 
-    # Tampoco mejora hacia atras (el caso de la esquina de atras): vuelve a adelante
-    volvio = False
+    # Si no mejora nada en un buen rato, es que hay algo detras: adelante
+    hubo_adelante = False
     for _ in range(20):
         time.sleep(0.05)
-        d = n.paso(encima, None)
-        if d.vel > 0:
-            volvio = True
+        if n.paso(encima, None).vel > 0:
+            hubo_adelante = True
             break
-    check(volvio, "y si atras tampoco (esquina detras), vuelve a intentar adelante")
-    check(n._escape_cambios >= 2, "cuenta los cambios para saber que esta atascado",
-          n._escape_cambios)
+    check(hubo_adelante, "si no gana espacio, deduce que hay algo detras y va adelante")
 
-    # En cuanto se abre hueco, sale del escape
+    # En cuanto hay sitio de verdad, sale del escape
     libre = _perfil(pista([(0, 150), (639, 150)]), cfg)
-    d = n.paso(libre, None)
+    time.sleep(0.35)
+    n.paso(libre, None)
     check(n.estado != nav.ESCAPE, "con espacio delante sale del escape", n.estado)
 
-    # El escape se va hacia el lado del muro interno si se conoce el sentido
-    n2 = nav.Navegador(cfg, lim)
-    n2.sentido._votar("giro", nav.DER, 3.0)     # horario -> interno a la derecha
-    d = n2.paso(encima, None)
-    check(d.direccion > 0, "sabiendo el sentido, escapa hacia el muro interno",
-          d.direccion)
+    # No sale por un parpadeo: si aun no ha cumplido el minimo, sigue atras
+    n2 = nav.Navegador(dict(cfg, escape_atras_min_ms=1500), lim)
+    n2.paso(encima, None)
+    d2 = n2.paso(libre, None)
+    check(n2.estado == nav.ESCAPE and d2.vel < 0,
+          "un parpadeo del perfil no lo saca del retroceso a medias", d2.vel)
+
+    # El escape se va hacia el lado del muro interno si se conoce
+    n3 = nav.Navegador(cfg, lim)
+    n3.paredes.forzar(-1)          # externa a la izquierda -> interna derecha
+    d3 = n3.paso(encima, None)
+    check(n3._escape_lado == nav.DER,
+          "sabiendo cual es la externa, se escapa hacia la interna", n3._escape_lado)
 
 
 def test_esquina_interna():
@@ -793,7 +809,7 @@ def test_esquina_interna():
           f"x={b.x} salto={b.salto:+.2f} lado={b.lado}")
 
     n = nav.Navegador(cfg, lim)
-    n.sentido._votar("giro", nav.DER, 3.0)      # horario: interno a la derecha
+    n.paredes.forzar(-1)        # externa izquierda -> interna derecha
     d = n.paso(p, None)
     check(n.estado == nav.PRE_GIRO, "dispara el giro por la esquina interna",
           f"{n.estado} {d.motivo}")
@@ -811,7 +827,7 @@ def test_esquina_interna():
 
     # Sin la esquina interna activada, con el mismo frame seguiria recto
     n2 = nav.Navegador(_cfg(usar_esquina_interna=False), lim)
-    n2.sentido._votar("giro", nav.DER, 3.0)
+    n2.paredes.forzar(-1)
     d2 = n2.paso(_perfil(img, _cfg()), None)
     check(n2.estado == nav.RECTO,
           "sin el disparador de esquina, con ese mismo frame seguiria recto (giraba tarde)",
@@ -858,7 +874,7 @@ def test_huecos():
     # Direccion: apunta al hueco
     lim = dict(robot_config.POR_DEFECTO["limites"])
     n = nav.Navegador(_cfg(mezcla={"hueco": 1.0}), lim)
-    izquierdo = pista([(0, 120), (200, 120), (215, 420), (639, 420)])
+    izquierdo = pista([(0, 120), (200, 120), (260, 300), (639, 300)])
     p4 = _perfil(izquierdo, _cfg())
     d = n.paso(p4, None)
     d = n.paso(p4, None)
@@ -871,22 +887,83 @@ def test_sentido_y_carril():
     cfg = _cfg(autocalibrar_carril=True)
     lim = dict(robot_config.POR_DEFECTO["limites"])
 
-    s = nav.EstimadorSentido(cfg)
-    check(s.sentido == 0, "al principio no sabe el sentido")
-    s.voto_giro(nav.DER)
-    s.voto_giro(nav.DER)
-    check(s.sentido == 1, "dos giros a la derecha = horario", s.estado())
-    check(s.lado_interno == nav.DER, "y entonces el muro interno esta a la derecha")
-    s.invertir()
-    check(s.sentido == -1 and s.lado_interno == nav.IZQ,
-          "tras la media vuelta todo se invierte")
+    # Presencia continua: la pared que SIEMPRE se ve es la externa.
+    d = nav.DetectorParedes(dict(cfg, min_muestras_presencia=20, alfa_presencia=0.15))
+    check(d.lado_externo == 0, "al principio no sabe cual es la externa")
+    # Situacion real: las dos paredes se ven casi siempre, pero la INTERNA
+    # (aqui la derecha) desaparece en cada esquina. Eso es lo que la distingue.
+    ambas = _perfil(pista([(0, 300), (150, 300), (235, 150), (420, 150),
+                           (500, 300), (639, 300)]), cfg)
+    # en la esquina, la banda derecha se queda literalmente sin muro (y=0)
+    sin_der = _perfil(pista([(0, 300), (150, 300), (235, 150), (430, 150),
+                             (450, 0), (639, 0)]), cfg)
+    con_izq = sin_der
+    for ciclo in range(12):
+        for _ in range(9):
+            d.observar(ambas)
+        for _ in range(3):
+            d.observar(sin_der)     # esquina: se acaba el muro interno derecho
+    check(d.lado_externo == nav.IZQ, "muro siempre a la izquierda = externa izquierda",
+          d.estado())
+    check(d.sentido == -1 and "antihorario" in d.estado()["nombre"],
+          "externa a la izquierda = antihorario (tu convencion)", d.estado()["nombre"])
+    check(d.lado_interno == nav.DER, "y el muro interno es el derecho")
 
-    s2 = nav.EstimadorSentido(cfg)
-    s2.voto_lineas("naranja", "azul")
-    check(s2.sentido == 1, "naranja y luego azul = horario", s2.estado())
-    s3 = nav.EstimadorSentido(cfg)
-    s3.voto_lineas("azul", "naranja")
-    check(s3.sentido == -1, "azul y luego naranja = antihorario")
+    # Y se puede corregir sola: si ahora el muro constante pasa a la derecha,
+    # la media movil se cruza. Esto es lo que antes no pasaba nunca.
+    sin_izq = _perfil(pista([(0, 0), (190, 0), (210, 150), (400, 150),
+                             (490, 300), (639, 300)]), cfg)
+    con_der = sin_izq
+    for ciclo in range(16):
+        for _ in range(9):
+            d.observar(ambas)
+        for _ in range(3):
+            d.observar(sin_izq)
+    check(d.lado_externo == nav.DER, "si cambia la pared constante, se corrige sola",
+          d.estado())
+
+    # No se satura: 2000 observaciones y sigue pudiendo cambiar de opinion
+    for _ in range(2000):
+        d.observar(ambas)
+        d.observar(sin_izq)
+    for ciclo in range(20):
+        for _ in range(9):
+            d.observar(ambas)
+        for _ in range(3):
+            d.observar(sin_der)
+    check(d.lado_externo == nav.IZQ, "ni con 2000 frames se queda clavada", d.estado())
+
+    # Forzar desde la interfaz
+    d.forzar(1)
+    check(d.lado_externo == nav.DER and d.estado()["forzado"] == 1,
+          "se puede forzar el sentido a mano")
+    d.forzar(0)
+
+    # Votos discretos cuando la presencia no decide
+    d2 = nav.DetectorParedes(cfg)
+    d2.voto_lineas("naranja", "azul")
+    check(d2.lado_externo == nav.DER, "naranja y luego azul = horario = externa der",
+          d2.estado())
+    d3 = nav.DetectorParedes(cfg)
+    d3.voto_giro(nav.DER)
+    d3.voto_giro(nav.DER)
+    check(d3.lado_externo == nav.IZQ,
+          "girar a la derecha significa interno a la derecha, externo a la izquierda",
+          d3.estado())
+
+    # Inversion tras la media vuelta: intercambia y BLOQUEA
+    d4 = nav.DetectorParedes(dict(cfg, min_muestras_presencia=20, alfa_presencia=0.15,
+                                  bloqueo_sentido_ms=1500))
+    for _ in range(60):
+        d4.observar(con_izq)
+    antes = d4.lado_externo
+    d4.invertir()
+    check(d4.lado_externo == -antes, "la media vuelta invierte la externa")
+    for _ in range(300):
+        d4.observar(con_izq)          # el mundo viejo insiste
+    check(d4.lado_externo == -antes,
+          "y durante el bloqueo NO vuelve al sentido anterior (esto deshacia la media vuelta)",
+          d4.estado())
 
     # --- carril ---
     n = nav.Navegador(cfg, lim)
@@ -921,7 +998,7 @@ def test_sentido_y_carril():
 def test_vueltas():
     print("\n[15] Contador de vueltas fusionando camara, sensor y giros")
     cfg = dict(robot_config.POR_DEFECTO["vueltas"], debounce_ms=1, ventana_par_ms=5000,
-               ventana_esquina_ms=1)
+               refractario_ms=1)
     c = vueltas_mod.ContadorVueltas(cfg, al_log=lambda s: None)
 
     c.evento_linea(P.LINEA_NARANJA, "camara")
@@ -937,7 +1014,7 @@ def test_vueltas():
     check(c.vueltas == 1, "cuatro esquinas = una vuelta", c.estado())
 
     # La misma esquina vista por camara, sensor y giro cuenta UNA
-    c2 = vueltas_mod.ContadorVueltas(dict(cfg, ventana_esquina_ms=2000),
+    c2 = vueltas_mod.ContadorVueltas(dict(cfg, refractario_ms=2000),
                                      al_log=lambda s: None)
     c2.evento_linea(P.LINEA_NARANJA, "camara")
     c2.evento_linea(P.LINEA_AZUL, "tcs")
@@ -953,14 +1030,14 @@ def test_vueltas():
     check(c3.esquinas == 1, "un rebote de la misma linea no suma otra esquina")
 
     # Solo giros (sin lineas) tambien cuenta
-    c4 = vueltas_mod.ContadorVueltas(dict(cfg, ventana_esquina_ms=1), al_log=lambda s: None)
+    c4 = vueltas_mod.ContadorVueltas(dict(cfg, refractario_ms=1), al_log=lambda s: None)
     for _ in range(8):
         time.sleep(0.002)
         c4.evento_giro(1)
     check(c4.vueltas == 2, "sin lineas, los giros solos cuentan las vueltas", c4.vueltas)
 
     # Objetivo -> media vuelta -> segundo tramo -> terminado
-    c5 = vueltas_mod.ContadorVueltas(dict(cfg, objetivo=1, ventana_esquina_ms=1),
+    c5 = vueltas_mod.ContadorVueltas(dict(cfg, objetivo=1, refractario_ms=1),
                                      al_log=lambda s: None)
     for _ in range(4):
         time.sleep(0.002)
@@ -977,7 +1054,7 @@ def test_vueltas():
 
     # sin media vuelta: termina en la ida
     c6 = vueltas_mod.ContadorVueltas(dict(cfg, objetivo=1, hacer_media_vuelta=False,
-                                          ventana_esquina_ms=1), al_log=lambda s: None)
+                                          refractario_ms=1), al_log=lambda s: None)
     for _ in range(4):
         time.sleep(0.002)
         c6.evento_giro(1)
@@ -997,15 +1074,31 @@ def test_lineas_camara():
 
     naranja = vacia.copy()
     naranja[440:470, 200:450] = 255            # franja gruesa abajo
-    r = det.procesar({"naranja": naranja, "azul": vacia})
-    check(r == P.LINEA_NARANJA, "detecta la naranja al pisarla", r)
+    r1 = det.procesar({"naranja": naranja, "azul": vacia})
+    r2 = det.procesar({"naranja": naranja, "azul": vacia})
+    check(r1 == P.LINEA_NINGUNA and r2 == P.LINEA_NARANJA,
+          "hacen falta 2 frames seguidos para declarar la naranja", (r1, r2))
     r = det.procesar({"naranja": naranja, "azul": vacia})
     check(r == P.LINEA_NINGUNA, "y mientras sigue encima NO repite el evento", r)
     det.procesar({"naranja": vacia, "azul": vacia})
+    det.procesar({"naranja": vacia, "azul": vacia})
     azul = vacia.copy()
     azul[440:470, 200:450] = 255
+    det.procesar({"naranja": vacia, "azul": azul})
     check(det.procesar({"naranja": vacia, "azul": azul}) == P.LINEA_AZUL,
           "y luego la azul")
+
+    # Las dos lineas a la vez (esquina): no se declara la ganadora por poco
+    det3 = vueltas_mod.DetectorLineasCamara(cfg)
+    empate = vacia.copy()
+    empate[440:470, 200:400] = 255
+    otro = vacia.copy()
+    otro[440:470, 210:400] = 255
+    r = P.LINEA_NINGUNA
+    for _ in range(4):
+        r = det3.procesar({"naranja": empate, "azul": otro}) or r
+    check(r == P.LINEA_NINGUNA,
+          "con las dos lineas casi iguales no declara ninguna (esto contaba de mas)", r)
 
     # una linea arriba del todo (fondo) no cuenta: solo se mira la franja baja
     arriba = vacia.copy()
@@ -1130,7 +1223,8 @@ def test_regresion_arreglos():
     # 1. Ya no se retrocede a ciegas como primera opcion
     n = nav.Navegador(cfg, lim)
     d = n.paso(_perfil(pista([(0, 460), (639, 460)]), cfg), None)
-    check(d.vel > 0, "muro encima: la primera reaccion NO es marcha atras", d.vel)
+    check(d.vel < 0 and n.estado == nav.ESCAPE,
+          "muro encima: retrocede de verdad, con compromiso", (d.vel, n.estado))
 
     # 2. La velocidad baja al entrar en la curva, no despues
     n2 = nav.Navegador(_cfg(usar_esquina_interna=False), lim)
@@ -1167,6 +1261,235 @@ def test_regresion_arreglos():
     check(peor is None, "ninguna combinacion se sale de rango", peor)
 
 
+
+# ===========================================================================
+# 20. Esquiva de pilares y media vuelta que no se deshace
+# ===========================================================================
+def _cfg_obst(**extra):
+    c = dict(robot_config.POR_DEFECTO["obstaculos"], activo=True)
+    c.update(extra)
+    return c
+
+
+class _Det:
+    """Deteccion minima, como la que devuelve vision.Vision."""
+    def __init__(self, x, y, w, h):
+        self.x, self.y, self.w, self.h = x, y, w, h
+        self.area = w * h
+
+
+def test_pilares():
+    print("\n[20] Esquiva de pilares: rojo por la derecha, verde por la izquierda")
+    from src import obstaculos as obst
+    cfg_nav = _cfg()
+    perfil = _perfil(pista([(0, 150), (639, 150)]), cfg_nav)   # pista despejada
+
+    # --- ROJO a la izquierda del centro: hay que pasar por su DERECHA ---
+    e = obst.EsquivaPilares(_cfg_obst())
+    rojo = _Det(180, 250, 60, 120)          # base_y = 370 (cerca)
+    r = None
+    for _ in range(3):
+        r = e.paso({"rojo": [rojo], "verde": []}, perfil, cfg_nav)
+        time.sleep(0.01)
+    check(r.activo, "engancha el pilar rojo", r.motivo)
+    check(r.direccion > 0, "y gira a la DERECHA para dejarlo a la izquierda",
+          f"dir={r.direccion:.0f} objetivo={r.objetivo_x}")
+    check(r.objetivo_x > rojo.x + rojo.w,
+          "el punto objetivo cae a la derecha del pilar", r.objetivo_x)
+    check(0 < r.peso <= 1.0, "con un peso proporcional a la cercania", r.peso)
+
+    # --- VERDE a la derecha del centro: hay que pasar por su IZQUIERDA ---
+    e2 = obst.EsquivaPilares(_cfg_obst())
+    verde = _Det(400, 250, 60, 120)
+    r2 = None
+    for _ in range(3):
+        r2 = e2.paso({"rojo": [], "verde": [verde]}, perfil, cfg_nav)
+        time.sleep(0.01)
+    check(r2.direccion < 0, "gira a la IZQUIERDA para dejarlo a la derecha",
+          f"dir={r2.direccion:.0f} objetivo={r2.objetivo_x}")
+    check(r2.objetivo_x < verde.x, "el objetivo cae a la izquierda del pilar",
+          r2.objetivo_x)
+
+    # --- el peso crece con la cercania -------------------------------------
+    e3 = obst.EsquivaPilares(_cfg_obst())
+    lejos = e3.paso({"rojo": [_Det(280, 190, 34, 60)], "verde": []}, perfil, cfg_nav)
+    e4 = obst.EsquivaPilares(_cfg_obst())
+    cerca = e4.paso({"rojo": [_Det(260, 220, 70, 180)], "verde": []}, perfil, cfg_nav)
+    check(cerca.peso > lejos.peso, "cuanto mas cerca, mas manda la esquiva",
+          f"{lejos.peso:.2f} -> {cerca.peso:.2f}")
+
+    # --- el margen se escala con la perspectiva ---------------------------
+    e5 = obst.EsquivaPilares(_cfg_obst())
+    p_lejos = _Det(300, 170, 24, 50)         # base 220
+    p_cerca = _Det(300, 250, 60, 170)        # base 420
+    r_l = e5.paso({"rojo": [p_lejos], "verde": []}, perfil, cfg_nav)
+    sep_lejos = r_l.objetivo_x - (p_lejos.x + p_lejos.w) if r_l.activo else 0
+    e6 = obst.EsquivaPilares(_cfg_obst())
+    r_c = e6.paso({"rojo": [p_cerca], "verde": []}, perfil, cfg_nav)
+    sep_cerca = r_c.objetivo_x - (p_cerca.x + p_cerca.w) if r_c.activo else 0
+    check(sep_cerca > sep_lejos * 1.5,
+          "se deja mas separacion en pixeles con el pilar cerca (perspectiva)",
+          f"{sep_lejos} vs {sep_cerca}")
+
+    # --- objetivo recortado al pasillo libre ------------------------------
+    # Pilar pegado a la pared derecha: pasar por su derecha no cabe.
+    estrecha = _perfil(pista([(0, 150), (430, 150), (450, 430), (639, 430)]), cfg_nav)
+    e7 = obst.EsquivaPilares(_cfg_obst())
+    pegado = _Det(360, 250, 60, 130)
+    r7 = None
+    for _ in range(3):
+        r7 = e7.paso({"rojo": [pegado], "verde": []}, estrecha, cfg_nav)
+        time.sleep(0.01)
+    check(r7.activo and r7.recortado,
+          "con el pilar pegado a la pared, el objetivo se recorta al pasillo",
+          f"objetivo={r7.objetivo_x} bruto={r7.objetivo_bruto}")
+    check(r7.objetivo_x < r7.objetivo_bruto,
+          "y queda dentro, no contra la pared",
+          f"{r7.objetivo_x} < {r7.objetivo_bruto}")
+
+    # --- soltar el pilar al pasarlo ---------------------------------------
+    e8 = obst.EsquivaPilares(_cfg_obst())
+    e8.paso({"rojo": [_Det(200, 250, 60, 120)], "verde": []}, perfil, cfg_nav)
+    r8 = e8.paso({"rojo": [_Det(200, 330, 70, 130)], "verde": []}, perfil, cfg_nav)
+    check(not r8.activo and "superado" in r8.motivo,
+          "cuando el pilar llega abajo se da por pasado", r8.motivo)
+
+    # --- apagada no hace nada ---------------------------------------------
+    e9 = obst.EsquivaPilares(_cfg_obst(activo=False))
+    r9 = e9.paso({"rojo": [rojo], "verde": []}, perfil, cfg_nav)
+    check(not r9.activo and r9.peso == 0, "apagada no toca la direccion", r9.motivo)
+
+    # --- el siguiente pilar se tiene en cuenta -----------------------------
+    e10 = obst.EsquivaPilares(_cfg_obst())
+    r10 = e10.paso({"rojo": [_Det(200, 250, 60, 120)],
+                    "verde": [_Det(420, 200, 40, 80)]}, perfil, cfg_nav)
+    check(r10.siguiente is not None and r10.siguiente.color == "verde",
+          "ve que detras viene un verde", r10.estado if False else r10.motivo)
+
+    # --- en el navegador: la esquiva pesa sobre el muro --------------------
+    # Ojo con el matiz: "pasar por la derecha del pilar" no es "girar a la
+    # derecha". Si el pilar esta a la izquierda del carro, el punto por el que
+    # hay que pasar puede quedar a la izquierda del centro y el carro gira a la
+    # izquierda para colarse por ahi. Por eso se prueba con un pilar bien
+    # descentrado, donde el desvio es evidente.
+    e11 = obst.EsquivaPilares(_cfg_obst())
+    lateral = _Det(40, 250, 70, 130)          # rojo pegado al borde izquierdo
+    r11 = None
+    for _ in range(3):
+        r11 = e11.paso({"rojo": [lateral], "verde": []}, perfil, cfg_nav)
+        time.sleep(0.01)
+    check(r11.direccion < -15,
+          "un rojo pegado a la izquierda manda pasar justo a su derecha, no al centro",
+          f"dir={r11.direccion:.0f} objetivo={r11.objetivo_x}")
+
+    lim = dict(robot_config.POR_DEFECTO["limites"])
+    n = nav.Navegador(cfg_nav, lim)
+    n.paso(perfil, None)
+    sin = n.paso(perfil, None)
+    n2 = nav.Navegador(cfg_nav, lim)
+    n2.paso(perfil, None, esquiva=r11)
+    con = n2.paso(perfil, None, esquiva=r11)
+    check(abs(con.direccion - sin.direccion) > 10,
+          "con pilar delante la direccion cambia respecto a no tenerlo",
+          f"{sin.direccion} -> {con.direccion}")
+    check("rojo por la derecha" in con.motivo, "y se explica en el motivo", con.motivo)
+
+
+def test_pilares_foto_real():
+    print("\n[21] Esquiva sobre la foto real de los pilares")
+    from src import obstaculos as obst
+    ruta = RAIZ / "capturas" / "pilares_reales.png"
+    perfil_col = Path("/tmp/colors_usuario.json")
+    if not ruta.exists() or not perfil_col.exists():
+        print("       (sin foto ni perfil real; me lo salto)")
+        return
+    img = cv2.imread(str(ruta))
+    colores = cc.obtener(cc.cargar(perfil_col))["colores"]
+    v = vision.Vision(colores)
+    dets, masks = v.procesar(img, solo=["rojo", "verde", "negro"])
+    check(len(dets["rojo"]) >= 1, "detecta el pilar rojo con TU calibracion",
+          [str(d) for d in dets["rojo"]])
+    check(len(dets["verde"]) >= 1, "detecta el pilar verde con TU calibracion",
+          [str(d) for d in dets["verde"]])
+
+    cfg_nav = _cfg()
+    perfil = nav.perfil_desde_mascara(masks["negro"], cfg_nav)
+    e = obst.EsquivaPilares(_cfg_obst())
+    r = None
+    for _ in range(3):
+        r = e.paso(dets, perfil, cfg_nav)
+        time.sleep(0.01)
+    check(r.activo, "y decide una esquiva sobre la imagen real", r.motivo)
+    if r.pilar is not None:
+        esperado = "derecha" if r.pilar.color == "rojo" else "izquierda"
+        check(r.pilar.nombre_lado == esperado,
+              f"el {r.pilar.color} se pasa por la {esperado}", r.motivo)
+        check(r.objetivo_x is not None and 0 <= r.objetivo_x < img.shape[1],
+              "y el objetivo cae dentro de la imagen", r.objetivo_x)
+
+
+def test_media_vuelta_no_se_deshace():
+    print("\n[22] La media vuelta ya no la deshace la navegacion")
+    cfg = _cfg(mv_fase_ms=200, bloqueo_sentido_ms=3000, gracia_tras_media_ms=600,
+               min_recto_ms=0, usar_esquina_interna=True,
+               min_muestras_presencia=20, alfa_presencia=0.15)
+    lim = dict(robot_config.POR_DEFECTO["limites"])
+    recto = _perfil(pista([(0, 300), (150, 300), (235, 150), (420, 150),
+                           (500, 300), (639, 300)]), cfg)
+    esquina_der = _perfil(pista([(0, 300), (150, 300), (235, 150), (430, 150),
+                                 (450, 0), (639, 0)]), cfg)
+
+    n = nav.Navegador(cfg, lim, {"tipo_media_vuelta": "recta_3t"})
+    # Damos varias vueltas ficticias para que se decida el sentido
+    for ciclo in range(12):
+        for _ in range(9):
+            n.paredes.observar(recto)
+        for _ in range(3):
+            n.paredes.observar(esquina_der)
+    externo_antes = n.paredes.lado_externo
+    check(externo_antes != 0, "antes de la media vuelta sabe cual es la externa",
+          n.paredes.estado())
+
+    n.pedir_media_vuelta()
+    yaw = 0.0
+    for _ in range(80):
+        d = n.paso(recto, yaw)
+        yaw = nav._norm_angulo(yaw + (12 if d.vel > 0 else (6 if d.vel < 0 else 0)))
+        if n.media_vuelta_hecha:
+            break
+        time.sleep(0.02)
+    check(n.media_vuelta_hecha, "completa la media vuelta")
+    check(n.paredes.lado_externo == -externo_antes,
+          "y la pared externa pasa a ser la otra", n.paredes.estado())
+
+    # Ahora el mundo viejo insiste durante un buen rato
+    estados = []
+    for _ in range(120):
+        d = n.paso(recto, yaw)
+        estados.append(n.estado)
+        yaw = nav._norm_angulo(yaw + 0.2)
+    check(n.paredes.lado_externo == -externo_antes,
+          "el estimador NO vuelve al sentido anterior (esto era el fallo gordo)",
+          n.paredes.estado())
+    check(nav.MEDIA_VUELTA not in estados, "y no vuelve a lanzar otra media vuelta")
+
+    # Y durante la gracia posterior no encadena un giro inmediato
+    n2 = nav.Navegador(dict(cfg, gracia_tras_media_ms=1500), lim,
+                       {"tipo_media_vuelta": "recta_3t"})
+    n2.pedir_media_vuelta()
+    yaw = 0.0
+    for _ in range(80):
+        d = n2.paso(recto, yaw)
+        yaw = nav._norm_angulo(yaw + (12 if d.vel > 0 else (6 if d.vel < 0 else 0)))
+        if n2.media_vuelta_hecha:
+            break
+        time.sleep(0.02)
+    d = n2.paso(esquina_der, yaw)
+    check(n2.estado == nav.RECTO,
+          "justo despues de la media vuelta no se lanza a girar otra vez",
+          n2.estado)
+
+
 # ===========================================================================
 if __name__ == "__main__":
     print(f"OpenCV {cv2.__version__} · Python {sys.version.split()[0]}")
@@ -1175,7 +1498,8 @@ if __name__ == "__main__":
               test_config, test_anticipacion, test_escape, test_esquina_interna,
               test_huecos, test_sentido_y_carril, test_vueltas,
               test_lineas_camara, test_media_vuelta, test_sensores_capa,
-              test_regresion_arreglos):
+              test_regresion_arreglos, test_pilares, test_pilares_foto_real,
+              test_media_vuelta_no_se_deshace):
         try:
             f()
         except Exception as e:
