@@ -179,11 +179,41 @@ El panel queda en `http://<ip-de-la-pi>:8000`. La primera ejecución crea
 Da permiso al puerto serie una vez: `sudo usermod -aG dialout $USER` (y reinicia
 la sesión).
 
+### Conectarte desde el móvil (punto de acceso wifi)
+
+Lo más cómodo en pista es que la Pi levante su **propia red wifi** y conectarte
+a ella con el teléfono: no dependes de la wifi del local y el robot puede
+moverse libremente. En Bookworm lo gestiona NetworkManager; el script lo
+automatiza:
+
+```bash
+sudo ./tools/wifi_ap.sh crear     # una vez
+sudo ./tools/wifi_ap.sh on
+```
+
+Conectas el móvil a la red **WRO-CAR** (clave `wro2026robot`) y abres
+`http://192.168.4.1:8000`. El panel es responsive y el joystick funciona con el
+dedo, así que se maneja bien desde el teléfono.
+
+Cambia SSID y clave si quieres: `sudo WRO_SSID=MiCarro WRO_PASS=miclave123
+./tools/wifi_ap.sh crear`.
+
+Dos cosas que conviene saber: mientras la Pi hace de punto de acceso **no tiene
+salida a internet** por wifi (la radio no puede ser AP y cliente a la vez), así
+que para un `git pull` o un `apt` usa `sudo ./tools/wifi_ap.sh off` o conecta un
+cable ethernet. Y el móvil avisará de «sin acceso a internet»: es normal, acepta
+mantener la conexión.
+
+Para que el AP se levante solo al encender: `sudo ./tools/wifi_ap.sh auto`.
+
 ### En competencia
 ```bash
-sudo rfkill block wifi bluetooth      # regla 11.10: nada de inalámbrico
+sudo ./tools/wifi_ap.sh competencia   # regla 11.10: nada de inalámbrico
 python3 run.py --no-web
 ```
+
+Eso apaga el punto de acceso, desactiva su arranque automático y bloquea wifi y
+bluetooth con `rfkill`. Para volver a las pruebas, `sudo ./tools/wifi_ap.sh on`.
 
 ---
 
