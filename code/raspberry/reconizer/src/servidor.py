@@ -106,6 +106,28 @@ PAGINA = """<!DOCTYPE html>
 </div>
 
 <div class="caja">
+  <div class="et"><span>Esquivar pilares (rojo por la derecha, verde por la izquierda)</span>
+    <span id="vObs">-</span></div>
+  <label class="chk"><input type="checkbox" id="cObs"
+    onchange="cmd('esquivar',this.checked?1:0)"> esquivar obstaculos de colores</label>
+  <div class="et"><span>Separacion lateral</span><span id="vMl">-</span></div>
+  <input type="range" id="ml" min="50" max="250" oninput="lz('margen_lateral',this.value/100)">
+  <div class="et"><span>Empieza a hacerle caso</span><span id="vAd">-</span></div>
+  <input type="range" id="ad" min="10" max="90" oninput="lz('activar_desde',this.value/100)">
+  <div class="et"><span>Ya manda del todo</span><span id="vMd2">-</span></div>
+  <input type="range" id="md2" min="20" max="99" oninput="lz('mandar_desde',this.value/100)">
+</div>
+
+<div class="caja">
+  <div class="et"><span>Sentido de la vuelta</span><span id="vSen">-</span></div>
+  <div class="fila">
+    <button onclick="cmd('forzar_sentido','0')" id="sAuto">Automatico</button>
+    <button onclick="cmd('forzar_sentido','-1')" id="sAnti" class="off">Externa izq<br>(antihorario)</button>
+    <button onclick="cmd('forzar_sentido','1')" id="sHor" class="off">Externa der<br>(horario)</button>
+  </div>
+</div>
+
+<div class="caja">
   <div class="et"><span>Vueltas</span><span id="vVta">-</span></div>
   <input type="range" id="objetivo" min="1" max="10" oninput="lz('objetivo',this.value)">
   <label class="chk"><input type="checkbox" id="cMv"
@@ -133,6 +155,10 @@ PAGINA = """<!DOCTYPE html>
 <div class="fila">
   <button onclick="cmd('calibrar_imu','1')" class="off">Calibrar giroscopio</button>
   <button onclick="cmd('guardar','1')" class="off">Guardar ajustes</button>
+</div>
+<div class="fila">
+  <button onclick="cmd('reintentar_sensores','1')" class="off">Reintentar sensores I2C</button>
+  <button onclick="cmd('calibrar_color','1')" class="off">Calibrar piso blanco</button>
 </div>
 
 <script>
@@ -178,7 +204,17 @@ function estado(){
       document.getElementById('cEsq').checked  = !!s.navegacion.usar_esquina_interna;
       document.getElementById('cAuto').checked = !!s.navegacion.autocalibrar_carril;
       document.getElementById('cMv').checked   = !!s.vueltas_cfg.hacer_media_vuelta;
+      document.getElementById('cObs').checked  = !!s.obstaculos_cfg.activo;
+      document.getElementById('ml').value  = Math.round(s.obstaculos_cfg.margen_lateral*100);
+      document.getElementById('ad').value  = Math.round(s.obstaculos_cfg.activar_desde*100);
+      document.getElementById('md2').value = Math.round(s.obstaculos_cfg.mandar_desde*100);
     }
+    document.getElementById('vMl').textContent  = s.obstaculos_cfg.margen_lateral.toFixed(2);
+    document.getElementById('vAd').textContent  = s.obstaculos_cfg.activar_desde.toFixed(2);
+    document.getElementById('vMd2').textContent = s.obstaculos_cfg.mandar_desde.toFixed(2);
+    document.getElementById('vObs').textContent = s.obstaculos.activo
+        ? (s.obstaculos.siguiendo ? s.obstaculos.motivo : 'activa, sin pilares')
+        : 'apagada';
     document.getElementById('vVmax').textContent = s.limites.vmax;
     document.getElementById('vCru').textContent  = s.limites.vel_crucero+'%';
     document.getElementById('vGir').textContent  = s.limites.vel_giro+'%';
@@ -190,6 +226,14 @@ function estado(){
     document.getElementById('vMh').textContent   = (mz.hueco||0).toFixed(2);
     document.getElementById('vVta').textContent  =
         s.vueltas.vueltas+' / '+s.vueltas.objetivo+'  ('+s.vueltas.tramo+')';
+    const fz = (s.decision.metricas.sentido||{}).forzado || 0;
+    document.getElementById('sAuto').className = fz===0 ? '' : 'off';
+    document.getElementById('sAnti').className = fz<0  ? '' : 'off';
+    document.getElementById('sHor').className  = fz>0  ? '' : 'off';
+    const sen = s.decision.metricas.sentido || {};
+    document.getElementById('vSen').textContent =
+        (sen.nombre||'?') + '  externa ' + (sen.externa||'?') + (fz?'  (fijado)':'');
+
     const mvr = s.vueltas_cfg.tipo_media_vuelta === 'esquina';
     document.getElementById('mvR').className = mvr ? 'off' : '';
     document.getElementById('mvE').className = mvr ? '' : 'off';
@@ -219,8 +263,16 @@ function estado(){
          (m.izq!==undefined?m.izq:'-')+'  '+(m.pasillo!==undefined?m.pasillo:'-')+
          '  '+(m.der!==undefined?m.der:'-'));
     if (m.ttc!==undefined) fila(t,'Segundos al muro', m.ttc, m.ttc<1.2?'avi':'ok');
-    if (m.sentido) fila(t,'Sentido', m.sentido.nombre+'  ('+m.sentido.confianza+')',
+    if (m.sentido) fila(t,'Sentido', m.sentido.nombre+'  externa '+m.sentido.externa+
+                        (m.sentido.bloqueado?'  [bloqueado]':'')+
+                        (m.sentido.forzado?'  [fijado]':''),
                         m.sentido.sentido?'ok':'avi');
+    if (m.sentido) fila(t,'Presencia izq/der', m.sentido.presencia[0]+'  /  '+m.sentido.presencia[1]);
+    if (m.muros_vistos) fila(t,'Muro visible', 'izq '+(m.muros_vistos.izq?'si':'NO')+
+                             '   der '+(m.muros_vistos.der?'si':'NO'));
+    if (s.obstaculos.siguiendo) fila(t,'Pilar', s.obstaculos.motivo+
+        '  peso '+s.obstaculos.peso, 'ok');
+    fila(t,'Esquinas ignoradas', s.vueltas.ignoradas);
     if (m.carril) fila(t,'Ancho de carril',
          m.carril.listo ? m.carril.ancho : ('midiendo '+m.carril.muestras));
     if (m.hueco) fila(t,'Mejor hueco','x'+m.hueco.x+'  margen '+m.hueco.margen+
@@ -378,6 +430,24 @@ class Servidor:
                     r.navegador.pedir_media_vuelta()
                 elif k == "calibrar_color":
                     r.sensores.calibrar_color(r.enlace)
+                elif k == "reintentar_sensores":
+                    r.reintentar_sensores()
+                elif k == "forzar_sentido":
+                    r.navegador.paredes.forzar(int(float(v)))
+                elif k == "esquivar":
+                    r.cfg["obstaculos"]["activo"] = v not in ("0", "false", "")
+                    r.esquiva.reiniciar()
+                    r.aplicar_config()
+                elif k in ("margen_lateral", "activar_desde", "mandar_desde",
+                           "soltar_en", "peso_max", "sesgo_siguiente"):
+                    r.cfg["obstaculos"][k] = float(v)
+                    r.aplicar_config()
+                elif k in ("area_min_pilar", "frames_perdido"):
+                    r.cfg["obstaculos"][k] = int(float(v))
+                    r.aplicar_config()
+                elif k in ("refractario_ms", "una_linea_basta", "dominancia_linea"):
+                    r.cfg["vueltas"][k] = (v not in ("0", "false", "")
+                                           if k == "una_linea_basta" else float(v))
                 elif k in ("origen_rumbo", "origen_color"):
                     r.cfg["sensores"][k] = v
                 elif k in ("kp", "kd", "kp_pared", "kd_pared", "pared_objetivo",
@@ -390,9 +460,16 @@ class Servidor:
                            "vel_escape", "mejora_min", "peso_margen",
                            "peso_profundidad", "peso_siguiente", "peso_alineacion"):
                     nav_cfg[k] = float(v)
+                elif k in ("escape_atras_min_ms", "escape_atras_extra_ms",
+                           "escape_atascado_ms", "escape_salir_factor",
+                           "cobertura_alta", "cobertura_baja", "kp_diagonal",
+                           "peso_diagonal", "bloqueo_sentido_ms"):
+                    nav_cfg[k] = float(v)
+                elif k == "giro_diagonal":
+                    nav_cfg[k] = v not in ("0", "false", "")
                 elif k in ("px_min_columna", "suavizado", "giro_max_ms",
                            "min_recto_ms", "retardo_giro_ms", "ventana_salto",
-                           "escape_evaluar_ms"):
+                           "escape_evaluar_ms", "validez_esquina_ms"):
                     nav_cfg[k] = int(float(v))
                 elif k == "usar_yaw":
                     nav_cfg["usar_yaw"] = v not in ("0", "false")

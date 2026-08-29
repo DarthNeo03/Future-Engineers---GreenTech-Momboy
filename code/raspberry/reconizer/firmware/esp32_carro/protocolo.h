@@ -38,6 +38,7 @@ static const uint8_t TIPO_SENSORES = 0x86; // ESP32 -> Pi, 4 bytes (que hay)
 static const uint8_t AUX_CERO_YAW    = 0x01;
 static const uint8_t AUX_CALIB_IMU   = 0x02;
 static const uint8_t AUX_CALIB_COLOR = 0x04;
+static const uint8_t AUX_REINIT_SENSORES = 0x08;
 
 // Lineas del suelo
 static const uint8_t LINEA_NINGUNA = 0;

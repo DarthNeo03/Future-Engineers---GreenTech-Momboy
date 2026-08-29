@@ -183,6 +183,20 @@ class Sensores:
         if enlace is not None:
             enlace.pedir_a_sensores(P.AUX_CALIB_COLOR)
 
+    def reintentar(self, enlace=None) -> None:
+        """Vuelve a buscar los sensores.
+
+        Los chips I2C a veces tardan mas en arrancar que el ESP32 (sobre todo
+        si cuelgan de la misma alimentacion que el motor) y se quedan fuera del
+        sondeo inicial. Esto pide un sondeo nuevo sin reiniciar nada: al ESP32
+        por el serial, y de paso se reintenta tambien el I2C de la Pi.
+        """
+        if enlace is not None:
+            enlace.pedir_a_sensores(P.AUX_REINIT_SENSORES)
+        if self.imu_pi is None:
+            self.iniciar_respaldo_pi()
+        self.al_log("[sensores] sondeo de sensores pedido")
+
     # ------------------------------------------------------------------
     def estado(self) -> Dict[str, Any]:
         return {

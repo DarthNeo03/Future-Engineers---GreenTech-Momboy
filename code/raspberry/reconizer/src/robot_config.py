@@ -94,6 +94,27 @@ POR_DEFECTO: Dict[str, Any] = {
         "interno_libre": 0.72,     # el muro interno se dio por acabado
         "retardo_giro_ms": 250,    # espera antes de girar (que pasen las ruedas)
         "dir_giro_abierto": 65.0,  # giro abierto, no a tope
+        "validez_esquina_ms": 900, # cuanto vale el aviso de "desaparecio el muro"
+        # deteccion de que una pared deja de verse (dispara el giro)
+        "cobertura_alta": 0.55,    # a partir de aqui esa banda "tiene muro"
+        "cobertura_baja": 0.22,    # por debajo de aqui "ya no lo tiene"
+        "interno_lejos": 0.75,     # tan lejos que ya no es esta pared
+        "interno_cerca": 0.62,
+        "frames_confirmar_muro": 4,
+        "frames_confirmar_esquina": 3,
+        # cruzar en diagonal a la siguiente pared externa
+        "giro_diagonal": True,
+        "kp_diagonal": 110.0,
+        "peso_diagonal": 0.45,
+
+        # --- que pared es la externa (y por tanto el sentido) ---
+        "cobertura_muro": 0.45,        # cuanta banda con muro cuenta como "hay"
+        "alfa_presencia": 0.03,        # rapidez de la media movil de presencia
+        "margen_presencia": 0.08,      # diferencia minima para decidir
+        "min_muestras_presencia": 60,  # frames antes de fiarse
+        "decaimiento_votos": 0.995,
+        "bloqueo_sentido_ms": 4000,    # tras la media vuelta, no redecidir
+        "gracia_tras_media_ms": 800,
 
         # --- anticipacion ---
         "autocalibrar_carril": True,
@@ -102,6 +123,10 @@ POR_DEFECTO: Dict[str, Any] = {
 
         # --- escape ---
         "vel_escape": 26.0,
+        "escape_atras_min_ms": 900,    # retroceso minimo comprometido
+        "escape_atras_extra_ms": 1600, # extra segun lo cerca que este el muro
+        "escape_atascado_ms": 1300,    # sin mejorar tanto tiempo = algo detras
+        "escape_salir_factor": 1.15,   # espacio a recuperar antes de volver
         "escape_evaluar_ms": 700,
         "mejora_min": 0.035,
 
@@ -142,6 +167,23 @@ POR_DEFECTO: Dict[str, Any] = {
         },
     },
 
+    "obstaculos": {
+        "activo": False,           # se enciende desde la interfaz
+        "area_min_pilar": 300,
+        "activar_desde": 0.45,     # fraccion de alto donde empieza a importar
+        "mandar_desde": 0.68,      # ...y donde ya manda del todo
+        "soltar_en": 0.93,         # se da por pasado
+        "borde_soltar": 0.06,
+        "margen_lateral": 1.25,    # medios anchos de carro de separacion
+        "kp": 115.0,
+        "kd": 22.0,
+        "peso_max": 1.0,
+        "sesgo_siguiente": 12.0,   # preparacion para el pilar siguiente
+        "tolerancia_seguimiento": 120,
+        "frames_perdido": 6,
+        "refractario_ms": 350,
+    },
+
     "vueltas": {
         "objetivo": 3,                  # vueltas de ida (y otras tantas de vuelta)
         "hacer_media_vuelta": True,
@@ -149,10 +191,14 @@ POR_DEFECTO: Dict[str, Any] = {
         "esquinas_por_vuelta": 4,
         "orden_horario": ["naranja", "azul"],
         "ventana_par_ms": 2500,         # para emparejar naranja con azul
-        "ventana_esquina_ms": 2200,     # para no contar dos veces la misma
+        "refractario_ms": 3000,         # tras una esquina, no se admite otra
         "debounce_ms": 900,
+        "una_linea_basta": False,       # si tu tapete solo deja ver una linea
         "umbral_linea_camara": 0.02,    # fraccion de pixeles en la franja de abajo
         "roi_linea_arriba": 0.78,
+        "dominancia_linea": 1.6,        # cuanto tiene que ganar a la otra linea
+        "frames_confirmar_linea": 2,
+        "histeresis_linea": 0.55,
     },
 
     # Compatibilidad con la version anterior (MPU6050 directo a la Pi)

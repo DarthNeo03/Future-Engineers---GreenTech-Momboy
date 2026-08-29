@@ -76,6 +76,8 @@ const uint32_t ENVIO_IMU_MS    = 20;    // 50 Hz de publicacion a la Pi
 const float    ENVIO_IMU_GRADOS = 0.4f; // ...o antes si el rumbo se mueve mas
 const uint32_t PERIODO_COLOR_MS = 16;   // ~60 Hz de muestreo del color
 const uint32_t PERIODO_SENSORES_MS = 2000;
+const uint32_t REINTENTO_SENSORES_MS = 3000;  // si falta un chip, se vuelve a buscar
+const uint32_t ESPERA_ARRANQUE_I2C_MS = 250;  // los chips tardan en despertar
 
 const uint8_t VERSION_FIRMWARE = 3;
 
@@ -116,6 +118,7 @@ void tareaControl(void *);
 void tareaVigilante(void *);
 void tareaTelemetria(void *);
 void tareaSensores(void *);
+void buscarSensores(bool avisar);
 
 // ======================= HARDWARE =======================
 static inline void escribirServoHW(int angulo) {
@@ -289,6 +292,33 @@ void tareaVigilante(void *) {
   }
 }
 
+// ======================= BUSQUEDA DE SENSORES =======================
+// Se llama al arrancar, cada pocos segundos si falta alguno, y cuando la Pi lo
+// pide desde la interfaz. Solo sondea los que NO estan, asi que reintentar no
+// molesta a los que ya funcionan.
+void buscarSensores(bool avisar) {
+  if (!(sensoresPresentes & proto::S_MPU)) {
+    if (mpu.iniciar(Wire, USAR_INT_MPU, PIN_INT_MPU)) {
+      sensoresPresentes |= proto::S_MPU;
+      if (USAR_INT_MPU && PIN_INT_MPU >= 0)
+        attachInterrupt(digitalPinToInterrupt(PIN_INT_MPU), isrMpu, RISING);
+      enviarLog("MPU6050 OK");
+    } else if (avisar) {
+      enviarLog("sin MPU6050");
+    }
+  }
+  if (!(sensoresPresentes & proto::S_TCS)) {
+    if (tcs.iniciar(Wire, PIN_INT_TCS)) {
+      sensoresPresentes |= proto::S_TCS;
+      lineas::Config lc;
+      detectorLinea.configurar(lc);
+      enviarLog("TCS34725 OK");
+    } else if (avisar) {
+      enviarLog("sin TCS34725");
+    }
+  }
+}
+
 // ======================= TAREA: SENSORES =======================
 // Vive en el nucleo 1 pero con prioridad BAJA: si hay que elegir entre leer el
 // giroscopo y atender el lazo de control, gana el control. Un rumbo que llega
@@ -301,7 +331,7 @@ void tareaVigilante(void *) {
 //     de 11 bytes, no un chorro continuo.
 void tareaSensores(void *) {
   uint32_t tAnterior = millis();
-  uint32_t tEnvioImu = 0, tColor = 0, tEstado = 0, tHz = 0;
+  uint32_t tEnvioImu = 0, tColor = 0, tEstado = 0, tHz = 0, tReintento = 0;
   uint16_t cuentaImu = 0, cuentaColor = 0;
   float yawEnviado = 0.0f;
   bool calibrandoImu = false;
@@ -328,6 +358,10 @@ void tareaSensores(void *) {
       if ((ordenes & proto::AUX_CALIB_COLOR) && tcs.presente) {
         detectorLinea.calibrarBlanco();
         enviarLog("BLANCO OK");
+      }
+      if (ordenes & proto::AUX_REINIT_SENSORES) {
+        enviarLog("BUSCANDO I2C");
+        buscarSensores(true);
       }
     }
 
@@ -369,6 +403,17 @@ void tareaSensores(void *) {
           if (e >= 0) enlaces[e]->write(buf, n);
         }
       }
+    }
+
+    // ---- reintento automatico si falta algun chip ----------------------
+    // No hace falta pulsar nada: si el MPU o el TCS no estaban al arrancar
+    // (tipico cuando comparten alimentacion con el motor y despiertan tarde),
+    // se les vuelve a sondear cada 3 s hasta que aparezcan. Cuesta dos
+    // transacciones I2C, nada.
+    if (sensoresPresentes != (proto::S_MPU | proto::S_TCS) &&
+        (ahora - tReintento) >= REINTENTO_SENSORES_MS) {
+      tReintento = ahora;
+      buscarSensores(false);
     }
 
     // ---- que sensores hay, cada 2 s -----------------------------------
@@ -448,17 +493,13 @@ void setup() {
   Serial2.begin(BAUDIOS, SERIAL_8N1, PIN_RX2, PIN_TX2);
 
   // --- Sensores I2C: si no estan, no pasa nada -----------------------------
+  // Se espera un poco antes de sondear: el MPU6050 necesita ~100 ms desde que
+  // le llega tension y el TCS34725 otro tanto. Sin esta espera el ESP32 los
+  // sondeaba antes de que estuvieran despiertos y los daba por ausentes. Y si
+  // aun asi no aparecen, la tarea de sensores los reintenta sola cada 3 s.
   Wire.begin(PIN_SDA, PIN_SCL, 400000);
-  if (mpu.iniciar(Wire, USAR_INT_MPU, PIN_INT_MPU)) {
-    sensoresPresentes |= proto::S_MPU;
-    if (USAR_INT_MPU && PIN_INT_MPU >= 0)
-      attachInterrupt(digitalPinToInterrupt(PIN_INT_MPU), isrMpu, RISING);
-  }
-  if (tcs.iniciar(Wire, PIN_INT_TCS)) {
-    sensoresPresentes |= proto::S_TCS;
-    lineas::Config lc;
-    detectorLinea.configurar(lc);
-  }
+  delay(ESPERA_ARRANQUE_I2C_MS);
+  buscarSensores(false);
 
   colaMando = xQueueCreate(1, sizeof(proto::Mando));
   if (colaMando == NULL) {

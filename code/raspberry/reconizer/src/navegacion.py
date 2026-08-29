@@ -112,11 +112,20 @@ class PerfilMuro:
     pasillo_medio: float = 0.0
     min_global: float = 0.0
     hay_muro: bool = False
+    # Fraccion de columnas de cada banda lateral que VEN muro. Es distinto de
+    # 'izq'/'der', que miden a que distancia esta: aqui solo importa si HAY o
+    # no. Es la senal que distingue el muro externo (siempre presente) del
+    # interno (desaparece en cada esquina).
+    cobertura_izq: float = 0.0
+    cobertura_der: float = 0.0
     bordes: List[Borde] = field(default_factory=list)
     huecos: List[Hueco] = field(default_factory=list)
 
     def banda(self, lado: int) -> float:
         return self.der if lado == DER else self.izq
+
+    def cobertura(self, lado: int) -> float:
+        return self.cobertura_der if lado == DER else self.cobertura_izq
 
 
 def _media_movil(v: np.ndarray, k: int) -> np.ndarray:
@@ -153,6 +162,9 @@ def perfil_desde_mascara(mascara: np.ndarray, cfg: Dict[str, Any]) -> PerfilMuro
     n_lat = max(1, int(W * float(cfg.get("banda_lateral", 0.28))))
     p.izq = float(libre[:n_lat].mean())
     p.der = float(libre[-n_lat:].mean())
+    con_muro = ~sin_muro
+    p.cobertura_izq = float(con_muro[:n_lat].mean())
+    p.cobertura_der = float(con_muro[-n_lat:].mean())
 
     a = max(0, min(W - 1, int(W * float(cfg.get("ruedas_izq", 0.32)))))
     b = max(a + 1, min(W, int(W * float(cfg.get("ruedas_der", 0.68)))))
@@ -331,69 +343,226 @@ class CalibradorCarril:
 # ===========================================================================
 # Sentido de la vuelta
 # ===========================================================================
-class EstimadorSentido:
-    """Horario (+1) o antihorario (-1), por votos de tres fuentes.
+class DetectorParedes:
+    """Cual de las dos paredes es la EXTERNA, y por tanto en que sentido vamos.
 
-    El muro EXTERNO siempre se ve; el INTERNO queda del lado hacia el que se
-    gira. Yendo en sentido horario el centro de la pista queda a la derecha,
-    asi que el muro interno esta a la DERECHA y los giros son a la derecha.
+    QUE FALLABA ANTES: se acumulaban votos con un tope de +-6 y se votaba en
+    CADA frame. El acumulador se saturaba en un segundo y a partir de ahi hacian
+    falta 48 frames en contra para moverlo, asi que se quedaba clavado en un
+    valor (siempre "horario") y despues de la media vuelta volvia al de antes en
+    cuanto empezaba a mirar paredes otra vez. Eso es lo que deshacia la media
+    vuelta: el carro se reorientaba al sentido viejo.
+    ------------------------------------------------------------------------
 
-    Votan: el signo de los giros que ya se han hecho, el lado donde aparece el
-    escalon del muro interno, y el orden en que se cruzan las lineas del suelo
-    (naranja y luego azul = horario).
+    Ahora la senal principal es CONTINUA y se puede corregir sola:
+
+        el muro EXTERNO se ve practicamente siempre;
+        el muro INTERNO desaparece en cada esquina.
+
+    Se lleva una media movil de "esta banda ve muro" para cada lado. El lado con
+    presencia claramente mayor es el externo. Como es una media movil, si el
+    carro se da la vuelta las dos medias se cruzan solas en pocos segundos, y
+    ademas al hacer la media vuelta se intercambian a mano y se bloquea el
+    estimador un rato para que no dude mientras las paredes cambian de sitio.
+
+    Convencion de la etiqueta (la tuya): pared externa a la IZQUIERDA =
+    antihorario; pared externa a la DERECHA = horario. La etiqueta solo es un
+    nombre; lo que de verdad manda el comportamiento es 'lado_externo'.
+
+    Y siempre se puede FORZAR desde la interfaz, por si en competencia la
+    deteccion automatica se pone tonta.
     """
 
     def __init__(self, cfg: Dict[str, Any]):
         self.cfg = cfg
-        self.votos = 0.0
-        self.sentido = 0
-        self.fuentes: Dict[str, int] = {}
+        self.reiniciar()
 
-    def _votar(self, fuente: str, valor: int, peso: float) -> None:
-        self.fuentes[fuente] = valor
-        self.votos += valor * peso
-        self.votos = max(-6.0, min(6.0, self.votos))
-        if abs(self.votos) >= 1.5:
-            self.sentido = 1 if self.votos > 0 else -1
+    def reiniciar(self) -> None:
+        self.pres_izq = 0.5
+        self.pres_der = 0.5
+        self.muestras = 0
+        self.votos = 0.0            # eventos discretos (giros, lineas), decaen
+        self.forzado = 0            # 0 = automatico, +1 horario, -1 antihorario
+        self.bloqueado_hasta = 0.0
+        self._externo = 0
+        self.fuentes: Dict[str, Any] = {}
 
-    def voto_giro(self, lado: int) -> None:
-        self._votar("giro", lado, 1.2)
-
-    def voto_borde(self, p: PerfilMuro) -> None:
-        """El escalon mas grande marca donde se acaba el muro interno."""
-        if not p.bordes:
+    # -- entrada continua -------------------------------------------------
+    def observar(self, p: PerfilMuro, ahora: Optional[float] = None) -> None:
+        ahora = ahora if ahora is not None else time.time()
+        if ahora < self.bloqueado_hasta:
             return
-        b = p.bordes[0]
-        if abs(b.salto) < float(self.cfg.get("salto_min", 0.12)) * 1.5:
-            return
-        # Un salto de cerca->lejos al crecer x significa muro cerca a la
-        # IZQUIERDA que se acaba: el interno es el izquierdo -> antihorario.
-        lado_interno = IZQ if b.cerca_a_lejos else DER
-        self._votar("borde", lado_interno, 0.25)
+        alfa = float(self.cfg.get("alfa_presencia", 0.03))
+        umbral = float(self.cfg.get("cobertura_muro", 0.45))
+        self.pres_izq += alfa * ((1.0 if p.cobertura_izq >= umbral else 0.0) - self.pres_izq)
+        self.pres_der += alfa * ((1.0 if p.cobertura_der >= umbral else 0.0) - self.pres_der)
+        self.muestras += 1
+        self.votos *= float(self.cfg.get("decaimiento_votos", 0.995))
+        self._resolver()
+
+    # -- eventos discretos ------------------------------------------------
+    def voto_giro(self, lado_giro: int) -> None:
+        """Se gira hacia el INTERIOR de la pista, asi que el externo es el otro."""
+        if lado_giro:
+            self._votar("giro", -lado_giro, 1.5)
+
+    def voto_muro_desaparecido(self, lado: int) -> None:
+        """La pared que se acaba es la interna: la externa es la contraria."""
+        if lado:
+            self._votar("desaparece", -lado, 1.0)
 
     def voto_lineas(self, primera: str, segunda: str) -> None:
         orden = [str(x) for x in self.cfg.get("orden_horario", ["naranja", "azul"])]
         if [primera, segunda] == orden:
-            self._votar("lineas", 1, 2.0)
+            self._votar("lineas", DER, 2.0)      # horario -> externa a la derecha
         elif [primera, segunda] == orden[::-1]:
-            self._votar("lineas", -1, 2.0)
+            self._votar("lineas", IZQ, 2.0)
 
-    def invertir(self) -> None:
-        """Tras la media vuelta todo cambia de signo."""
+    def _votar(self, fuente: str, lado_externo: int, peso: float) -> None:
+        if time.time() < self.bloqueado_hasta:
+            return
+        self.fuentes[fuente] = "der" if lado_externo > 0 else "izq"
+        self.votos = max(-4.0, min(4.0, self.votos + lado_externo * peso))
+        self._resolver()
+
+    # -- resolucion -------------------------------------------------------
+    def _resolver(self) -> None:
+        if self.forzado:
+            self._externo = DER if self.forzado > 0 else IZQ
+            return
+        d = self.pres_der - self.pres_izq
+        margen = float(self.cfg.get("margen_presencia", 0.15))
+        minimo = int(self.cfg.get("min_muestras_presencia", 60))
+
+        ext = 0
+        if self.muestras >= minimo and abs(d) >= margen:
+            ext = DER if d > 0 else IZQ
+        if ext == 0 and abs(self.votos) >= 1.5:
+            ext = DER if self.votos > 0 else IZQ
+        elif ext != 0 and abs(self.votos) >= 3.0:
+            voto_ext = DER if self.votos > 0 else IZQ
+            if voto_ext != ext and abs(d) < margen * 2:
+                ext = voto_ext          # eventos muy claros y presencia dudosa
+        self._externo = ext
+
+    # -- cambios de estado ------------------------------------------------
+    def invertir(self, ahora: Optional[float] = None) -> None:
+        """Tras la media vuelta las dos paredes cambian de sitio.
+
+        Se intercambian las presencias (que es lo que fisicamente pasa) y se
+        BLOQUEA el estimador unos segundos: mientras el carro se reencuadra ve
+        cosas raras, y sin el bloqueo volvia a decidir el sentido viejo y se
+        ponia a deshacer la media vuelta.
+        """
+        ahora = ahora if ahora is not None else time.time()
+        self.pres_izq, self.pres_der = self.pres_der, self.pres_izq
         self.votos = -self.votos
-        self.sentido = -self.sentido
-        self.fuentes = {k: -v for k, v in self.fuentes.items()}
+        self._externo = -self._externo
+        self.fuentes = {k: ("izq" if v == "der" else "der") for k, v in self.fuentes.items()}
+        self.bloqueado_hasta = ahora + float(self.cfg.get("bloqueo_sentido_ms", 4000)) / 1000.0
+        if self.forzado:
+            self.forzado = -self.forzado
+
+    def forzar(self, sentido: int) -> None:
+        """sentido: +1 horario, -1 antihorario, 0 automatico."""
+        self.forzado = int(max(-1, min(1, sentido)))
+        self._resolver()
+
+    # -- salidas ----------------------------------------------------------
+    @property
+    def lado_externo(self) -> int:
+        return self._externo
 
     @property
     def lado_interno(self) -> int:
-        """Horario -> el centro de la pista queda a la derecha."""
-        return DER if self.sentido > 0 else (IZQ if self.sentido < 0 else 0)
+        return -self._externo
+
+    @property
+    def sentido(self) -> int:
+        """Etiqueta: externa a la derecha = horario (+1)."""
+        return self._externo
 
     def estado(self) -> Dict[str, Any]:
-        return {"sentido": self.sentido,
-                "nombre": {1: "horario", -1: "antihorario", 0: "sin determinar"}[self.sentido],
-                "confianza": round(abs(self.votos) / 6.0, 2),
-                "fuentes": dict(self.fuentes)}
+        nombre = {1: "horario", -1: "antihorario", 0: "sin determinar"}[self._externo]
+        return {
+            "sentido": self._externo,
+            "nombre": nombre,
+            "externa": {1: "der", -1: "izq", 0: "?"}[self._externo],
+            "interna": {1: "izq", -1: "der", 0: "?"}[self._externo],
+            "presencia": [round(self.pres_izq, 2), round(self.pres_der, 2)],
+            "muestras": self.muestras,
+            "votos": round(self.votos, 2),
+            "forzado": self.forzado,
+            "bloqueado": time.time() < self.bloqueado_hasta,
+            "fuentes": dict(self.fuentes),
+        }
+
+
+# Nombre viejo, para no romper nada que lo importe
+EstimadorSentido = DetectorParedes
+
+
+class DetectorEsquinaInterna:
+    """Avisa cuando una pared que SE VEIA deja de verse.
+
+    Es el disparo de esquina que mejor funciona, y lo mejor es que NO necesita
+    saber en que sentido vamos: si una banda tenia muro y de golpe no lo tiene,
+    ahi se acabo el muro interno y esa es la direccion del giro. Con eso el
+    carro gira en el momento correcto desde la primera esquina, sin esperar a
+    que el estimador de paredes se decida.
+    """
+
+    def __init__(self, cfg: Dict[str, Any]):
+        self.cfg = cfg
+        self.reiniciar()
+
+    def reiniciar(self) -> None:
+        self.tenia = {IZQ: False, DER: False}
+        self.cuenta_sin = {IZQ: 0, DER: 0}
+        self.cuenta_con = {IZQ: 0, DER: 0}
+        self.ultimo_evento = 0.0
+
+    def paso(self, p: PerfilMuro, ahora: Optional[float] = None) -> int:
+        """Devuelve IZQ/DER si acaba de desaparecer ese muro, o 0."""
+        ahora = ahora if ahora is not None else time.time()
+        alto = float(self.cfg.get("cobertura_alta", 0.55))
+        bajo = float(self.cfg.get("cobertura_baja", 0.22))
+        lejos = float(self.cfg.get("interno_lejos", 0.75))
+        cerca = float(self.cfg.get("interno_cerca", 0.62))
+        conf = int(self.cfg.get("frames_confirmar_esquina", 3))
+        estable = int(self.cfg.get("frames_confirmar_muro", 4))
+
+        evento = 0
+        for lado in (IZQ, DER):
+            # "Ya no hay muro por aqui" es cualquiera de las dos cosas: que la
+            # banda se quede sin pixeles de muro (el interno se sale del cuadro)
+            # o que lo que se ve ahi este tan lejos que ya no es esta pared,
+            # sino la de enfrente. En una pista cuadrada pasan las dos segun el
+            # angulo con el que llegues a la esquina.
+            c = p.cobertura(lado)
+            if p.banda(lado) >= lejos:
+                c = 0.0
+            elif p.banda(lado) <= cerca and c >= alto:
+                c = 1.0
+            if c >= alto:
+                self.cuenta_con[lado] += 1
+                self.cuenta_sin[lado] = 0
+                if self.cuenta_con[lado] >= estable:
+                    self.tenia[lado] = True
+            elif c <= bajo:
+                self.cuenta_sin[lado] += 1
+                self.cuenta_con[lado] = 0
+                if self.tenia[lado] and self.cuenta_sin[lado] >= conf:
+                    self.tenia[lado] = False
+                    self.ultimo_evento = ahora
+                    evento = lado
+            else:
+                self.cuenta_con[lado] = 0
+                self.cuenta_sin[lado] = 0
+        return evento
+
+    def estado(self) -> Dict[str, Any]:
+        return {"izq": self.tenia[IZQ], "der": self.tenia[DER]}
 
 
 # ===========================================================================
@@ -448,7 +617,11 @@ class Navegador:
         self.pd_pared = _PD()
         self.pd_hueco = _PD()
         self.carril = CalibradorCarril(cfg_nav)
-        self.sentido = EstimadorSentido(cfg_nav)
+        self.paredes = DetectorParedes(cfg_nav)
+        self.sentido = self.paredes          # alias historico
+        self.esquinas = DetectorEsquinaInterna(cfg_nav)
+        self._esquina_pendiente = 0
+        self._t_esquina_pendiente = 0.0
 
         self.estado = RECTO
         self.t_estado = time.time()
@@ -463,11 +636,14 @@ class Navegador:
         self.ttc = 99.0
 
         # escape
-        self._escape_modo = "adelante"
+        self._escape_modo = "atras"
         self._escape_ref = 0.0
         self._escape_t = 0.0
+        self._escape_mejor = 0.0
         self._escape_cambios = 0
         self._escape_lado = 1
+        self._escape_objetivo = 0.0
+        self._escape_compromiso = 0.0
 
         # media vuelta
         self.media_vuelta_pedida = False
@@ -493,10 +669,13 @@ class Navegador:
         self._libre_prev = None
         self._escape_cambios = 0
         self.giro_nuevo = False
+        self._esquina_pendiente = 0
+        self.esquinas.reiniciar()
         if todo:
             self.giros = 0
             self.carril = CalibradorCarril(self.cfg)
-            self.sentido = EstimadorSentido(self.cfg)
+            self.paredes.reiniciar()
+            self.sentido = self.paredes
             self.media_vuelta_pedida = False
             self.media_vuelta_hecha = False
             self.terminado = False
@@ -644,32 +823,47 @@ class Navegador:
         return techo, motivo
 
     # -- esquina interna --------------------------------------------------
-    def _esquina_interna(self, p: PerfilMuro) -> Tuple[bool, int, str]:
+    def _esquina_interna(self, p: PerfilMuro, ahora: float) -> Tuple[bool, int, str]:
         """True cuando el muro interno ha dejado de verse: hay que girar.
 
-        Dos senales, cualquiera vale:
-          a) la banda del lado interno se ha despejado por encima del umbral;
-          b) hay un escalon grande de cerca->lejos en ese lado.
+        Prioridad de senales:
+          a) UNA PARED QUE SE VEIA HA DESAPARECIDO. Es la mejor, y no necesita
+             saber el sentido: si esa banda tenia muro y ya no, ahi se acabo el
+             interno y hacia alli se gira. Vale desde la primera esquina.
+          b) Si ya sabemos cual es el interno, que su banda este despejada.
+          c) Un escalon grande de cerca a lejos en el lado interno.
         Girar aqui, y no cuando el muro de enfrente ya esta encima, es lo que
         evita llegar tarde a la esquina.
         """
         if not bool(self.cfg.get("usar_esquina_interna", True)):
             return False, 0, ""
-        lado = self.sentido.lado_interno
+
+        # (a) evento de desaparicion, con una ventana corta de validez
+        if self._esquina_pendiente:
+            venc = float(self.cfg.get("validez_esquina_ms", 900)) / 1000.0
+            if (ahora - self._t_esquina_pendiente) <= venc:
+                lado = self._esquina_pendiente
+                self._esquina_pendiente = 0
+                return True, lado, "el muro interno dejo de verse"
+            self._esquina_pendiente = 0
+
+        lado = self.paredes.lado_interno
         if lado == 0:
             return False, 0, ""
+        # (b) banda interna despejada
         umbral = float(self.cfg.get("interno_libre", 0.72))
         if p.banda(lado) >= umbral:
             return True, lado, f"interno libre {p.banda(lado):.2f}"
+        # (c) escalon
         for b in p.bordes[:2]:
             if b.lado == lado and abs(b.salto) > float(self.cfg.get("salto_min", 0.12)) * 1.6:
-                esperado_cerca_a_lejos = (lado == IZQ)
-                if b.cerca_a_lejos == esperado_cerca_a_lejos:
+                if b.cerca_a_lejos == (lado == IZQ):
                     return True, lado, f"escalon interno {b.salto:+.2f}"
         return False, 0, ""
 
     # -- ciclo principal --------------------------------------------------
-    def paso(self, perfil: PerfilMuro, yaw: Optional[float] = None) -> Decision:
+    def paso(self, perfil: PerfilMuro, yaw: Optional[float] = None,
+             esquiva: Optional[Any] = None) -> Decision:
         ahora = time.time()
         cfg = self.cfg
         dir_max = float(self.lim.get("dir_max", 100))
@@ -680,7 +874,17 @@ class Navegador:
         if usar_yaw and self.rumbo_objetivo is None:
             self.rumbo_objetivo = yaw
 
-        self.sentido.voto_borde(perfil)
+        # Solo se mira la pista cuando el carro esta navegando de verdad: en
+        # media vuelta o escapando ve cosas raras y aprender de ahi es lo que
+        # hacia que el sentido se volviera loco.
+        if self.estado in (RECTO, PRE_GIRO, GIRO):
+            self.paredes.observar(perfil, ahora)
+            lado_desaparecido = self.esquinas.paso(perfil, ahora)
+            if lado_desaparecido:
+                self.paredes.voto_muro_desaparecido(lado_desaparecido)
+                if self.estado == RECTO:
+                    self._esquina_pendiente = lado_desaparecido
+                    self._t_esquina_pendiente = ahora
         self.carril.observar(perfil, self.estado, self.ultimo.direccion)
         techo, motivo_vel = self._anticipar(perfil, ahora)
 
@@ -698,9 +902,15 @@ class Navegador:
         if libre < parar and self.estado != ESCAPE:
             self._entrar_escape(perfil, ahora)
         if self.estado == ESCAPE:
-            if libre > girar:
+            # Se sale cuando de verdad hay sitio Y se ha cumplido el compromiso
+            # minimo de retroceso. Sin lo segundo bastaba un parpadeo del perfil
+            # para volver a la navegacion pegado al muro, y de ahi el vaiven.
+            hecho = (ahora - self._escape_t) * 1000.0 >= min(
+                self._escape_compromiso, float(cfg.get("escape_atras_min_ms", 900)))
+            if libre >= self._escape_objetivo and hecho:
                 self._cambiar(RECTO)
                 self.pd_centrado.reiniciar()
+                self.esquinas.reiniciar()
             else:
                 return self._escape(perfil, yaw, ahora)
 
@@ -717,6 +927,7 @@ class Navegador:
                     d = _lim(err * float(cfg.get("yaw_kp", 1.6)) * 3.0, -dir_max, dir_max)
                     d = _lim(d, -float(cfg.get("dir_giro", 90.0)),
                              float(cfg.get("dir_giro", 90.0)))
+                    d = self._mezclar_diagonal(d, perfil)
                     return self._salida(min(techo, vel_giro), d, perfil, yaw,
                                         f"giro yaw {err:+.0f}")
             else:
@@ -724,7 +935,8 @@ class Navegador:
                     self._cambiar(RECTO)
                     self.pd_centrado.reiniciar()
                 else:
-                    d = self.lado_giro * float(cfg.get("dir_giro", 90.0))
+                    d = self.lado_giro * float(cfg.get("dir_giro_abierto", 65.0))
+                    d = self._mezclar_diagonal(d, perfil)
                     return self._salida(min(techo, vel_giro), d, perfil, yaw,
                                         f"giro vision {libre:.2f}")
 
@@ -747,7 +959,7 @@ class Navegador:
 
         # ---------- RECTO: decidir si toca esquina -------------------------
         recto_estable = self._ms_en_estado(ahora) >= float(cfg.get("min_recto_ms", 600))
-        esquina, lado_int, razon = self._esquina_interna(perfil)
+        esquina, lado_int, razon = self._esquina_interna(perfil, ahora)
         por_frente = libre < girar
 
         if recto_estable and (esquina or por_frente):
@@ -764,6 +976,16 @@ class Navegador:
         direccion, motivo, aportes = self._mezcla(perfil, ahora)
         self._aportes = aportes
 
+        # ---- esquiva de pilares -------------------------------------------
+        # Solo en recta: en una esquina o escapando mandan el muro y la
+        # seguridad, no un pilar. El peso sube segun se acerca el pilar, asi
+        # que de lejos solo corrige un poco y de cerca manda ella.
+        if esquiva is not None and getattr(esquiva, "activo", False) and esquiva.peso > 0:
+            w = _lim(float(esquiva.peso), 0.0, 1.0)
+            direccion = (1.0 - w) * direccion + w * float(esquiva.direccion)
+            self._aportes = dict(aportes, pilar=round(float(esquiva.direccion), 1))
+            motivo = f"{esquiva.motivo} | {motivo}"
+
         if usar_yaw and self.rumbo_objetivo is not None:
             err = _dif_angulo(self.rumbo_objetivo, yaw)
             correccion = _lim(err * float(cfg.get("yaw_kp", 1.6)),
@@ -777,57 +999,110 @@ class Navegador:
             motivo += " " + motivo_vel
         return self._salida(vel, direccion, perfil, yaw, motivo)
 
+    def _mezclar_diagonal(self, d: float, p: PerfilMuro) -> float:
+        """Cruzar en diagonal a la siguiente pared externa en vez de barrer la
+        esquina con un angulo fijo.
+
+        Si hay un hueco pasable, se apunta a el: eso traza la diagonal desde la
+        pared externa que se deja hasta la siguiente. Se mezcla con el angulo
+        de giro para no perder el compromiso del viraje.
+        """
+        if not bool(self.cfg.get("giro_diagonal", True)) or not p.huecos:
+            return d
+        h = p.huecos[0]
+        if not h.pasable:
+            return d
+        err = (h.centro - p.ancho / 2.0) / (p.ancho / 2.0)
+        objetivo = _lim(err * float(self.cfg.get("kp_diagonal", 110.0)),
+                        -float(self.lim.get("dir_max", 100)),
+                        float(self.lim.get("dir_max", 100)))
+        peso = _lim(float(self.cfg.get("peso_diagonal", 0.45)), 0.0, 1.0)
+        # Nunca al lado contrario del giro: si el hueco tira para el otro lado,
+        # se ignora (es el hueco de detras, no el de la salida).
+        if self.lado_giro and objetivo * self.lado_giro < 0:
+            return d
+        return (1.0 - peso) * d + peso * objetivo
+
     # -- escape -----------------------------------------------------------
     def _entrar_escape(self, p: PerfilMuro, ahora: float):
         self._cambiar(ESCAPE)
-        self._escape_modo = "adelante"
         self._escape_ref = p.pasillo
+        self._escape_mejor = p.pasillo
         self._escape_t = ahora
         self._escape_cambios = 0
-        # Hacia el lado contrario al muro externo: si sabemos el sentido, el
-        # externo es el contrario al interno. Si no, hacia el lado despejado.
-        if self.sentido.lado_interno != 0:
-            self._escape_lado = self.sentido.lado_interno
+        # Espacio que hay que recuperar antes de volver a navegar
+        self._escape_objetivo = self._umbral("girar_bajo") * float(
+            self.cfg.get("escape_salir_factor", 1.15))
+        # Cuanto retroceder: proporcional a lo cerca que esta el muro. Cuanto
+        # mas encima lo tengamos, mas hay que echarse atras.
+        deficit = _lim((self._escape_objetivo - p.pasillo) /
+                       max(0.05, self._escape_objetivo), 0.0, 1.0)
+        self._escape_compromiso = (float(self.cfg.get("escape_atras_min_ms", 900))
+                                   + deficit * float(self.cfg.get("escape_atras_extra_ms", 1600)))
+        self._escape_modo = "atras"
+        # Lado libre al que queremos acabar apuntando
+        if self.paredes.lado_interno != 0:
+            self._escape_lado = self.paredes.lado_interno
         else:
             self._escape_lado = DER if p.der > p.izq else IZQ
 
     def _escape(self, p: PerfilMuro, yaw: Optional[float], ahora: float) -> Decision:
-        """Salir de un muro encima SIN retroceder a ciegas.
+        """Salir de un muro encima.
 
-        Retroceder es lo ultimo, no lo primero: en una esquina, detras hay otro
-        muro que la camara no ve, y el carro se queda encajado empujando hacia
-        atras. Lo primero es un giro hacia adelante alejandose del muro externo,
-        que casi siempre resuelve; si en 700 ms el espacio no mejora, entonces
-        se prueba marcha atras, y si tampoco mejora se vuelve a adelante.
+        QUE FALLABA: se evaluaba cada 700 ms y se alternaba adelante/atras. Con
+        el muro encima, 700 ms de marcha atras no dan para nada, asi que el
+        carro se pasaba la vida yendo y viniendo sin ganar sitio hasta que
+        chocaba. Ahora el retroceso va COMPROMETIDO: se calcula cuanto espacio
+        falta y se retrocede al menos ese tiempo, sin reevaluar a mitad.
+
+        Solo se abandona la marcha atras si el espacio de delante no mejora
+        NADA en un buen rato, que es la firma de tener algo pegado detras; solo
+        entonces se prueba el giro hacia adelante.
         """
         cfg = self.cfg
         dir_max = float(self.lim.get("dir_max", 100))
         vel_escape = float(cfg.get("vel_escape", 26))
-        evaluar = float(cfg.get("escape_evaluar_ms", 700))
         mejora = float(cfg.get("mejora_min", 0.035))
+        atascado_ms = float(cfg.get("escape_atascado_ms", 1300))
+        transcurrido = (ahora - self._escape_t) * 1000.0
+        self._escape_mejor = max(self._escape_mejor, p.pasillo)
 
-        if (ahora - self._escape_t) * 1000 > evaluar:
-            if p.pasillo - self._escape_ref < mejora:
-                self._escape_modo = "atras" if self._escape_modo == "adelante" else "adelante"
+        if self._escape_modo == "atras":
+            cumplido = transcurrido >= self._escape_compromiso
+            atascado = (transcurrido >= atascado_ms and
+                        (self._escape_mejor - self._escape_ref) < mejora)
+            if atascado:
+                # Hay algo detras: el unico camino es hacia adelante girando
+                self._escape_modo = "adelante"
+                self._escape_t = ahora
+                self._escape_ref = p.pasillo
+                self._escape_mejor = p.pasillo
                 self._escape_cambios += 1
-                if self._escape_cambios >= 2 and self._escape_modo == "adelante":
-                    # Ni adelante ni atras: probamos hacia el otro lado
-                    self._escape_lado = -self._escape_lado
-            self._escape_t = ahora
-            self._escape_ref = p.pasillo
-
-        if self._escape_modo == "adelante":
-            d = self._escape_lado * dir_max
-            vel = vel_escape
-            motivo = (f"escape adelante hacia {'der' if self._escape_lado > 0 else 'izq'}"
-                      f" ({p.pasillo:.2f})")
+            elif cumplido and p.pasillo >= self._escape_objetivo:
+                pass          # el bucle principal ya sale del escape
+            # Marcha atras con la direccion hacia el muro: asi el morro se
+            # separa de el (como al salir de un aparcamiento).
+            d = -self._escape_lado * dir_max
+            vel = -vel_escape
+            motivo = (f"atras {transcurrido / 1000:.1f}/{self._escape_compromiso / 1000:.1f}s"
+                      f"  pasillo {p.pasillo:.2f}->{self._escape_objetivo:.2f}")
         else:
-            # marcha atras con la direccion al reves para reencuadrar
-            d = -self._escape_lado * dir_max * 0.85
-            vel = -vel_escape * 0.8
-            motivo = f"escape atras ({p.pasillo:.2f})"
+            if transcurrido >= atascado_ms:
+                if (self._escape_mejor - self._escape_ref) < mejora:
+                    self._escape_lado = -self._escape_lado
+                    self._escape_cambios += 1
+                self._escape_modo = "atras"
+                self._escape_t = ahora
+                self._escape_ref = p.pasillo
+                self._escape_mejor = p.pasillo
+                self._escape_compromiso = float(cfg.get("escape_atras_min_ms", 900))
+            d = self._escape_lado * dir_max
+            vel = vel_escape * 0.8
+            motivo = (f"adelante hacia {'der' if self._escape_lado > 0 else 'izq'}"
+                      f" (algo detras)  pasillo {p.pasillo:.2f}")
+
         if self._escape_cambios >= 4:
-            motivo += " ATASCADO"
+            motivo += "  ATASCADO"
         return self._salida(vel, d, p, yaw, motivo)
 
     # -- media vuelta -----------------------------------------------------
@@ -909,10 +1184,23 @@ class Navegador:
     def _fin_media_vuelta(self, p: PerfilMuro, yaw: Optional[float]) -> Decision:
         self.media_vuelta_hecha = True
         self.media_vuelta_pedida = False
-        self.sentido.invertir()
+        # Las dos paredes se intercambian y el estimador queda BLOQUEADO unos
+        # segundos: sin eso volvia a decidir el sentido viejo y el carro se
+        # ponia a deshacer la media vuelta que acababa de hacer.
+        self.paredes.invertir()
+        self.esquinas.reiniciar()
+        self._esquina_pendiente = 0
+        self.pd_centrado.reiniciar()
+        self.pd_pared.reiniciar()
+        self.pd_hueco.reiniciar()
+        self._libre_prev = None
         self._cambiar(RECTO)
+        # El rumbo objetivo es el de AHORA (ya girado). Si se dejara en None se
+        # recalcularia solo, pero explicitarlo evita un tiron en el primer frame.
         self.rumbo_objetivo = yaw
-        self.reiniciar()
+        # Y no se admite otra esquina inmediatamente: el carro esta atravesado
+        # y el perfil todavia no significa nada.
+        self.t_estado = time.time() + float(self.cfg.get("gracia_tras_media_ms", 800)) / 1000.0
         return self._salida(0, 0, p, yaw, "media vuelta completada")
 
     # -- salida -----------------------------------------------------------
@@ -939,7 +1227,9 @@ class Navegador:
             "min": round(perfil.min_global, 3),
             "ttc": round(min(99.0, self.ttc), 2),
             "cierre": round(self._v_cierre, 3),
-            "sentido": self.sentido.estado(),
+            "sentido": self.paredes.estado(),
+            "muros_vistos": self.esquinas.estado(),
+            "cobertura": [round(perfil.cobertura_izq, 2), round(perfil.cobertura_der, 2)],
             "carril": self.carril.estado(),
             "umbrales": {k: round(self._umbral(k), 3)
                          for k in ("parar_bajo", "girar_bajo", "frenar_bajo")},

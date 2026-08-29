@@ -18,6 +18,7 @@ reconizer/
 │   ├── imu.py            MPU6050 opcional por I2C
 │   ├── sensores.py       rumbo y color: del ESP32, de la Pi, o de ninguno
 │   ├── navegacion.py     perfil del muro, 3 estrategias, esquinas y escape
+│   ├── obstaculos.py     esquiva de pilares rojos y verdes
 │   ├── vueltas.py        contador de vueltas fusionando 3 fuentes
 │   ├── robot.py          el núcleo que lo une todo
 │   ├── robot_config.py   robot.json
@@ -26,7 +27,7 @@ reconizer/
 │   ├── calibrador.py     interfaz de calibración HSV
 │   ├── panel.py          panel de pruebas de escritorio
 │   ├── selftest.py       51 pruebas de visión, sin cámara
-│   ├── selftest_robot.py 189 pruebas del sistema, sin carro
+│   ├── selftest_robot.py 224 pruebas del sistema, sin carro
 │   ├── test_firmware.cpp 59 pruebas de la lógica del ESP32, sin ESP32
 │   └── carrito_wifi.sh   AP, mDNS, UART, I2C y servicio de arranque
 ├── docs/
@@ -147,6 +148,75 @@ detrás que la cámara no ve, y el carro se quedaba encajado empujando. Ahora:
 **El giro tardío del seguimiento de pared.** No era cuestión de ganancias: en la
 esquina no hay pared que seguir. La solución es el disparador nuevo.
 
+### Lo que se arregló de la segunda prueba en pista
+
+**La media vuelta se deshacía sola.** Era el fallo de raíz y estaba en el
+estimador de sentido: acumulaba votos con tope ±6 y votaba en *cada frame*, así
+que se saturaba en un segundo y luego hacían falta 48 frames en contra para
+moverlo. Se quedaba clavado en "horario" siempre, y después de la media vuelta
+volvía al valor de antes en cuanto miraba una pared — y el carro se reorientaba
+al sentido viejo. Ahora la señal principal es **continua**: una media móvil de
+"esta banda ve muro" por cada lado. La externa se ve casi siempre, la interna
+desaparece en cada esquina. Al hacer la media vuelta las dos presencias se
+**intercambian** y el estimador queda **bloqueado 4 s** para que no dude
+mientras las paredes cambian de sitio.
+
+**Identificación de paredes, con tu convención.** Externa a la izquierda =
+antihorario; externa a la derecha = horario. Y hay un **selector manual** en la
+web y el panel (automático / forzar horario / forzar antihorario) por si el día
+de la competencia la detección se pone tonta.
+
+**El giro ahora se dispara sin saber el sentido.** El detector nuevo mira si una
+banda que **tenía** muro deja de tenerlo, en cualquiera de los dos lados. Con eso
+gira bien desde la primera esquina, sin esperar a que el estimador se decida —
+que es justo la combinación que te funcionaba (centrado + girar cuando la interna
+desaparece). Cuenta como "ya no hay muro" tanto que la banda se quede sin píxeles
+como que lo que se ve ahí esté tan lejos que ya sea la pared de enfrente.
+
+**El vaivén adelante/atrás.** Se evaluaba cada 700 ms y se alternaba. Con el muro
+encima, 700 ms de marcha atrás no dan para nada, así que el carro iba y venía sin
+ganar sitio hasta chocar. Ahora el retroceso va **comprometido**: se calcula
+cuánto espacio falta y se retrocede **al menos ese tiempo**, sin reevaluar a
+mitad, y con la duración escalada por lo cerca que esté el muro (`escape_atras_min_ms`
++ `escape_atras_extra_ms`). Solo se abandona si el espacio de delante no mejora
+nada en 1,3 s, que es la firma de tener algo pegado detrás.
+
+**Cruzar en diagonal a la siguiente externa.** Durante el giro, si hay un hueco
+pasable, se apunta a él en vez de barrer con un ángulo fijo. Eso traza la
+diagonal desde la pared que se deja hasta la siguiente (`giro_diagonal`).
+
+**El conteo triple de esquinas.** La deduplicación era de 2,2 s y solo tapaba lo
+muy seguido; al cruzar una esquina llegan naranja, azul, a veces naranja otra vez
+porque el carro entra en diagonal, y además el giro. Ahora hay un **periodo
+refractario** de 3 s: tras registrar una esquina no se admite otra venga de donde
+venga. Y el detector de líneas por cámara pide **dominancia** (la ganadora tiene
+que superar a la otra por 1,6×, si no cerca de la esquina el máximo salta entre
+las dos), **confirmación** de 2 frames y **histéresis** para soltarla.
+
+**Los sensores que no arrancaban.** El ESP32 los sondeaba antes de que
+despertaran. Ahora espera 250 ms, los **reintenta solo cada 3 s** mientras
+falte alguno, y hay un botón **Reintentar sensores I2C** en la web y en el panel.
+
+### Esquivar los pilares
+
+Rojo → se pasa por su **derecha**; verde → por su **izquierda**. Se enciende con
+el interruptor *esquivar obstáculos de colores*.
+
+Del pilar más cercano se calcula un punto objetivo a su lado correcto, separado
+medio ancho de carro más un margen — y ese medio ancho **no es una constante**:
+sale de la perspectiva, igual que en la búsqueda de huecos, porque el mismo pilar
+a dos metros ocupa la cuarta parte de píxeles que a medio metro.
+
+El objetivo se **recorta al pasillo libre**. Sin eso, esquivar un pilar pegado a
+la pared manda el carro contra la pared: el pilar dice "pasa por aquí" y la pared
+dice "por ahí no cabes", y gana la pared. El peso de la esquiva sube según se
+acerca el pilar (`activar_desde` → `mandar_desde`), y la capa de seguridad sigue
+corriendo por encima de todo.
+
+Ojo con un matiz: *pasar por la derecha del pilar* no es *girar a la derecha*. Si
+el pilar está a tu izquierda, el punto por el que hay que pasar puede quedar a la
+izquierda del centro y el carro gira a la izquierda para colarse por ahí.
+
 ### La esquina del muro interno
 
 El muro externo siempre se ve; el interno **se acaba** en cada esquina. Ese final
@@ -202,6 +272,10 @@ mandando la medida. Se puede desactivar con `autocalibrar_carril`.
 | `y_horizonte` | Fila del horizonte. Escala la perspectiva del ancho del carro. **Reajústalo si mueves la cámara** |
 | `kp` / `kd` | PD del centrado. Sube `kp` si corrige lento, sube `kd` si oscila |
 | `px_min_columna` | Píxeles negros mínimos en una columna para creerse que hay muro |
+| `escape_atras_min_ms` | **Cuánto retrocede como mínimo.** Súbelo si sigue quedándose corto |
+| `interno_lejos` | Cuándo se da por acabada la pared interna porque lo que se ve ya está lejísimos |
+| `refractario_ms` (vueltas) | Segundos muertos tras contar una esquina. Bájalo solo si se pierde alguna |
+| `margen_lateral` (obstáculos) | Medios anchos de carro de separación al pasar un pilar |
 
 ## Vueltas, y media vuelta
 
@@ -394,6 +468,4 @@ en qué orden implementarlos, está en `docs/metodos_navegacion.html`. Resumen:
    y su peso se multiplique por eso. Barato y reversible.
 3. **Arcos de dirección**: evaluar la curva que el carro puede recorrer de
    verdad, no un punto. Lo que más mejoraría, y lo que más cuesta.
-4. Reto de obstáculos: el rojo por la derecha y el verde por la izquierda,
-   usando `Deteccion.base_y` como distancia y `desviacion()` como error lateral.
-5. Estacionamiento en la zona magenta.
+4. Estacionamiento en la zona magenta.

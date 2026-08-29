@@ -48,6 +48,7 @@ TIPO_SENSORES = 0x86  # ESP32 -> Pi (4 bytes) que sensores hay conectados
 AUX_CERO_YAW = 0x01       # pone el rumbo actual como cero
 AUX_CALIB_IMU = 0x02      # recalibra la deriva del giroscopio (carro quieto)
 AUX_CALIB_COLOR = 0x04    # toma el color actual como "piso blanco"
+AUX_REINIT_SENSORES = 0x08  # vuelve a buscar el MPU6050 y el TCS34725 en el I2C
 
 # --- identificadores de linea del suelo ------------------------------------
 LINEA_NINGUNA = 0
