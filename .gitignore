@@ -6,4 +6,20 @@ __pycache__/
 # Entornos virtuales (por si acaso)
 .venv/
 venv/
-ENV/
+ENV/# Configuracion local del robot (cada robot tiene la suya calibrada)
+rpi/config.json
+
+# Salidas generadas
+rpi/logs/
+rpi/tools/sim_out/
+rpi/tools/test_out/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Sistema
+.DS_Store
+Thumbs.db
