@@ -70,6 +70,8 @@ class Camera:
 
         self.fps = 0.0
         self.stall_ms = 0.0          # hueco maximo entre fotogramas (ventana 2 s)
+        self.exposure_ms = 0.0       # tiempo de integracion pedido
+        self.fps_cap = 0.0           # tope de FPS que impone esa exposicion
         self.error = ""
         self.ctrl_note = ""          # como se aplico la exposicion
         self.opened = False
@@ -164,6 +166,12 @@ class Camera:
         auto = bool(cfg.cam_auto_exposure)
         exp = int(cfg.cam_exposure)
         gain = int(cfg.cam_gain)
+
+        # V4L2 mide la exposicion en unidades de 100 us. El sensor no puede dar
+        # mas fotogramas que 1/exposicion, asi que este es un tope FISICO: por
+        # mucho que pidas 60 fps, con 89 ms de integracion sacaras 11.
+        self.exposure_ms = exp * 0.1
+        self.fps_cap = (1000.0 / self.exposure_ms) if self.exposure_ms > 0 else 0.0
 
         try:
             cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3 if auto else 1)

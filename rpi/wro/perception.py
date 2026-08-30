@@ -124,6 +124,32 @@ def _fit_tls(pts: np.ndarray):
     return m, d, n, resid
 
 
+def _range_scale(x_mm: np.ndarray, ref: float, cap: float = 30.0) -> np.ndarray:
+    """
+    Cuanta tolerancia merece un punto segun lo lejos que este.
+
+    La resolucion en profundidad se degrada con el CUADRADO de la distancia:
+    con la camara a 125 mm, un pixel vale 4 mm a 600 mm, 20 mm a 1200 y 73 mm a
+    2200. Por eso una tolerancia FIJA de corte es absurda: a 600 mm son 11
+    pixeles de margen, pero a 1600 mm es 1,2 pixeles, asi que cualquier pixel de
+    ruido parte el muro en trozos. Cada trozo corto tiene una orientacion sin
+    sentido y acaba clasificado al azar como lateral o frontal: eso es el
+    parpadeo de colores con el robot parado.
+    """
+    r = (np.asarray(x_mm, dtype=np.float64) / max(1.0, ref)) ** 2
+    return np.clip(r, 1.0, cap)
+
+
+def _chord_dev(pts: np.ndarray) -> float:
+    """Maxima separacion de los puntos respecto a la cuerda extremo-extremo."""
+    d = pts[-1] - pts[0]
+    L = float(np.hypot(d[0], d[1]))
+    if L < 1e-6:
+        return 0.0
+    nrm = np.array([-d[1], d[0]]) / L
+    return float(np.max(np.abs((pts - pts[0]) @ nrm)))
+
+
 def _norm_angle(deg: float) -> float:
     while deg > 90.0:
         deg -= 180.0
@@ -192,7 +218,7 @@ def floor_boundary(mask: np.ndarray, cfg):
 # ===========================================================================
 #  3) Segmentacion del contorno en tramos rectos
 # ===========================================================================
-def _split_merge(P: np.ndarray, idx: np.ndarray, tol: float,
+def _split_merge(P: np.ndarray, idx: np.ndarray, tol_pt: np.ndarray,
                  min_pts: int) -> List[np.ndarray]:
     """
     Parte un tramo del contorno donde deja de ser recto (Douglas-Peucker).
@@ -222,11 +248,44 @@ def _split_merge(P: np.ndarray, idx: np.ndarray, tol: float,
         nrm = np.array([-d[1], d[0]]) / L
         dist = np.abs((pts - pts[0]) @ nrm)
         k = int(np.argmax(dist))
-        if dist[k] > tol and 0 < k < n - 1:
+        # La tolerancia es la del punto donde se pretende cortar: lejos hay que
+        # ser mucho mas permisivo o se trocea el muro por puro ruido.
+        if dist[k] > tol_pt[idx[a + k]] and 0 < k < n - 1:
             stack.append((a, a + k))
             stack.append((a + k, b))
         else:
             out.append(idx[a:b + 1])
+    return out
+
+
+def _merge_runs(P: np.ndarray, runs: List[np.ndarray],
+                tol_pt: np.ndarray) -> List[np.ndarray]:
+    """
+    Vuelve a unir tramos contiguos que juntos siguen siendo rectos.
+
+    El algoritmo se llama "split-and-merge" y aqui solo estaba implementada la
+    mitad de partir. Sin la fusion, la decision de cortar es de todo o nada
+    justo en el umbral, asi que un tramo recto se parte o no se parte segun el
+    ruido de ese fotograma, y el resultado baila. Fusionar despues estabiliza
+    muchisimo la salida.
+    """
+    out = list(runs)
+    changed = True
+    while changed and len(out) > 1:
+        changed = False
+        res: List[np.ndarray] = []
+        i = 0
+        while i < len(out):
+            if i + 1 < len(out) and out[i][-1] + 1 == out[i + 1][0]:
+                cand = np.concatenate([out[i], out[i + 1]])
+                if _chord_dev(P[cand]) <= float(np.median(tol_pt[cand])):
+                    res.append(cand)
+                    i += 2
+                    changed = True
+                    continue
+            res.append(out[i])
+            i += 1
+        out = res
     return out
 
 
@@ -236,36 +295,68 @@ def segment_boundary(P: np.ndarray, cfg) -> List[Segment]:
     if n < int(cfg.seg_min_points):
         return []
 
+    # Tolerancias por punto: crecen con el cuadrado de la distancia, igual que
+    # lo hace la incertidumbre de la medida.
+    scale = _range_scale(P[:, 0], float(cfg.seg_range_ref_mm))
+    tol_pt = float(cfg.seg_split_tol_mm) * scale
+    gap_pt = float(cfg.seg_gap_mm) * scale
+
     d = np.hypot(np.diff(P[:, 0]), np.diff(P[:, 1]))
-    cuts = np.where(d > float(cfg.seg_gap_mm))[0] + 1
+    gap_lim = 0.5 * (gap_pt[:-1] + gap_pt[1:])
+    cuts = np.where(d > gap_lim)[0] + 1
     runs = np.split(np.arange(n), cuts) if cuts.size else [np.arange(n)]
 
-    tol = float(cfg.seg_split_tol_mm)
     minp = int(cfg.seg_min_points)
     side_max = float(cfg.side_max_angle_deg)
+    band = float(cfg.side_angle_band_deg)
 
-    segs: List[Segment] = []
+    pieces: List[np.ndarray] = []
     for r in runs:
         if len(r) < minp:
             continue
-        for idx in _split_merge(P, r, tol, minp):
-            if len(idx) < minp:
-                continue
-            pts = P[idx]
-            mid, dirv, _, _ = _fit_tls(pts)
-            ang = _norm_angle(math.degrees(math.atan2(dirv[1], dirv[0])))
-            length = float(np.hypot(*(pts[-1] - pts[0])))
-            kind = "side" if abs(ang) <= side_max else "front"
-            ymean = float(np.mean(pts[:, 1]))
-            if kind == "side":
-                side = "left" if ymean > 0 else "right"
-            else:
-                side = "front"
-            segs.append(Segment(
-                i0=int(idx[0]), i1=int(idx[-1]), pts=pts, mid=mid, dirv=dirv,
-                angle_deg=ang, length_mm=length, kind=kind, side=side,
-                x_min=float(pts[:, 0].min()), x_max=float(pts[:, 0].max()),
-                y_mean=ymean))
+        pieces.extend(_split_merge(P, r, tol_pt, minp))
+    pieces = _merge_runs(P, pieces, tol_pt)
+
+    segs: List[Segment] = []
+    for idx in pieces:
+        if len(idx) < minp:
+            continue
+        pts = P[idx]
+        mid, dirv, _, _ = _fit_tls(pts)
+        ang = _norm_angle(math.degrees(math.atan2(dirv[1], dirv[0])))
+        length = float(np.hypot(*(pts[-1] - pts[0])))
+        ymean = float(np.mean(pts[:, 1]))
+
+        # Banda muerta alrededor del umbral de angulo: un tramo que cae
+        # justo encima cambiaria de lateral a frontal cada fotograma. En
+        # esta pista los muros laterales estan cerca de 0 grados y los
+        # frontales cerca de 90, asi que descartar la franja intermedia no
+        # cuesta nada y quita el parpadeo.
+        if abs(ang) <= side_max - band:
+            kind = "side"
+        elif abs(ang) >= side_max + band:
+            kind = "front"
+        else:
+            kind = "other"
+
+        # Para llamarlo lateral hay que estar claramente a un lado y tener
+        # longitud suficiente: si no, el signo de Y (y por tanto izquierda
+        # o derecha) lo decide el ruido.
+        if kind == "side" and (abs(ymean) < float(cfg.side_min_y_mm)
+                               or length < float(cfg.side_min_len_mm)):
+            kind = "other"
+
+        if kind == "side":
+            side = "left" if ymean > 0 else "right"
+        elif kind == "front":
+            side = "front"
+        else:
+            side = "other"
+        segs.append(Segment(
+            i0=int(idx[0]), i1=int(idx[-1]), pts=pts, mid=mid, dirv=dirv,
+            angle_deg=ang, length_mm=length, kind=kind, side=side,
+            x_min=float(pts[:, 0].min()), x_max=float(pts[:, 0].max()),
+            y_mean=ymean))
     return segs
 
 

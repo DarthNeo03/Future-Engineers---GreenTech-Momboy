@@ -91,6 +91,7 @@ class Controller:
         self.corners = 0
         self.laps = 0
         self.t_start = 0.0
+        self.t_end = 0.0
         self.t_state = 0.0
         self.t_last_corner = -99.0
         self.steer = 0.0
@@ -120,6 +121,7 @@ class Controller:
         self.reset()
         self.state = ST_RUN
         self.t_start = self.now()
+        self.t_end = 0.0
         self.t_state = self.t_start
         self.target_yaw = 0.0
         self._line_seq0 = line_seq
@@ -129,6 +131,9 @@ class Controller:
             self._set_direction(CCW, "forzado")
 
     def stop(self):
+        # Se congela el cronometro: si no, sigue corriendo despues de acabar la
+        # ronda y en el panel aparecen tiempos de varios minutos que confunden.
+        self.t_end = self.now()
         self.state = ST_DONE
         self.steer = 0.0
         self.speed = 0.0
@@ -549,5 +554,6 @@ class Controller:
             "steer": round(self.steer, 1),
             "speed": round(self.speed, 1),
             "note": self.note,
-            "elapsed": round(self.now() - self.t_start, 1) if self.t_start else 0.0,
+            "elapsed": round((self.t_end or self.now()) - self.t_start, 1)
+                       if self.t_start else 0.0,
         }

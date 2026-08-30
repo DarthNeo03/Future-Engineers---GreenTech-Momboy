@@ -38,6 +38,36 @@ sala también es oscuro. Lo que hace es **medir el espacio libre**:
 De ahí salen las cuatro cifras que gobiernan todo: **distancia al muro
 izquierdo, al derecho, al frente, y dónde se acaba el muro interior**.
 
+### Qué significa cada línea de la vista Superposición
+
+| Color | Qué es |
+|---|---|
+| **Ámbar** | El **contorno del suelo libre**: un punto por columna, en la base del muro. Es la medida en bruto; todo lo demás sale de aquí. |
+| **Azul claro** | Tramo clasificado como muro **lateral izquierdo**. |
+| **Verde claro** | Tramo clasificado como muro **lateral derecho**. |
+| **Rosa / magenta** | Tramo clasificado como muro **frontal** (transversal). De aquí sale `frente`, que dispara la curva. |
+| **Gris** | Tramo **sin clasificar**: su orientación cae en la banda muerta, está casi sobre el eje del robot, o es demasiado corto para fiarse. Es información, no un fallo: el algoritmo prefiere no decidir antes que decidir al azar. Mucho gris = estás midiendo demasiado lejos. |
+| **Grises finas con `300mm`, `600mm`…** | La **retícula del suelo** proyectada. Es tu regla: deben caer donde lo dice la cinta métrica. |
+| **Turquesa horizontal** | Límites de la región de interés. |
+| **Gris azulado con `horizonte`** | El horizonte geométrico. |
+
+El color no lo elige el algoritmo por lo que "ve", sino por la **orientación** del
+tramo: alineado con el eje del robot → lateral (y el signo de Y decide izquierda
+o derecha); transversal → frontal.
+
+**Por qué las tolerancias escalan con la distancia.** La resolución en
+profundidad se degrada con el cuadrado de la distancia: con la cámara a 125 mm,
+un píxel vale 4 mm a 600 mm, 20 mm a 1200 y 73 mm a 2200. Una tolerancia de
+corte fija de 45 mm son 11 píxeles de margen a 600 mm, pero solo **1,2 píxeles a
+1600 mm**. Con un margen así, cualquier píxel de ruido parte el muro en trozos,
+cada trozo corto tiene una orientación sin sentido y acaba clasificado al azar:
+eso es el parpadeo de colores con el robot parado. Por eso `seg_split_tol_mm`,
+`seg_gap_mm` y `side_min_len_mm` se escalan con `seg_range_ref_mm`.
+
+Para medirlo: `python3 tools/test_estabilidad.py` renderiza una escena fija con
+ruido de cámara real y cuenta qué porcentaje del contorno cambia de etiqueta
+entre fotogramas, con el robot parado.
+
 ### Giroscopio (MPU‑6050) — lleva el rumbo
 
 Sólo se usa el eje Z, integrado a 200 Hz en el ESP32, con el sesgo estimado
