@@ -101,6 +101,8 @@ async function tick() {
   $('#pills').innerHTML =
       pill(`cam <b>${n(s.cam_fps,1)}</b> fps`,
          !s.cam_ok ? 'bad' : (s.cam_fps < 18 ? 'warn' : 'ok'))
+    + pill(`exp <b>${n(s.cam_exposure_ms,1)}</b> ms &rarr; max <b>${n(s.cam_fps_cap)}</b> fps`, s.cam_fps_cap < 20 ? 'bad'
+         : (s.cam_fps_cap < 28 ? 'warn' : 'ok'))
     + pill(`tiron <b>${n(s.cam_stall_ms)}</b> ms`, s.cam_stall_ms > 200 ? 'bad'
          : (s.cam_stall_ms > 120 ? 'warn' : 'ok'))
     + pill(`vision <b>${n(s.vision_hz,1)}</b> Hz`)

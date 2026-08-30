@@ -119,10 +119,10 @@ def render(g, walls, W, H):
 
 
 CASES = [
-    ("pasillo_1000", [frontal(1600, -650, 350), lateral(350, -300, 1600),
-                      lateral(-650, -300, 1600)], 0.0,
+    ("pasillo_1000", [frontal(1300, -650, 350), lateral(350, -300, 1300),
+                      lateral(-650, -300, 1300)], 0.0,
      {"izq": (350, 30), "der": (650, 45), "ancho": (1000, 50),
-      "frente": (1600, 70), "fin_izq": (None, 0), "fin_der": (None, 0)}),
+      "frente": (1300, 70), "fin_izq": (None, 0), "fin_der": (None, 0)}),
 
     ("esquina", [frontal(1500, -650, 350), lateral(350, -300, 800),
                  lateral(-650, -300, 1500)], 0.0,
@@ -133,15 +133,15 @@ CASES = [
                      lateral(-300, -300, 1600)], 0.0,
      {"izq": (300, 30), "der": (300, 30), "ancho": (600, 45)}),
 
-    ("girado_12", [frontal(1600, -650, 350), lateral(350, -300, 1600),
-                   lateral(-650, -300, 1600)], 12.0,
+    ("girado_12", [frontal(1300, -650, 350), lateral(350, -300, 1300),
+                   lateral(-650, -300, 1300)], 12.0,
      {"izq": (300, 45), "ang_izq": (-12, 3.5)}),
 
     # Girado a la DERECHA dentro del pasillo. Los dos muros se miden a la
     # distancia de evaluacion (260 mm por delante), asi que el muro izquierdo
     # se aleja: 350 + 260*tan(8) = 386 mm.
-    ("girado_m8", [frontal(1600, -650, 350), lateral(350, -300, 1600),
-                   lateral(-650, -300, 1600)], -8.0,
+    ("girado_m8", [frontal(1300, -650, 350), lateral(350, -300, 1300),
+                   lateral(-650, -300, 1300)], -8.0,
      {"ang_der": (8, 3.5), "ang_izq": (8, 3.5), "izq": (386, 45)}),
 ]
 

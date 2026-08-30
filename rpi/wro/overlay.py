@@ -24,6 +24,7 @@ COL_BOUND = (60, 220, 255)
 COL_LEFT = (255, 170, 60)
 COL_RIGHT = (120, 255, 120)
 COL_FRONT = (200, 120, 255)
+COL_OTHER = (130, 130, 140)
 COL_TXT = (235, 235, 235)
 COL_WARN = (60, 90, 250)
 COL_OK = (120, 230, 120)
@@ -75,8 +76,8 @@ def draw_overlay(frame, sc, ground, cfg, ctrl_snap, pillars=None, extra=None):
         if s.i1 >= len(sc.boundary_uv):
             continue
         pu = sc.boundary_uv[s.i0:s.i1 + 1].astype(np.int32)
-        col = COL_LEFT if s.side == "left" else (
-            COL_RIGHT if s.side == "right" else COL_FRONT)
+        col = {"left": COL_LEFT, "right": COL_RIGHT,
+               "front": COL_FRONT}.get(s.side, COL_OTHER)
         if len(pu) > 1:
             cv2.polylines(img, [pu], False, col, 3, cv2.LINE_AA)
 
@@ -179,8 +180,8 @@ def draw_bev(sc, cfg, ctrl_snap, pillars=None, size=(420, 470)):
 
     # --- tramos ---
     for s in sc.segments:
-        col = COL_LEFT if s.side == "left" else (
-            COL_RIGHT if s.side == "right" else COL_FRONT)
+        col = {"left": COL_LEFT, "right": COL_RIGHT,
+               "front": COL_FRONT}.get(s.side, COL_OTHER)
         a = to_px(s.pts[0, 0], s.pts[0, 1])
         b = to_px(s.pts[-1, 0], s.pts[-1, 1])
         cv2.line(img, a, b, col, 2, cv2.LINE_AA)

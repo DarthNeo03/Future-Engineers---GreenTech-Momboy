@@ -622,6 +622,8 @@ class Robot:
             "loop_hz": round(self.loop_hz, 1),
             "cam_fps": round(self.cam.fps, 1),
             "cam_stall_ms": round(self.cam.stall_ms, 0),
+            "cam_exposure_ms": round(self.cam.exposure_ms, 1),
+            "cam_fps_cap": round(self.cam.fps_cap, 1),
             "cam_ok": self.cam.opened,
             "cam_error": self.cam.error,
             "cam_negotiated": self.cam.negotiated,

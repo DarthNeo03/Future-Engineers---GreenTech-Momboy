@@ -189,12 +189,19 @@ PARAMS: List[Spec] = [
       "Puntos del suelo mas cercanos que esto se descartan. Evita usar la "
       "franja mas baja de la imagen, donde un error de pitch se amplifica.",
       lo=0, hi=600, step=5),
-    F("roi_x_max_mm", 2200.0, G_SEG, "Rango maximo (mm)",
+    F("roi_x_max_mm", 1700.0, G_SEG, "Rango maximo (mm)",
       "Distancia maxima que se considera. TODO lo que en la imagen quede por "
       "encima de la fila correspondiente a este rango se recorta antes de "
       "procesar. ESTE ES EL FILTRO QUE ELIMINA EL FONDO (mesas, gente, techo): "
       "como la camara (125 mm) esta MAS ALTA que los muros (100 mm), todo el "
-      "muro cae por debajo del horizonte y el fondo queda fuera.",
+      "muro cae por debajo del horizonte y el fondo queda fuera. "
+      "NO LO SUBAS de 1800. La perspectiva comprime muchisimo el fondo: con la "
+      "camara a 125 mm y 20 grados de inclinacion, un pixel vale 11 mm a 900 "
+      "mm, 37 mm a 1600 mm y 72 mm a 2200 mm. Esa ultima franja son unas pocas "
+      "filas de imagen que solo aportan ruido, y es justo por donde se cuelan "
+      "los objetos de la sala que quedan por debajo del horizonte. Nada del "
+      "control necesita ver tan lejos: la curva se dispara a 700 mm y el "
+      "ajuste de muros llega a 1100.",
       lo=500, hi=3200, step=25),
     I("col_step", 3, G_SEG, "Paso de columnas",
       "Se analiza 1 de cada N columnas. 3 da ~210 puntos a 640 px, suficiente "
@@ -219,6 +226,34 @@ PARAMS: List[Spec] = [
       "donde termina el muro interior.", lo=60, hi=700, step=5),
     I("seg_min_points", 5, G_WAL, "Puntos minimos por tramo",
       "Tramos con menos puntos se descartan por ruido.", lo=3, hi=40),
+    F("seg_range_ref_mm", 700.0, G_WAL, "Distancia de referencia de tolerancias",
+      "A esta distancia las tolerancias de corte y hueco valen lo que dicen sus "
+      "campos; mas lejos crecen con el CUADRADO de la distancia, porque asi se "
+      "degrada la resolucion (1 pixel vale 4 mm a 600 mm y 73 mm a 2200). Sin "
+      "esto, un solo pixel de ruido trocea un muro lejano y cada trozo se "
+      "clasifica al azar: es el parpadeo de colores con el robot parado. "
+      "Bajarlo = mas permisivo lejos.", lo=300, hi=1500, step=25,
+      advanced=True),
+    F("side_angle_band_deg", 8.0, G_WAL, "Banda muerta de clasificacion",
+      "Franja alrededor del angulo limite en la que un tramo NO se clasifica ni "
+      "como lateral ni como frontal (se dibuja en gris). Evita que un tramo "
+      "justo en el umbral cambie de color en cada fotograma. En esta pista los "
+      "muros laterales estan cerca de 0 grados y los frontales cerca de 90, "
+      "asi que descartar la franja intermedia no cuesta nada.",
+      lo=0, hi=25, step=1),
+    F("side_min_y_mm", 90.0, G_WAL, "Separacion minima para ser lateral",
+      "Un tramo cuyo centro esta casi sobre el eje del robot no puede llamarse "
+      "izquierdo ni derecho: el signo lo decidiria el ruido. Por debajo de esta "
+      "separacion se marca como no clasificado.", lo=0, hi=400, step=10),
+    F("side_min_len_mm", 90.0, G_WAL, "Longitud minima para ser lateral",
+      "Un trozo demasiado corto tiene una orientacion sin sentido. Este minimo "
+      "se aplica a la distancia de referencia y CRECE con el cuadrado de la "
+      "distancia, igual que las tolerancias: si fuera fijo se descartaria el "
+      "muro interior justo al llegar a una esquina, que es cuando su tramo "
+      "visible es mas corto (para ver un muro a 340 mm de lado hay que estar a "
+      "mas de 400 mm de el, asi que a veces solo se ven 200 mm). Subelo si ves "
+      "fragmentos sueltos etiquetados como muro lateral.",
+      lo=0, hi=600, step=10),
     F("side_max_angle_deg", 42.0, G_WAL, "Angulo max. de un muro lateral",
       "Un tramo se considera muro LATERAL si su direccion se desvia menos que "
       "esto del eje del robot; si no, se considera muro FRONTAL. 42 grados "
