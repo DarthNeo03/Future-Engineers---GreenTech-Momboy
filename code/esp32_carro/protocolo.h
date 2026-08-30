@@ -21,15 +21,18 @@ namespace proto {
 static const uint8_t SYNC1 = 0xA5;
 static const uint8_t SYNC2 = 0x5A;
 static const uint8_t MAX_PAYLOAD = 16;
-static const uint8_t VERSION_PROTOCOLO = 1;
+static const uint8_t VERSION_PROTOCOLO = 2;
 
 // Tipos de trama
-static const uint8_t TIPO_MANDO  = 0x01;   // Pi -> ESP32, 6 bytes
-static const uint8_t TIPO_PING   = 0x02;   // Pi -> ESP32, 1 byte
-static const uint8_t TIPO_CONFIG = 0x03;   // Pi -> ESP32, 6 bytes
-static const uint8_t TIPO_TELE   = 0x81;   // ESP32 -> Pi, 8 bytes
-static const uint8_t TIPO_LOG    = 0x82;   // ESP32 -> Pi, texto
-static const uint8_t TIPO_PONG   = 0x83;   // ESP32 -> Pi, 1 byte
+static const uint8_t TIPO_MANDO    = 0x01;   // Pi -> ESP32, 6 bytes
+static const uint8_t TIPO_PING     = 0x02;   // Pi -> ESP32, 1 byte
+static const uint8_t TIPO_CONFIG   = 0x03;   // Pi -> ESP32, 6 bytes
+static const uint8_t TIPO_CFG_TCS  = 0x05;   // Pi -> ESP32, 10 bytes
+static const uint8_t TIPO_CMD_CAL  = 0x06;   // Pi -> ESP32, 1 byte
+static const uint8_t TIPO_TELE     = 0x81;   // ESP32 -> Pi, 8 bytes
+static const uint8_t TIPO_LOG      = 0x82;   // ESP32 -> Pi, texto
+static const uint8_t TIPO_PONG     = 0x83;   // ESP32 -> Pi, 1 byte
+static const uint8_t TIPO_SENSORES = 0x84;   // ESP32 -> Pi, 14 bytes
 
 // Banderas del mando
 static const uint8_t F_ARMADO  = 0x01;
@@ -40,9 +43,25 @@ static const uint8_t F_LIMPIAR = 0x08;
 // Bits de estado de la telemetria
 static const uint8_t E_ARMADO        = 0x01;
 static const uint8_t E_MOTOR         = 0x02;
-static const uint8_t E_FAILSAFE      = 0x04;
+static const uint8_t E_FAILSAFE     = 0x04;
 static const uint8_t E_SERVO_TOPE    = 0x08;
 static const uint8_t E_INV_BLOQUEADA = 0x10;
+
+// Bits de estado de la trama de sensores (0x84)
+static const uint8_t S_MPU_OK      = 0x01;
+static const uint8_t S_TCS_OK      = 0x02;
+static const uint8_t S_CALIBRANDO  = 0x04;   // yaw congelado, NO MOVER
+static const uint8_t S_SOBRE_LINEA = 0x08;
+
+// Clase de linea (2 bits altos del byte de estado de sensores)
+static const uint8_t LINEA_NADA    = 0;
+static const uint8_t LINEA_NARANJA = 1;
+static const uint8_t LINEA_AZUL    = 2;
+
+// Comandos de calibracion (TIPO_CMD_CAL)
+static const uint8_t CAL_GIRO       = 1;   // sesgo del giroscopio, carro QUIETO
+static const uint8_t CAL_CERO_YAW   = 2;
+static const uint8_t CAL_REDETECTAR = 3;   // volver a sondear el I2C ya
 
 // --------------------------------------------------------------------------
 // CRC-8/ATM (poly 0x07, init 0x00). Sin tabla: 256 bytes de flash no valen la
@@ -126,6 +145,55 @@ inline uint8_t empaquetarTelemetria(const Telemetria &t, uint8_t *salida) {
   p[6] = t.tramas_malas;
   p[7] = t.version;
   return empaquetar(TIPO_TELE, p, 8, salida);
+}
+
+// --------------------------------------------------------------------------
+// Trama de sensores 0x84: yaw del MPU6050 + lectura y eventos del TCS34725.
+// Los cruces de linea viajan como CONTADORES de 4 bits (envuelven en 16):
+// aunque se pierdan tramas, la Pi ve el contador avanzar y no pierde cruces.
+struct Sensores {
+  int16_t  yaw_deci;      // yaw en decimas de grado, -1800..1800
+  int16_t  gz_deci;       // velocidad de giro en decimas de grado/s
+  uint16_t c, r, g, b;    // lectura cruda del TCS34725
+  uint8_t  estado;        // bits S_* + (clase de linea << 6)
+  uint8_t  cnt_lineas;    // naranja en los 4 bits bajos, azul en los 4 altos
+};
+
+inline uint8_t empaquetarSensores(const Sensores &s, uint8_t *salida) {
+  uint8_t p[14];
+  p[0]  = (uint8_t)(s.yaw_deci & 0xFF);   p[1]  = (uint8_t)((uint16_t)s.yaw_deci >> 8);
+  p[2]  = (uint8_t)(s.gz_deci & 0xFF);    p[3]  = (uint8_t)((uint16_t)s.gz_deci >> 8);
+  p[4]  = (uint8_t)(s.c & 0xFF);          p[5]  = (uint8_t)(s.c >> 8);
+  p[6]  = (uint8_t)(s.r & 0xFF);          p[7]  = (uint8_t)(s.r >> 8);
+  p[8]  = (uint8_t)(s.g & 0xFF);          p[9]  = (uint8_t)(s.g >> 8);
+  p[10] = (uint8_t)(s.b & 0xFF);          p[11] = (uint8_t)(s.b >> 8);
+  p[12] = s.estado;
+  p[13] = s.cnt_lineas;
+  return empaquetar(TIPO_SENSORES, p, 14, salida);
+}
+
+// Configuracion del clasificador de lineas (TIPO_CFG_TCS, 10 bytes).
+// Ver lineas.h para el significado de cada campo.
+struct CfgTcs {
+  uint16_t c_min;
+  uint8_t  naranja_r_min, naranja_b_max;
+  uint8_t  azul_b_min, azul_r_max;
+  uint8_t  muestras_min, refractario_ds;
+  uint8_t  atime, gain;
+};
+
+inline bool decodificarCfgTcs(const uint8_t *p, uint8_t n, CfgTcs &c) {
+  if (n < 10) return false;
+  c.c_min         = (uint16_t)(p[0] | (p[1] << 8));
+  c.naranja_r_min = p[2];
+  c.naranja_b_max = p[3];
+  c.azul_b_min    = p[4];
+  c.azul_r_max    = p[5];
+  c.muestras_min  = p[6] < 1 ? 1 : p[6];
+  c.refractario_ds = p[7] < 1 ? 1 : p[7];
+  c.atime         = p[8];
+  c.gain          = p[9] > 3 ? 3 : p[9];
+  return true;
 }
 
 // --------------------------------------------------------------------------
