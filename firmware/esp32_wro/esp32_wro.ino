@@ -16,7 +16,8 @@
 //    C <steer> <speed>    steer -1000..1000 (positivo = IZQUIERDA)
 //                         speed -1000..1000 (positivo = ADELANTE)
 //    S <0|1>              deshabilita / habilita la etapa de potencia
-//    Z                    pone yaw a 0 y recalibra el bias del giro (en reposo)
+//    Z                    pone el rumbo (yaw) a 0. El bias del giroscopio se
+//                         refina solo mientras el robot espera parado.
 //    L                    pone a cero los contadores de lineas
 //    P <nombre> <valor>   ajusta un parametro (ver applyParam)
 //    G                    pide el volcado de todos los parametros
@@ -366,7 +367,7 @@ void loop() {
     float dt_imu = (now - t_imu) * 0.001f;
     t_imu = now;
     if (dt_imu > 0.2f) dt_imu = 1.0f / IMU_HZ;
-    imu.update(dt_imu);
+    imu.update(dt_imu, !power_on && cmd_speed == 0);
   }
   if (now - t_acc >= 50) { t_acc = now; imu.updateAccel(); }
 
