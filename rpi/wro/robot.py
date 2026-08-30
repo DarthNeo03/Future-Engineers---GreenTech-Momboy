@@ -94,6 +94,12 @@ class Robot:
         self._pending_geo = True
         self._cal_request = None
         self.cal_result = ""
+        # Caja negra: fotogramas + la decision de control de cada instante
+        self._rec_dir = None
+        self._rec_file = None
+        self._rec_csv = None
+        self._rec_n = 0
+        self._rec_t = 0.0
 
     # ================================================================= ciclo
     def start(self):
@@ -116,6 +122,7 @@ class Robot:
         if getattr(self, "_render_thread", None):
             self._render_thread.join(timeout=2.0)
         self._close_log()
+        self._close_record()
         self.esp.stop()
         self.cam.stop()
 
@@ -163,6 +170,7 @@ class Robot:
         self.armed = True
         self.esp.set_power(True)
         self._open_log()
+        self._open_record()
         self.msg = "en marcha"
 
     def disarm(self):
@@ -171,6 +179,7 @@ class Robot:
         self.esp.set_power(False)
         self.ctrl.stop()
         self._close_log()
+        self._close_record()
         self.msg = "detenido"
 
     def set_manual(self, steer: float, speed: float):
@@ -349,6 +358,7 @@ class Robot:
                 self.armed = False
                 self.msg = "ronda terminada: %s" % self.ctrl.note
                 self._close_log()
+                self._close_record()
             else:
                 self.esp.drive(steer, speed)
                 self._write_log(tel)
@@ -369,24 +379,35 @@ class Robot:
         mas de lo que el navegador puede mostrar y le quita tiempo al control.
         12 Hz se ve fluido y deja la CPU libre.
         """
-        period = 1.0 / 12.0
         n, t_ref = 0, time.time()
         while not self._stop.is_set():
             t0 = time.time()
+            grabando = self._rec_dir is not None
+            period = 1.0 / max(12.0, float(self.cfg.record_fps) if grabando else 12.0)
+
             name = self._active_view
-            if name and (t0 - self._active_t) < 1.5:
-                frame, _, _ = self.cam.read()
-                try:
-                    self._render_one(name, frame)
-                except Exception as exc:
-                    self.last_error = "dibujo: %r" % exc
-                n += 1
-                if t0 - t_ref >= 1.0:
-                    self.render_hz = n / (t0 - t_ref)
-                    n, t_ref = 0, t0
-            else:
+            dibujando = bool(name) and (t0 - self._active_t) < 1.5
+
+            if dibujando or grabando:
+                frame, stamp, seq = self.cam.read()
+                if dibujando:
+                    try:
+                        self._render_one(name, frame)
+                    except Exception as exc:
+                        self.last_error = "dibujo: %r" % exc
+                    n += 1
+                    if t0 - t_ref >= 1.0:
+                        self.render_hz = n / (t0 - t_ref)
+                        n, t_ref = 0, t0
+                if grabando:
+                    try:
+                        self._record_step(frame, stamp, t0)
+                    except Exception as exc:
+                        self.last_error = "grabacion: %r" % exc
+            if not dibujando:
                 self.render_hz = 0.0
                 n, t_ref = 0, t0
+
             rest = period - (time.time() - t0)
             time.sleep(rest if rest > 0 else 0.005)
 
@@ -566,6 +587,68 @@ class Robot:
                            "%.0f, muro ocupa %.0f%%)"
                            % (thr, dark, light, sep, frac * 100))
 
+    # ============================================================ caja negra
+    def _open_record(self):
+        """Empieza a grabar la ronda: fotogramas + decision de control."""
+        if self._rec_dir is not None or not bool(self.cfg.record_run):
+            return
+        d = os.path.join(self.root, "grabaciones",
+                         time.strftime("%Y%m%d_%H%M%S_") + self.mode)
+        try:
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "meta.json"), "w", encoding="utf-8") as fh:
+                json.dump({"fecha": time.strftime("%Y-%m-%d %H:%M:%S"),
+                           "modo": self.mode,
+                           "config": self.cfg.snapshot(),
+                           "camara": {"negociado": self.cam.negotiated,
+                                      "exposicion_ms": self.cam.exposure_ms}},
+                          fh, indent=2, ensure_ascii=False)
+            self._rec_file = open(os.path.join(d, "frames.csv"), "w",
+                                  newline="", encoding="utf-8")
+            self._rec_csv = csv.writer(self._rec_file)
+            self._rec_csv.writerow(
+                ["file", "t", "estado", "sentido", "esquinas", "vueltas",
+                 "yaw", "yaw_obj", "err_rumbo", "corr_rumbo", "d_int", "d_ext",
+                 "frente", "fin_int", "ancho", "dir", "vel", "nota"])
+            self._rec_dir, self._rec_n, self._rec_t = d, 0, 0.0
+            self.msg = "grabando ronda en %s" % d
+        except Exception as exc:
+            self.last_error = "no se pudo abrir la grabacion: %s" % exc
+            self._rec_dir = None
+
+    def _record_step(self, frame, stamp, now):
+        if frame is None or self._rec_csv is None:
+            return
+        if now - self._rec_t < 1.0 / max(1.0, float(self.cfg.record_fps)):
+            return
+        self._rec_t = now
+        fn = "r%05d.jpg" % self._rec_n
+        cv2.imwrite(os.path.join(self._rec_dir, fn), frame,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), int(self.cfg.record_quality)])
+        c = self.ctrl
+        self._rec_csv.writerow([
+            fn, round(c.now() - c.t_start, 3) if c.t_start else 0.0,
+            c.state, c.direction, c.corners, c.laps,
+            round(self.esp.tel.yaw, 2), round(c.target_yaw, 2),
+            round(c.head_err, 2), round(c.head_corr, 2),
+            round(c.d_inner.value, 1) if c.d_inner.valid else "",
+            round(c.d_outer.value, 1) if c.d_outer.valid else "",
+            round(c.front.value, 1) if c.front.valid else "",
+            round(c.inner_end, 1) if c.inner_end is not None else "",
+            round(c.corridor, 1) if c.corridor else "",
+            round(c.steer, 1), round(c.speed, 1), c.note])
+        self._rec_n += 1
+
+    def _close_record(self):
+        if self._rec_file is not None:
+            try:
+                self._rec_file.close()
+            except Exception:
+                pass
+            self.msg = "grabacion: %d fotogramas en %s" % (self._rec_n,
+                                                           self._rec_dir)
+        self._rec_file = self._rec_csv = self._rec_dir = None
+
     # ============================================================== capturas
     def capture(self, n: int = 40, name: str = "captura") -> dict:
         """
@@ -702,6 +785,8 @@ class Robot:
             "cam_ctrl": self.cam.ctrl_note,
             "vision_hz": round(self.vision_hz, 1),
             "render_hz": round(self.render_hz, 1),
+            "grabando": self._rec_dir is not None,
+            "grabados": self._rec_n,
             "view": self._active_view,
             "esp": {
                 "connected": tel.connected,

@@ -565,6 +565,21 @@ PARAMS: List[Spec] = [
       "Numero BCM del pin del boton fisico de arranque (a GND, pull-up "
       "interno). -1 lo desactiva. El reglamento (9.11) exige un unico boton de "
       "arranque; tambien puedes usar el del ESP32 (GPIO 4).", lo=-1, hi=27),
+    B("record_run", False, G_SYS, "Grabar la ronda (caja negra)",
+      "Mientras el robot este armado, guarda fotogramas con la decision de "
+      "control de cada instante en rpi/grabaciones/. Sirve para reconstruir "
+      "despues por que hizo lo que hizo: con tools/reproducir_ronda.py sale un "
+      "video con la superposicion y una linea de tiempo de los disparos de "
+      "curva. Se graba en JPEG (no PNG) porque una vuelta entera son miles de "
+      "fotogramas; para medir ruido con precision usa las capturas PNG."),
+    I("record_fps", 10, G_SYS, "Fotogramas por segundo a grabar",
+      "Ritmo de grabacion de la caja negra. 10 basta para entender las "
+      "decisiones y deja una ronda de 100 s en unos 40 MB. Subelo solo si "
+      "necesitas ver un detalle rapido.", lo=2, hi=30),
+    I("record_quality", 85, G_SYS, "Calidad JPEG de la grabacion",
+      "Compromiso entre tamano y detalle. Por debajo de 75 los artefactos "
+      "empiezan a notarse en el borde del muro.", lo=50, hi=100,
+      advanced=True),
     B("log_enabled", True, G_SYS, "Guardar registro CSV",
       "Guarda telemetria en logs/ para analizar despues de cada intento."),
 ]

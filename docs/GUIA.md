@@ -327,7 +327,107 @@ interés mal recortada.
 
 ---
 
-## 7. Herramientas
+## 7. Calibrar con fotogramas reales
+
+El simulador tiene el tapete perfectamente uniforme y el muro perfectamente
+negro, así que **no reproduce los problemas de verdad**: sombras, viñeteado del
+objetivo, compresión, muros mal iluminados. Para eso está la captura.
+
+**Grabar una tanda** (robot encendido, panel abierto, en la posición que quieras
+estudiar):
+
+```bash
+curl -X POST http://192.168.4.1:8000/api/command      -H "Content-Type: application/json"      -d '{"cmd":"capture","n":40,"nombre":"pasillo_1000"}'
+```
+
+Guarda 40 fotogramas **en PNG sin comprimir** (en JPEG los artefactos serían del
+mismo orden que el ruido que queremos medir), más la configuración del momento y
+la telemetría, en `rpi/capturas/<fecha>_<nombre>/`. Los toma del hilo de cámara
+que ya está corriendo, así que puedes capturar incluso con el robot en marcha.
+
+**Analizar**, desde cualquier ordenador con el repo:
+
+```bash
+python3 tools/analizar_captura.py capturas/20260830_101500_pasillo_1000
+```
+
+Informa del estado de la cámara (formato negociado, tope de fps por exposición,
+tirones), de la máscara (brillo del muro y del tapete, separación, y si el
+tapete de delante se está tomando por muro) y de la percepción sobre fotogramas
+reales: medias, **desviación típica** de cada distancia y porcentaje de parpadeo
+de las etiquetas. Deja además tres superposiciones anotadas en la misma carpeta.
+
+**Probar cambios sin tocar el robot** — esto es lo que lo hace útil de verdad:
+
+```bash
+python3 tools/analizar_captura.py <carpeta> --set lens_k1=0 --set roi_x_max_mm=1700
+```
+
+```bash
+python3 tools/analizar_captura.py <carpeta> --barrer cam_pitch_deg=14:26:1
+```
+
+El barrido prueba un rango de valores sobre los mismos fotogramas y compara
+distancias y estabilidad. Con un pasillo de ancho conocido, esa tabla te dice
+directamente qué inclinación y qué campo de visión reproducen la cinta métrica.
+
+Capturas recomendadas para tener un juego de pruebas: un tramo recto centrado, un
+tramo pegado al muro interior, la aproximación a una curva, y un pasillo estrecho
+de 600 mm.
+
+## 8. Grabar una ronda entera (caja negra)
+
+Las capturas PNG miden **precisión** en un punto fijo. Para entender la
+**dinámica** de una vuelta — dónde disparó cada curva, dónde perdió el muro
+interior, qué estaba midiendo justo antes de irse — hay que grabar la ronda.
+
+Activa `record_run` en el panel y arma normalmente. Mientras esté armado guarda,
+a `record_fps` (10 por defecto), un fotograma JPEG **y la decisión de control de
+ese instante**: estado, esquinas, vueltas, rumbo, distancias, dirección y
+velocidad. Una ronda de 100 s ocupa unos 20 MB.
+
+Se graba en JPEG y no en PNG a propósito: son miles de fotogramas y aquí no se
+mide ruido a nivel de píxel, se mira el comportamiento. Para lo primero están
+las capturas.
+
+Después:
+
+```bash
+python3 tools/reproducir_ronda.py grabaciones/20260830_101500_open
+```
+
+Saca tres cosas. Un **resumen** de la ronda (duración, esquinas, vueltas, media
+y desviación de cada distancia, error de rumbo en recta, tiempo en recuperación).
+Una **línea de tiempo** con cada cambio de estado y el motivo:
+
+```
+  tiempo | estado      | esq | vta | frente | int  | motivo
+     2.9 | GIRO        |   1 |   0 |  641.2 |    - | giro: frente a 641 mm
+     6.4 | SIGUE_MURO  |   1 |   0 | 1700.0 |    - | giro completado
+```
+
+Y un **vídeo MP4** con la superposición dibujada sobre los fotogramas reales,
+usando el estado que el robot tenía en ese momento — así ves lo que de verdad
+decidió, no una reconstrucción.
+
+Con `--set` vuelve a pasar la percepción con otros parámetros y compara:
+
+```bash
+python3 tools/reproducir_ronda.py <carpeta> --set roi_x_max_mm=1200
+```
+
+```
+  magnitud   | grabado                    | recalculado
+  frente     | media 1330  desv 437       | media 1051  desv 239
+```
+
+**Un límite que conviene tener claro:** `--set` responde *qué habría medido*, no
+*qué habría hecho*. El control es en lazo cerrado, así que cualquier cambio
+habría llevado el robot a otro sitio y los fotogramas ya no valdrían. Para probar
+cambios de **control** está el simulador. La herramienta lo detecta y te avisa si
+le pasas un parámetro que solo usa el controlador.
+
+## 9. Herramientas
 
 ```bash
 python3 tools/simulador.py                    # 6 escenarios completos de pista
@@ -336,6 +436,9 @@ python3 tools/simulador.py --miscal cam_pitch_deg=22   # cuánto error aguanta
 python3 tools/simulador.py --fps 15           # efecto de una cámara lenta
 python3 tools/test_calibracion.py             # convergencia de la calibración
 python3 tools/test_percepcion.py              # precisión de las medidas
+python3 tools/test_estabilidad.py             # parpadeo con el robot parado
+python3 tools/analizar_captura.py <carpeta>   # fotogramas reales del robot
+python3 tools/reproducir_ronda.py <carpeta>   # video y linea de tiempo de una ronda
 ```
 
 El simulador usa **el mismo** código de percepción y control que el robot, así

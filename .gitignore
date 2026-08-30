@@ -1,16 +1,13 @@
-# Caché de Python
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Entornos virtuales (por si acaso)
-.venv/
-venv/
-ENV/# Configuracion local del robot (cada robot tiene la suya calibrada)
+﻿# Configuracion local del robot (cada robot tiene la suya calibrada)
 rpi/config.json
 
 # Salidas generadas
 rpi/logs/
+# Capturas de camara: pesan y son de una sesion concreta. Para compartir una
+# con alguien, usa  git add -f rpi/capturas/
+rpi/grabaciones/<carpeta>
+rpi/capturas/
+rpi/grabaciones/
 rpi/tools/sim_out/
 rpi/tools/test_out/
 
