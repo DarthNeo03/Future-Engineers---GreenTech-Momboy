@@ -177,7 +177,7 @@ def plot(name, trace, inner):
 
 # -------------------------------------------------------------------- caso
 def run(name, inner, start, heading_deg, overrides=None, video=False,
-        tmax=180.0, verbose=False, stop_on_crash=True, miscal=None):
+        tmax=180.0, verbose=False, stop_on_crash=True, miscal=None, fps=30.0):
     cfg = Config(os.path.join(OUT, "sim_config.json"))
     cfg.reset()
     cfg.set_many({"cam_pitch_deg": 18.0, "cam_hfov_deg": 90.0,
@@ -207,7 +207,7 @@ def run(name, inner, start, heading_deg, overrides=None, video=False,
     ctrl.target_yaw = heading_deg           # el rumbo se mide desde el arranque
 
     lines = corner_lines()
-    dt = 1.0 / 30.0
+    dt = 1.0 / float(fps)     # ritmo real de fotogramas de la camara
     last_line_t = -9.0
     trace, crash_at = [], None
     vw = None
@@ -311,6 +311,8 @@ def main():
     ap.add_argument("--tmax", type=float, default=180.0)
     ap.add_argument("--set", action="append", default=[],
                     metavar="clave=valor", help="sobreescribe un parametro")
+    ap.add_argument("--fps", type=float, default=30.0,
+                    help="fotogramas por segundo reales de la camara")
     ap.add_argument("--miscal", action="append", default=[], metavar="clave=valor",
                     help="descalibra la camara REAL respecto a la que cree el "
                          "robot (p.ej. --miscal cam_pitch_deg=20)")
@@ -332,7 +334,7 @@ def main():
     good = 0
     for name, (inner, start, hd) in casos.items():
         good += run(name, inner, start, hd, ov, args.video, args.tmax,
-                    args.verbose, miscal=mis or None)
+                    args.verbose, miscal=mis or None, fps=args.fps)
     print("-" * 96)
     print("%d/%d casos correctos. Salidas en %s" % (good, len(casos), OUT))
 

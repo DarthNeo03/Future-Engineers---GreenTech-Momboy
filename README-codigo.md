@@ -219,6 +219,14 @@ bluetooth con `rfkill`. Para volver a las pruebas, `sudo ./tools/wifi_ap.sh on`.
 
 ## 4. Calibración — en este orden
 
+> Guía completa y razonada en **[docs/GUIA.md](docs/GUIA.md)**: qué hace cada
+> sensor, cómo decide el carro dónde girar, cómo montar la cámara y cuánta
+> tolerancia tiene cada parámetro (medido, no estimado).
+
+El panel trae **calibración asistida**: le das una medida de cinta métrica y
+resuelve el parámetro. Comprobado en `tools/test_calibracion.py`: converge a
+±0.2° partiendo de errores de 6° en inclinación y 20° en campo de visión.
+
 El panel explica cada parámetro con el botón **?**. Este es el orden que
 funciona:
 
