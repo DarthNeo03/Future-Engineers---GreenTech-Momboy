@@ -16,6 +16,7 @@ mando manual (avance a tirones). Con el navegador cerrado no se dibuja nada.
 from __future__ import annotations
 
 import csv
+import json
 import math
 import os
 import threading
@@ -564,6 +565,77 @@ class Robot:
         self.cal_result = ("umbral = %d  (muro %.0f / tapete %.0f, separacion "
                            "%.0f, muro ocupa %.0f%%)"
                            % (thr, dark, light, sep, frac * 100))
+
+    # ============================================================== capturas
+    def capture(self, n: int = 40, name: str = "captura") -> dict:
+        """
+        Guarda una tanda de fotogramas CRUDOS junto con la configuracion y la
+        telemetria, para poder analizarlos despues fuera del robot.
+
+        Se guardan en PNG (sin perdida) a proposito: en JPEG los artefactos de
+        compresion son del mismo orden que el ruido que queremos medir, y
+        falsearian cualquier conclusion sobre estabilidad.
+
+        Los fotogramas se toman del hilo de camara que ya esta corriendo, asi
+        que no hay conflicto por el dispositivo aunque el robot este en marcha.
+        """
+        n = max(1, min(150, int(n)))
+        if not self.cam.opened:
+            msg = "no hay camara: %s" % (self.cam.error or "sin abrir")
+            self.msg = "captura cancelada, " + msg
+            return {"error": msg, "fotogramas": 0}
+
+        safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in name)[:40]
+        folder = os.path.join(self.root, "capturas",
+                              time.strftime("%Y%m%d_%H%M%S_") + safe)
+        os.makedirs(folder, exist_ok=True)
+
+        # Con 11 fps y 150 fotogramas hacen falta 14 s, asi que el limite
+        # generoso es para la tanda entera; pero si no llega NI EL PRIMER
+        # fotograma en 3 s, se aborta en vez de esperar en balde.
+        frames, last_seq, t0 = [], -1, time.time()
+        while len(frames) < n:
+            now = time.time()
+            if now - t0 > (30.0 if frames else 3.0):
+                break
+            frame, stamp, seq = self.cam.read()
+            if frame is None or seq == last_seq:
+                time.sleep(0.005)
+                continue
+            last_seq = seq
+            fn = "f%03d.png" % len(frames)
+            cv2.imwrite(os.path.join(folder, fn), frame)
+            frames.append({"file": fn, "stamp": round(stamp, 4), "seq": seq})
+
+        if not frames:
+            try:
+                os.rmdir(folder)
+            except OSError:
+                pass
+            self.msg = "captura: la camara no entrego ningun fotograma"
+            return {"error": "la camara no entrego ningun fotograma",
+                    "fotogramas": 0}
+
+        tel = self.esp.tel
+        meta = {
+            "nombre": name,
+            "fecha": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "config": self.cfg.snapshot(),
+            "camara": {"negociado": self.cam.negotiated,
+                       "fps": round(self.cam.fps, 2),
+                       "tiron_ms": round(self.cam.stall_ms, 1),
+                       "exposicion_ms": round(self.cam.exposure_ms, 2),
+                       "tope_fps": round(self.cam.fps_cap, 1),
+                       "controles": self.cam.ctrl_note},
+            "esp32": {"conectado": tel.connected, "yaw": round(tel.yaw, 2),
+                      "naranja": tel.n_orange, "azul": tel.n_blue},
+            "modo": self.mode, "armado": self.armed,
+            "fotogramas": frames,
+        }
+        with open(os.path.join(folder, "meta.json"), "w", encoding="utf-8") as fh:
+            json.dump(meta, fh, indent=2, ensure_ascii=False)
+        self.msg = "captura: %d fotogramas en %s" % (len(frames), folder)
+        return {"carpeta": folder, "fotogramas": len(frames)}
 
     # ================================================================== log
     def _open_log(self):

@@ -98,6 +98,22 @@
       <div class="row"><button id="btnCamInfo">Consultar camara</button></div>
       <pre id="camInfo" class="camlog"></pre>
     </div>
+
+    <div class="card">
+      <h3>Grabar captura</h3>
+      <p class="hint">Guarda fotogramas CRUDOS (PNG, sin comprimir) con la
+        configuracion y la telemetria del momento, en <code>rpi/capturas/</code>.
+        Sirve para analizar la calibracion despues, fuera de la pista, con
+        <code>tools/analizar_captura.py</code>. Funciona tambien con el robot en
+        marcha.</p>
+      <div class="row">
+        <input id="capName" type="text" value="pasillo_1000" style="width:150px">
+        <input id="capN" type="number" value="40" min="1" max="150" step="5">
+        <span>fotogramas</span>
+      </div>
+      <div class="row"><button id="btnCap">Grabar</button></div>
+      <div id="capMsg" class="hint"></div>
+    </div>
   </section>
 </main>
 
