@@ -16,6 +16,7 @@ public:
   float accel_mag = 1.0f;   // modulo de la aceleracion en g
   float bias_z    = 0.0f;
   bool  calibrated = false;
+  bool  drift_ready = false;   // el bias se ha refinado en reposo
 
   bool begin() {
     // PWR_MGMT_1: salir de sleep, reloj = PLL con giro X
@@ -51,11 +52,21 @@ public:
     yaw_deg = 0.0f;
   }
 
-  // dt en segundos
-  void update(float dt) {
+  // dt en segundos. `idle` = el robot esta parado y desarmado: en ese caso se
+  // refina el bias sin bloquear nada, de modo que cuando llegue la orden de
+  // arranque ya este listo y no haya que parar el firmware un segundo entero
+  // (eso desbordaba el buffer serie y perdia comandos de la Raspberry).
+  void update(float dt, bool idle = false) {
     if (!ok) return;
     int16_t raw;
     if (!readGyroZRaw(raw)) return;
+    if (idle) {
+      float d = (float)raw - bias_z;
+      if (d > -200.0f && d < 200.0f) {      // solo si de verdad esta quieto
+        bias_z += d * 0.002f;
+        drift_ready = true;
+      }
+    }
     float dps = ((float)raw - bias_z) / 65.5f;      // +-500 dps
     // Zona muerta: elimina la deriva por ruido cuando el robot esta quieto.
     if (dps > -0.35f && dps < 0.35f) dps = 0.0f;

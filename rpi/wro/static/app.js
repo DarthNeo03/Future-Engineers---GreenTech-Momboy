@@ -104,7 +104,9 @@ async function tick() {
     + pill(`tiron <b>${n(s.cam_stall_ms)}</b> ms`, s.cam_stall_ms > 200 ? 'bad'
          : (s.cam_stall_ms > 120 ? 'warn' : 'ok'))
     + pill(`vision <b>${n(s.vision_hz,1)}</b> Hz`)
-    + pill(`lazo <b>${n(s.loop_hz,1)}</b> Hz`)
+    + pill(`dibujo <b>${n(s.render_hz,1)}</b> Hz`, s.render_hz > 16 ? 'warn' : '')
+    + pill(`lazo <b>${n(s.loop_hz,1)}</b> Hz`,
+         s.loop_hz < 25 ? 'bad' : (s.loop_hz < 33 ? 'warn' : 'ok'))
     + pill(`ESP32 <b>${e.connected ? 'OK' : 'OFF'}</b>`, e.connected ? 'ok' : 'bad')
     + pill(`<b>${c.state}</b>`, s.armed ? 'ok' : '')
     + pill(`sentido <b>${c.direction_txt}</b>`, c.direction ? 'ok' : 'warn')

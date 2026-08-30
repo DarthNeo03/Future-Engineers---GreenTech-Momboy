@@ -51,16 +51,30 @@ def create_app(robot, cfg):
             view = "overlay"
 
         def gen():
+            # Solo un cliente dibuja a la vez. Si otro tiene tomada la vista
+            # (caso tipico: este stream quedo colgado al cambiar de pestana y
+            # el navegador no cerro la conexion), este se retira solo en 3 s
+            # en lugar de seguir forzando dibujado para siempre.
             last = None
-            while True:
-                robot.request_view(view)
-                buf = robot.get_jpeg(view)
-                if buf is not None and buf is not last:
-                    last = buf
-                    yield (BOUNDARY + b"\r\nContent-Type: image/jpeg\r\n"
-                           b"Content-Length: " + str(len(buf)).encode() +
-                           b"\r\n\r\n" + buf + b"\r\n")
-                time.sleep(0.045)
+            denied_since = None
+            try:
+                while True:
+                    if robot.request_view(view):
+                        denied_since = None
+                        buf = robot.get_jpeg(view)
+                        if buf is not None and buf is not last:
+                            last = buf
+                            yield (BOUNDARY + b"\r\nContent-Type: image/jpeg\r\n"
+                                   b"Content-Length: " + str(len(buf)).encode() +
+                                   b"\r\n\r\n" + buf + b"\r\n")
+                    else:
+                        if denied_since is None:
+                            denied_since = time.time()
+                        elif time.time() - denied_since > 3.0:
+                            return
+                    time.sleep(0.045)
+            finally:
+                robot.release_view(view)
 
         return Response(gen(),
                         mimetype="multipart/x-mixed-replace; boundary=frame")
@@ -68,12 +82,15 @@ def create_app(robot, cfg):
     @app.route("/snapshot.jpg")
     def snapshot():
         view = request.args.get("view", "overlay")
-        robot.request_view(view)
-        for _ in range(30):
-            buf = robot.get_jpeg(view)
-            if buf:
-                return Response(buf, mimetype="image/jpeg")
-            time.sleep(0.05)
+        try:
+            for _ in range(30):
+                robot.request_view(view)
+                buf = robot.get_jpeg(view)
+                if buf:
+                    return Response(buf, mimetype="image/jpeg")
+                time.sleep(0.05)
+        finally:
+            robot.release_view(view)
         return ("sin imagen", 503)
 
     # ------------------------------------------------------------------ api

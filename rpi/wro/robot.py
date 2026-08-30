@@ -2,10 +2,15 @@
 """
 Orquestador: une camara, percepcion, control, enlace serie y depuracion.
 
-Un unico hilo ejecuta el lazo de control a `control_hz`. Las vistas de
-depuracion solo se calculan si hay alguien mirandolas (el servidor web marca
-que vistas estan activas), de modo que con el navegador cerrado el robot no
-gasta nada en dibujar.
+Dos hilos, y la separacion es importante:
+
+  * `_run`          lazo de control, a `control_hz` (40 Hz). Nunca dibuja.
+  * `_render_loop`  vistas de depuracion, a 12 Hz y de UNA sola vista.
+
+Dibujar dentro del lazo de control era un error: las cuatro vistas a 40 Hz
+cuestan mas de un nucleo entero de la Pi 5, con lo que el lazo dejaba de dormir,
+se quedaba con el GIL y el servidor web no llegaba a atender los comandos del
+mando manual (avance a tirones). Con el navegador cerrado no se dibuja nada.
 """
 
 from __future__ import annotations
@@ -75,7 +80,12 @@ class Robot:
         self._thread = None
         self._lock = threading.Lock()
         self._jpeg: Dict[str, bytes] = {}
-        self._view_req: Dict[str, float] = {}
+        # Solo se dibuja UNA vista a la vez, la del cliente que la tiene
+        # tomada. Ver request_view(): dibujar las cuatro a la vez costaba mas
+        # de un nucleo entero de la Pi 5 y ahogaba al hilo de control.
+        self._active_view = ""
+        self._active_t = 0.0
+        self.render_hz = 0.0
         self._btn_prev = 1
         self._gpio_btn = None
         self._log = None
@@ -93,12 +103,17 @@ class Robot:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name="ctrl")
         self._thread.start()
+        self._render_thread = threading.Thread(target=self._render_loop,
+                                               daemon=True, name="render")
+        self._render_thread.start()
 
     def stop(self):
         self.disarm()
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=2.0)
+        if getattr(self, "_render_thread", None):
+            self._render_thread.join(timeout=2.0)
         self._close_log()
         self.esp.stop()
         self.cam.stop()
@@ -161,8 +176,29 @@ class Robot:
         self._manual = (float(steer), float(speed))
         self._manual_t = time.time()
 
-    def request_view(self, name: str):
-        self._view_req[name] = time.time()
+    def request_view(self, name: str) -> bool:
+        """
+        Pide dibujar una vista. Devuelve False si otra la tiene tomada.
+
+        Un stream MJPEG abandonado (el navegador cambia de pestana y deja la
+        conexion colgando) seguia pidiendo su vista para siempre. Con las
+        cuatro pedidas a la vez, el dibujado se comia mas de un nucleo de la
+        Pi 5, el lazo de control dejaba de dormir y los comandos del mando
+        llegaban a rachas. Ahora manda un solo cliente y el resto se retira.
+        """
+        now = time.time()
+        if self._active_view == name:
+            self._active_t = now
+            return True
+        if now - self._active_t > 1.0:          # el dueno anterior se fue
+            self._active_view = name
+            self._active_t = now
+            return True
+        return False
+
+    def release_view(self, name: str):
+        if self._active_view == name:
+            self._active_t = 0.0
 
     def get_jpeg(self, name: str) -> Optional[bytes]:
         with self._lock:
@@ -227,9 +263,11 @@ class Robot:
                 self.loop_hz = n / (t0 - t_fps)
                 n, t_fps = 0, t0
 
+            # El sleep minimo NO es opcional: sin el, si un ciclo se pasa de
+            # tiempo el hilo se queda con el GIL y Flask no llega a responder
+            # los comandos del mando.
             rest = period - (time.time() - t0)
-            if rest > 0:
-                time.sleep(rest)
+            time.sleep(rest if rest > 0 else 0.002)
 
     def _step(self, dt: float):
         cfg = self.cfg
@@ -316,51 +354,68 @@ class Robot:
         else:
             self.esp.drive(0, 0)
 
-        # ---------------- vistas ----------------
-        self._render(frame)
 
     # ============================================================== auxiliares
     def _view_active(self, name: str) -> bool:
-        t = self._view_req.get(name, 0.0)
-        return (time.time() - t) < 3.0
+        return (self._active_view == name
+                and (time.time() - self._active_t) < 1.5)
 
-    def _render(self, frame):
+    def _render_loop(self):
+        """
+        Dibuja las vistas de depuracion en su propio hilo y a ritmo bajo.
+
+        El dibujado NO puede ir al ritmo del lazo de control: a 40 Hz cuesta
+        mas de lo que el navegador puede mostrar y le quita tiempo al control.
+        12 Hz se ve fluido y deja la CPU libre.
+        """
+        period = 1.0 / 12.0
+        n, t_ref = 0, time.time()
+        while not self._stop.is_set():
+            t0 = time.time()
+            name = self._active_view
+            if name and (t0 - self._active_t) < 1.5:
+                frame, _, _ = self.cam.read()
+                try:
+                    self._render_one(name, frame)
+                except Exception as exc:
+                    self.last_error = "dibujo: %r" % exc
+                n += 1
+                if t0 - t_ref >= 1.0:
+                    self.render_hz = n / (t0 - t_ref)
+                    n, t_ref = 0, t0
+            else:
+                self.render_hz = 0.0
+                n, t_ref = 0, t0
+            rest = period - (time.time() - t0)
+            time.sleep(rest if rest > 0 else 0.005)
+
+    def _render_one(self, name: str, frame):
         if frame is None:
             frame = Camera.placeholder(int(self.cfg.cam_width),
                                        int(self.cfg.cam_height),
                                        self.cam.error or "SIN CAMARA")
         cs = self.ctrl.snapshot()
         q = [int(cv2.IMWRITE_JPEG_QUALITY), 72]
-        out = {}
-        try:
-            if self._view_active("overlay") and self.ground is not None:
-                extra = "cam %.0f fps | lazo %.0f Hz | esp %s" % (
-                    self.cam.fps, self.loop_hz,
-                    "OK" if self.esp.tel.connected else "OFF")
-                img = overlay.draw_overlay(frame, self.scene, self.ground,
-                                           self.cfg, cs, self.pillars, extra)
-                ok, buf = cv2.imencode(".jpg", img, q)
-                if ok:
-                    out["overlay"] = buf.tobytes()
-            if self._view_active("mask"):
-                img = overlay.draw_mask(frame, self.scene)
-                ok, buf = cv2.imencode(".jpg", img, q)
-                if ok:
-                    out["mask"] = buf.tobytes()
-            if self._view_active("bev"):
-                img = overlay.draw_bev(self.scene, self.cfg, cs, self.pillars)
-                ok, buf = cv2.imencode(".jpg", img, q)
-                if ok:
-                    out["bev"] = buf.tobytes()
-            if self._view_active("raw"):
-                ok, buf = cv2.imencode(".jpg", frame, q)
-                if ok:
-                    out["raw"] = buf.tobytes()
-        except Exception as exc:
-            self.last_error = "dibujo: %r" % exc
-        if out:
+
+        if name == "overlay":
+            if self.ground is None:
+                return
+            extra = "cam %.0f fps | vision %.0f Hz | lazo %.0f Hz | esp %s" % (
+                self.cam.fps, self.vision_hz, self.loop_hz,
+                "OK" if self.esp.tel.connected else "OFF")
+            img = overlay.draw_overlay(frame, self.scene, self.ground,
+                                       self.cfg, cs, self.pillars, extra)
+        elif name == "mask":
+            img = overlay.draw_mask(frame, self.scene)
+        elif name == "bev":
+            img = overlay.draw_bev(self.scene, self.cfg, cs, self.pillars)
+        else:
+            img = frame
+
+        ok, buf = cv2.imencode(".jpg", img, q)
+        if ok:
             with self._lock:
-                self._jpeg.update(out)
+                self._jpeg[name] = buf.tobytes()
 
     def _do_pitch_cal(self, true_x_mm: float, frame):
         """Resuelve la inclinacion con una distancia real medida a un muro."""
@@ -469,22 +524,46 @@ class Robot:
             return
         v = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)[:, :, 2]
         t, _ = cv2.threshold(v, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        dark = float(v[v < t].mean()) if (v < t).any() else 0.0
-        light = float(v[v >= t].mean()) if (v >= t).any() else 255.0
+        below = v < t
+        frac = float(below.mean())
+        dark = float(v[below].mean()) if below.any() else 0.0
+        light = float(v[~below].mean()) if (~below).any() else 255.0
         sep = light - dark
+
+        # Otsu SIEMPRE parte la imagen en dos, tenga sentido o no. Si en la
+        # region de interes solo hay tapete, parte el blanco en "blanco algo
+        # mas oscuro" y "blanco algo mas claro" y devuelve un umbral altisimo
+        # que luego clasifica medio tapete como muro. Hay que comprobar que lo
+        # que se ha encontrado parece de verdad un muro negro antes de guardar.
+        problemas = []
+        if dark > 120:
+            problemas.append("la parte oscura sale a %.0f y un muro negro deberia "
+                             "estar por debajo de 120: o no hay muro a la vista o "
+                             "la imagen esta sobreexpuesta" % dark)
+        if sep < 60:
+            problemas.append("muro y tapete se parecen demasiado "
+                             "(separacion %.0f, hacen falta 60)" % sep)
+        if frac < 0.04:
+            problemas.append("casi no se ve muro en la zona analizada (%.1f%%)"
+                             % (frac * 100))
+        if frac > 0.75:
+            problemas.append("el muro ocupa casi todo (%.0f%%): alejate o baja "
+                             "el rango maximo" % (frac * 100))
+
+        if problemas:
+            self.cal_result = ("NO se ha cambiado el umbral. " + "; ".join(problemas)
+                               + ". Corrige la exposicion (vista Mascara: tapete "
+                                 "negro, muros blancos) y vuelve a intentarlo.")
+            return
+
         # Nos quedamos algo por debajo del corte de Otsu: preferimos perder
         # algun pixel de muro antes que tomar tapete en sombra por muro.
         thr = int(max(20, min(200, dark + sep * 0.45)))
         self.cfg.set_many({"wall_v_max": thr, "wall_auto_thresh": False})
         self.cfg.save()
-        if sep < 45:
-            self.cal_result = ("AVISO: muro y tapete casi no se distinguen "
-                               "(muro %.0f, tapete %.0f). Ajusta la exposicion "
-                               "antes de fiarte del umbral. Puesto en %d."
-                               % (dark, light, thr))
-        else:
-            self.cal_result = ("umbral = %d  (muro %.0f / tapete %.0f, "
-                               "separacion %.0f)" % (thr, dark, light, sep))
+        self.cal_result = ("umbral = %d  (muro %.0f / tapete %.0f, separacion "
+                           "%.0f, muro ocupa %.0f%%)"
+                           % (thr, dark, light, sep, frac * 100))
 
     # ================================================================== log
     def _open_log(self):
@@ -548,6 +627,8 @@ class Robot:
             "cam_negotiated": self.cam.negotiated,
             "cam_ctrl": self.cam.ctrl_note,
             "vision_hz": round(self.vision_hz, 1),
+            "render_hz": round(self.render_hz, 1),
+            "view": self._active_view,
             "esp": {
                 "connected": tel.connected,
                 "port": self.esp.port_name,
