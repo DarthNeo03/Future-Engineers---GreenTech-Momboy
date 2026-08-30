@@ -1,6 +1,22 @@
 /* Panel de depuracion WRO Future Engineers 2026 - JS sin dependencias */
 'use strict';
 
+/* Un error de JavaScript aborta el resto del fichero y el panel se queda mudo:
+   los botones no responden y el panel de calibracion ni se dibuja, sin ninguna
+   pista visible. Esto lo muestra en pantalla en vez de dejarlo solo en la
+   consola del navegador, que en el movil no se ve. */
+window.addEventListener('error', (e) => {
+  let b = document.getElementById('jserr');
+  if (!b) {
+    b = document.createElement('div');
+    b.id = 'jserr';
+    b.className = 'jserr';
+    document.body.prepend(b);
+  }
+  b.textContent = 'Error de JavaScript: ' + (e.message || e.error) +
+                  '  (' + (e.filename || '').split('/').pop() + ':' + e.lineno + ')';
+});
+
 const $  = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
 
@@ -59,11 +75,9 @@ $('#btnCamInfo').onclick = async () => {
   box.textContent = 'consultando la camara...';
   try {
     const r = await (await fetch('/api/camera_info')).json();
-    box.textContent = 'negociado: ' + JSON.stringify(r.negotiated) +
-                      '
-controles via: ' + r.ctrl + '
-
-' + r.info;
+    const nl = String.fromCharCode(10);
+    box.textContent = 'negociado: ' + JSON.stringify(r.negotiated) + nl +
+                      'controles via: ' + r.ctrl + nl + nl + r.info;
   } catch (e) { box.textContent = 'error: ' + e; }
 };
 

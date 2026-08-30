@@ -105,3 +105,5 @@ footer{padding:10px 14px 26px;color:var(--tx2);font-size:11.5px;border-top:1px s
 .camlog{max-height:220px;overflow:auto;background:#0c0e12;border:1px solid var(--line);
   border-radius:6px;padding:8px;font:11px/1.35 ui-monospace,monospace;
   color:#9fb0c4;white-space:pre-wrap;margin:6px 0 0}
+.jserr{background:#5b1616;border-bottom:1px solid #8f2323;color:#ffd7d5;
+  padding:8px 12px;font:12px/1.4 ui-monospace,monospace;position:sticky;top:0;z-index:50}
