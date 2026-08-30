@@ -70,6 +70,21 @@ $('#btnThr').onclick = async () => {
   $('#calMsg').textContent = 'midiendo umbral...';
   await api.cmd({cmd:'auto_threshold'});
 };
+$('#btnCap').onclick = async () => {
+  const b = $('#btnCap');
+  const n = parseInt($('#capN').value) || 40;
+  b.disabled = true;
+  $('#capMsg').textContent = 'grabando ' + n + ' fotogramas...';
+  try {
+    const r = await api.cmd({cmd:'capture', n, nombre: $('#capName').value});
+    $('#capMsg').textContent = r.ok
+      ? (r.fotogramas + ' fotogramas en ' + r.carpeta)
+      : ('no se grabo nada: ' + (r.error || 'motivo desconocido'));
+  } catch (e) {
+    $('#capMsg').textContent = 'error: ' + e;
+  }
+  b.disabled = false;
+};
 $('#btnCamInfo').onclick = async () => {
   const box = $('#camInfo');
   box.textContent = 'consultando la camara...';

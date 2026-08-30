@@ -152,6 +152,11 @@ def create_app(robot, cfg):
             robot.request_hfov_calibration(float(d.get("corridor_mm", 1000)))
         elif cmd == "auto_threshold":
             robot.request_auto_threshold()
+        elif cmd == "capture":
+            r = robot.capture(int(d.get("n", 40)),
+                              str(d.get("nombre", "captura")))
+            return jsonify({"ok": r.get("fotogramas", 0) > 0,
+                            "msg": robot.msg, **r})
         elif cmd == "esp_raw":
             robot.esp.raw(str(d.get("line", "")))
         else:
