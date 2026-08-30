@@ -42,8 +42,29 @@ document.addEventListener('keydown', e => {
 /* ===================== calibracion de inclinacion ===================== */
 $('#btnCal').onclick = async () => {
   const d = parseFloat($('#calDist').value) || 400;
-  $('#calMsg').textContent = 'calibrando...';
+  $('#calMsg').textContent = 'calibrando inclinacion...';
   await api.cmd({cmd:'calibrate_pitch', distance_mm:d});
+};
+$('#btnCalFov').onclick = async () => {
+  const w = parseFloat($('#calCorr').value) || 1000;
+  $('#calMsg').textContent = 'barriendo campo de vision (tarda 1-2 s)...';
+  await api.cmd({cmd:'calibrate_hfov', corridor_mm:w});
+};
+$('#btnThr').onclick = async () => {
+  $('#calMsg').textContent = 'midiendo umbral...';
+  await api.cmd({cmd:'auto_threshold'});
+};
+$('#btnCamInfo').onclick = async () => {
+  const box = $('#camInfo');
+  box.textContent = 'consultando la camara...';
+  try {
+    const r = await (await fetch('/api/camera_info')).json();
+    box.textContent = 'negociado: ' + JSON.stringify(r.negotiated) +
+                      '
+controles via: ' + r.ctrl + '
+
+' + r.info;
+  } catch (e) { box.textContent = 'error: ' + e; }
 };
 
 /* ===================== telemetria ===================== */
@@ -64,7 +85,11 @@ async function tick() {
 
   const c = s.ctrl, e = s.esp, v = s.vision;
   $('#pills').innerHTML =
-      pill(`cam <b>${n(s.cam_fps,1)}</b> fps`, s.cam_ok ? 'ok' : 'bad')
+      pill(`cam <b>${n(s.cam_fps,1)}</b> fps`,
+         !s.cam_ok ? 'bad' : (s.cam_fps < 18 ? 'warn' : 'ok'))
+    + pill(`tiron <b>${n(s.cam_stall_ms)}</b> ms`, s.cam_stall_ms > 200 ? 'bad'
+         : (s.cam_stall_ms > 120 ? 'warn' : 'ok'))
+    + pill(`vision <b>${n(s.vision_hz,1)}</b> Hz`)
     + pill(`lazo <b>${n(s.loop_hz,1)}</b> Hz`)
     + pill(`ESP32 <b>${e.connected ? 'OK' : 'OFF'}</b>`, e.connected ? 'ok' : 'bad')
     + pill(`<b>${c.state}</b>`, s.armed ? 'ok' : '')
@@ -128,6 +153,7 @@ async function tick() {
 setInterval(tick, 220); tick();
 
 /* ===================== joystick ===================== */
+let lastRtt = 0;
 (function () {
   const pad = $('#pad'), knob = $('#knob');
   let active = false, sx = 0, sy = 0;
@@ -170,19 +196,37 @@ setInterval(tick, 220); tick();
   });
   document.addEventListener('keyup', e => { keys[e.key] = false; });
 
-  // Envio periodico: 20 Hz. El firmware frena solo si dejan de llegar comandos.
-  setInterval(() => {
-    if (state.mode !== 'manual') return;
-    let x = sx, y = sy;
-    if (!active) {
-      x = (keys.ArrowLeft ? 1 : 0) - (keys.ArrowRight ? 1 : 0);
-      y = (keys.ArrowUp   ? 1 : 0) - (keys.ArrowDown  ? 1 : 0);
-      if (x || y) { sx = x; sy = y; show(); }
-      else if (sx || sy) { sx = sy = 0; show(); }
+  // Envio del mando. IMPORTANTE: no se usa setInterval a pelo, porque si una
+  // peticion tarda (wifi flojo, movil) se acumulan varias en cola, dejan de
+  // llegar comandos nuevos y el dead-man frena el coche: eso es el avance "a
+  // tirones". Aqui se espera SIEMPRE a que termine la anterior antes de mandar
+  // la siguiente, asi que nunca hay cola.
+  let inFlight = false;
+  async function pump() {
+    while (true) {
+      if (state.mode === 'manual' && !inFlight) {
+        let x = sx, y = sy;
+        if (!active) {
+          x = (keys.ArrowLeft ? 1 : 0) - (keys.ArrowRight ? 1 : 0);
+          y = (keys.ArrowUp   ? 1 : 0) - (keys.ArrowDown  ? 1 : 0);
+          if (x || y) { sx = x; sy = y; show(); }
+          else if (sx || sy) { sx = sy = 0; show(); }
+        }
+        const mx = parseFloat($('#jsMax').value);
+        inFlight = true;
+        const t0 = performance.now();
+        try { await api.cmd({cmd:'manual', steer: x * 100, speed: y * mx}); }
+        catch (e) { /* se reintenta en la siguiente vuelta */ }
+        inFlight = false;
+        lastRtt = performance.now() - t0;
+        const wait = Math.max(0, 60 - lastRtt);      // ~16 Hz como maximo
+        await new Promise(r => setTimeout(r, wait));
+      } else {
+        await new Promise(r => setTimeout(r, 60));
+      }
     }
-    const mx = parseFloat($('#jsMax').value);
-    api.cmd({cmd:'manual', steer: x * 100, speed: y * mx});
-  }, 50);
+  }
+  pump();
 })();
 
 /* ===================== panel de calibracion ===================== */

@@ -18,6 +18,17 @@ from flask import (Flask, Response, jsonify, request,
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 BOUNDARY = b"--frame"
 
+# Werkzeug responde HTTP/1.0 por defecto, y eso CIERRA la conexion despues de
+# cada peticion. Con el movil eso significa abrir un TCP nuevo para cada
+# comando del joystick (20 por segundo) mientras el stream MJPEG ya ocupa una
+# conexion: las peticiones se encolan, dejan de llegar comandos y el dead-man
+# frena el coche a rachas. Con HTTP/1.1 hay keep-alive y el problema desaparece.
+try:
+    from werkzeug.serving import WSGIRequestHandler
+    WSGIRequestHandler.protocol_version = "HTTP/1.1"
+except Exception:                                        # pragma: no cover
+    pass
+
 
 def create_app(robot, cfg):
     app = Flask(__name__, static_folder=None)
@@ -120,11 +131,22 @@ def create_app(robot, cfg):
             cfg.save()
         elif cmd == "calibrate_pitch":
             robot.request_pitch_calibration(float(d.get("distance_mm", 400)))
+        elif cmd == "calibrate_hfov":
+            robot.request_hfov_calibration(float(d.get("corridor_mm", 1000)))
+        elif cmd == "auto_threshold":
+            robot.request_auto_threshold()
         elif cmd == "esp_raw":
             robot.esp.raw(str(d.get("line", "")))
         else:
             return jsonify({"ok": False, "error": "comando desconocido"}), 400
         return jsonify({"ok": True, "msg": robot.msg})
+
+    @app.route("/api/camera_info")
+    def api_camera_info():
+        return jsonify({"device": robot.cam.device,
+                        "negotiated": robot.cam.negotiated,
+                        "ctrl": robot.cam.ctrl_note,
+                        "info": robot.cam.formats()})
 
     @app.route("/api/esp_log")
     def api_esp_log():

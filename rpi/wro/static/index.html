@@ -63,17 +63,40 @@
       <div id="tEsp" class="grid"></div>
     </div>
     <div class="card">
-      <h3>Calibrar inclinacion de la camara</h3>
-      <p class="hint">Pon el robot mirando de frente a un muro, mide con cinta
-        desde el punto de referencia del robot hasta la BASE del muro y pulsa
-        calibrar. Se resuelve la inclinacion para que la distancia medida por
-        vision coincida.</p>
+      <h3>Calibracion asistida</h3>
+
+      <p class="hint"><b>1. Umbral.</b> Con el robot viendo tapete y muro,
+        fija el corte entre "muro" y "tapete" midiendo la imagen.</p>
+      <div class="row"><button id="btnThr">Medir umbral</button></div>
+
+      <p class="hint"><b>2. Inclinacion.</b> Robot mirando de frente a un muro.
+        Mide con cinta desde su punto de referencia hasta la BASE del muro.</p>
       <div class="row">
         <input id="calDist" type="number" value="400" min="120" max="2000" step="10">
         <span>mm</span>
-        <button id="btnCal">Calibrar</button>
+        <button id="btnCal">Calibrar inclinacion</button>
       </div>
+
+      <p class="hint"><b>3. Campo de vision.</b> Robot dentro de un pasillo,
+        mirando a lo largo de el y viendo los DOS muros. Escribe el ancho real
+        del pasillo.</p>
+      <div class="row">
+        <input id="calCorr" type="number" value="1000" min="300" max="2000" step="10">
+        <span>mm</span>
+        <button id="btnCalFov">Calibrar FOV</button>
+      </div>
+
+      <p class="hint">Inclinacion y campo de vision estan acoplados:
+        <b>repite los pasos 2 y 3 una segunda vez</b> y ya converge.</p>
       <div id="calMsg" class="hint"></div>
+    </div>
+
+    <div class="card">
+      <h3>Diagnostico de camara</h3>
+      <p class="hint">Comprueba que el driver concedio MJPG y los FPS que
+        pediste. Si "tiron" pasa de 200 ms, la captura se esta atascando.</p>
+      <div class="row"><button id="btnCamInfo">Consultar camara</button></div>
+      <pre id="camInfo" class="camlog"></pre>
     </div>
   </section>
 </main>

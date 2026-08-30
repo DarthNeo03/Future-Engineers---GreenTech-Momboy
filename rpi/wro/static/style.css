@@ -101,3 +101,7 @@ footer{padding:10px 14px 26px;color:var(--tx2);font-size:11.5px;border-top:1px s
   .p{grid-template-columns:1fr 96px 22px}
   .p input[type=range]{grid-column:1/-1}
 }
+
+.camlog{max-height:220px;overflow:auto;background:#0c0e12;border:1px solid var(--line);
+  border-radius:6px;padding:8px;font:11px/1.35 ui-monospace,monospace;
+  color:#9fb0c4;white-space:pre-wrap;margin:6px 0 0}

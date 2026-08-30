@@ -38,6 +38,11 @@ VIEWS = ("overlay", "mask", "bev", "raw")
 # Ajustes de camara que obligan a reabrir el dispositivo
 _CAM_HARD = {"cam_index", "cam_width", "cam_height", "cam_fps", "cam_mjpg"}
 _CAM_SOFT = {"cam_auto_exposure", "cam_exposure", "cam_gain"}
+class _Tmp:
+    """Contenedor suelto para probar geometrias sin tocar la config viva."""
+    pass
+
+
 _GEO_KEYS = {"cam_height_mm", "cam_pitch_deg", "cam_roll_deg", "cam_hfov_deg",
              "cam_cx_off", "cam_cy_off", "lens_k1", "lens_k2",
              "cam_offset_x_mm", "cam_offset_y_mm"}
@@ -62,6 +67,10 @@ class Robot:
 
         self._manual = (0.0, 0.0)
         self._manual_t = 0.0
+        self._last_seq = -1
+        self.vision_hz = 0.0
+        self._vis_n = 0
+        self._vis_t = time.time()
         self._stop = threading.Event()
         self._thread = None
         self._lock = threading.Lock()
@@ -160,7 +169,13 @@ class Robot:
             return self._jpeg.get(name)
 
     def request_pitch_calibration(self, true_x_mm: float):
-        self._cal_request = float(true_x_mm)
+        self._cal_request = ("pitch", float(true_x_mm))
+
+    def request_hfov_calibration(self, true_corridor_mm: float):
+        self._cal_request = ("hfov", float(true_corridor_mm))
+
+    def request_auto_threshold(self):
+        self._cal_request = ("umbral", 0.0)
 
     # =================================================================== boton
     def _setup_button(self):
@@ -195,7 +210,6 @@ class Robot:
         period = 1.0 / max(5.0, float(self.cfg.control_hz))
         t_prev = time.time()
         n, t_fps = 0, t_prev
-        last_seq = -1
 
         while not self._stop.is_set():
             t0 = time.time()
@@ -204,7 +218,7 @@ class Robot:
             period = 1.0 / max(5.0, float(self.cfg.control_hz))
 
             try:
-                self._step(dt, last_seq)
+                self._step(dt)
             except Exception as exc:                      # nunca tumbar el lazo
                 self.last_error = "lazo: %r" % exc
 
@@ -217,7 +231,7 @@ class Robot:
             if rest > 0:
                 time.sleep(rest)
 
-    def _step(self, dt: float, last_seq: int):
+    def _step(self, dt: float):
         cfg = self.cfg
         frame, stamp, seq = self.cam.read()
 
@@ -231,28 +245,52 @@ class Robot:
         self._poll_button()
 
         # ---------------- percepcion ----------------
+        # Solo se analiza cuando llega un fotograma NUEVO. El lazo de control
+        # va a control_hz (40 Hz) y la camara suele dar 30: sin esta guarda se
+        # analizaria el mismo fotograma varias veces y se gastaria CPU (y por
+        # tanto FPS de camara) para nada.
         want_mask = self._view_active("mask")
         if frame is not None and self.ground is not None:
-            self.scene = perc.analyze(frame, self.ground, cfg, want_mask=want_mask)
-            if bool(cfg.obstacles_enabled) or self.mode == MODE_OBSTACLE:
-                self.pillars = obs.detect(frame, self.ground, cfg,
-                                          self.scene.roi_top, self.scene.roi_bottom)
-            else:
-                self.pillars = []
+            if seq != self._last_seq:
+                self._last_seq = seq
+                self.scene = perc.analyze(frame, self.ground, cfg,
+                                          want_mask=want_mask)
+                if bool(cfg.obstacles_enabled) or self.mode == MODE_OBSTACLE:
+                    self.pillars = obs.detect(frame, self.ground, cfg,
+                                              self.scene.roi_top,
+                                              self.scene.roi_bottom)
+                else:
+                    self.pillars = []
+                self._vis_n += 1
+                if time.time() - self._vis_t >= 1.0:
+                    self.vision_hz = self._vis_n / (time.time() - self._vis_t)
+                    self._vis_n, self._vis_t = 0, time.time()
         else:
             self.scene = perc.Scene()
             self.pillars = []
 
         # ---------------- calibracion de inclinacion ----------------
         if self._cal_request is not None:
-            self._do_pitch_cal(self._cal_request, frame)
+            kind, value = self._cal_request
             self._cal_request = None
+            try:
+                if kind == "pitch":
+                    self._do_pitch_cal(value, frame)
+                elif kind == "hfov":
+                    self._do_hfov_cal(value, frame)
+                elif kind == "umbral":
+                    self._do_threshold_cal(frame)
+            except Exception as exc:
+                self.cal_result = "fallo en la calibracion: %r" % exc
 
         # ---------------- control ----------------
         tel = self.esp.tel
         if self.mode == MODE_MANUAL:
             steer, speed = self._manual
-            if time.time() - self._manual_t > 0.6:        # dead-man del mando
+            # Dead-man del mando: si el navegador deja de enviar durante este
+            # tiempo, se frena. 1 s da margen para un tiron de wifi sin que el
+            # coche se quede en marcha si se pierde la conexion de verdad.
+            if time.time() - self._manual_t > 1.0:
                 steer, speed = 0.0, 0.0
                 self._manual = (0.0, 0.0)
             if not self.armed:
@@ -352,6 +390,102 @@ class Robot:
         self.cal_result = ("inclinacion = %.2f grados (fila %.0f, %.0f mm)"
                            % (pitch, v_row, true_x_mm))
 
+    def _ground_for(self, overrides, w, h):
+        """Construye una geometria alternativa sin tocar la configuracion viva."""
+        tmp = _Tmp()
+        for k in _GEO_KEYS:
+            setattr(tmp, k, self.cfg.get(k))
+        for k, v in overrides.items():
+            setattr(tmp, k, v)
+        return Ground(tmp, w, h)
+
+    def _do_hfov_cal(self, true_corridor_mm: float, frame):
+        """
+        Resuelve el campo de vision midiendo un pasillo de ancho conocido.
+
+        El ancho medido crece con el campo de vision, asi que basta barrer y
+        quedarse con el valor que reproduce la cinta metrica. Se hace por
+        barrido y no con una formula porque cambiar fx tambien cambia la
+        componente vertical del rayo: no es un simple factor de escala.
+        """
+        if frame is None:
+            self.cal_result = "sin imagen"
+            return
+        h, w = frame.shape[:2]
+
+        def corridor_for(hfov):
+            g = self._ground_for({"cam_hfov_deg": hfov}, w, h)
+            sc = perc.analyze(frame, g, self.cfg)
+            return sc.corridor_mm
+
+        base = corridor_for(float(self.cfg.cam_hfov_deg))
+        if base is None:
+            self.cal_result = ("no veo los DOS muros laterales: coloca el robot "
+                               "dentro del pasillo y mirando a lo largo de el")
+            return
+
+        best, best_err = None, 1e9
+        for i in range(0, 111):                      # 40..150 grados, paso 1
+            f = 40.0 + i
+            c = corridor_for(f)
+            if c is None:
+                continue
+            e = abs(c - true_corridor_mm)
+            if e < best_err:
+                best, best_err = f, e
+        if best is None:
+            self.cal_result = "no se pudo medir el pasillo"
+            return
+        for i in range(-10, 11):                     # refinado de 0.1 en 0.1
+            f = best + i * 0.1
+            if not (40.0 <= f <= 150.0):
+                continue
+            c = corridor_for(f)
+            if c is not None and abs(c - true_corridor_mm) < best_err:
+                best, best_err = f, abs(c - true_corridor_mm)
+
+        if best_err > true_corridor_mm * 0.06:
+            self.cal_result = ("no converge (mejor %.1f grados, error %.0f mm). "
+                               "Revisa la medida y que se vean los dos muros."
+                               % (best, best_err))
+            return
+        self.cfg.set_many({"cam_hfov_deg": round(best, 1)})
+        self.cfg.save()
+        self._pending_geo = True
+        self.cal_result = ("campo de vision = %.1f grados (medido %.0f mm, "
+                           "real %.0f mm). Repite ahora la inclinacion: los dos "
+                           "parametros estan acoplados."
+                           % (best, base, true_corridor_mm))
+
+    def _do_threshold_cal(self, frame):
+        """Fija el umbral de oscuridad con Otsu sobre la region de interes."""
+        if frame is None or self.ground is None:
+            self.cal_result = "sin imagen"
+            return
+        top = self.ground.roi_top_row(float(self.cfg.roi_x_max_mm))
+        roi = frame[top:frame.shape[0] - int(self.cfg.roi_bottom_crop_px)]
+        if roi.size == 0:
+            self.cal_result = "region de interes vacia"
+            return
+        v = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)[:, :, 2]
+        t, _ = cv2.threshold(v, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        dark = float(v[v < t].mean()) if (v < t).any() else 0.0
+        light = float(v[v >= t].mean()) if (v >= t).any() else 255.0
+        sep = light - dark
+        # Nos quedamos algo por debajo del corte de Otsu: preferimos perder
+        # algun pixel de muro antes que tomar tapete en sombra por muro.
+        thr = int(max(20, min(200, dark + sep * 0.45)))
+        self.cfg.set_many({"wall_v_max": thr, "wall_auto_thresh": False})
+        self.cfg.save()
+        if sep < 45:
+            self.cal_result = ("AVISO: muro y tapete casi no se distinguen "
+                               "(muro %.0f, tapete %.0f). Ajusta la exposicion "
+                               "antes de fiarte del umbral. Puesto en %d."
+                               % (dark, light, thr))
+        else:
+            self.cal_result = ("umbral = %d  (muro %.0f / tapete %.0f, "
+                               "separacion %.0f)" % (thr, dark, light, sep))
+
     # ================================================================== log
     def _open_log(self):
         if not bool(self.cfg.log_enabled) or self._log is not None:
@@ -408,8 +542,12 @@ class Robot:
             "error": self.last_error,
             "loop_hz": round(self.loop_hz, 1),
             "cam_fps": round(self.cam.fps, 1),
+            "cam_stall_ms": round(self.cam.stall_ms, 0),
             "cam_ok": self.cam.opened,
             "cam_error": self.cam.error,
+            "cam_negotiated": self.cam.negotiated,
+            "cam_ctrl": self.cam.ctrl_note,
+            "vision_hz": round(self.vision_hz, 1),
             "esp": {
                 "connected": tel.connected,
                 "port": self.esp.port_name,
