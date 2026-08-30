@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Piloto WRO</title>
+<style>
+ *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+ body{margin:0;background:#0d1017;color:#e8eaed;font:14px system-ui,Arial;padding-bottom:70px}
+ h1{font-size:1.02em;margin:0;padding:10px 12px 4px;color:#9aa0a6;font-weight:600;display:flex;justify-content:space-between;align-items:center}
+ #chips{display:flex;gap:6px;font-size:.78em}
+ .chip{padding:2px 8px;border-radius:10px;background:#22262f;color:#aab}
+ .chip.on{background:#14532d;color:#86efac}
+ .chip.mal{background:#7f1d1d;color:#fca5a5}
+ .cont{padding:0 10px}
+ img.cam{width:100%;max-height:62vh;object-fit:contain;border-radius:10px;background:#000;display:block;min-height:120px}
+ .fila{display:flex;gap:8px;margin:8px 0}
+ button{flex:1;padding:13px 6px;font-size:.95em;font-weight:700;border:0;border-radius:10px;background:#2b5cd9;color:#fff;touch-action:manipulation;cursor:pointer}
+ button.off{background:#262b36;color:#9aa}
+ button.mini{padding:8px 6px;font-size:.82em;font-weight:600}
+ #btnArmar.on{background:#1a7f37}
+ #btnStop{background:#c62828;flex:0 0 32%}
+ .caja{background:#151923;border-radius:10px;padding:10px;margin:8px 0}
+ .caja h3{margin:2px 0 6px;font-size:.85em;color:#8fb3ff;font-weight:600}
+ .et{display:flex;justify-content:space-between;color:#9aa0a6;font-size:.82em;margin:6px 0 0}
+ .et b{color:#dde}
+ input[type=range]{width:100%;height:30px;accent-color:#2b5cd9}
+ input[type=number],input[type=text],select{background:#0d1017;color:#e8eaed;border:1px solid #2a2f3a;border-radius:6px;padding:6px;font-size:.9em;width:100%}
+ table{width:100%;font-size:.83em;border-collapse:collapse}
+ td{padding:2px 0;color:#c8ccd2;vertical-align:top} td:first-child{color:#8b9199;width:44%}
+ .ok{color:#4ade80}.mal{color:#f87171}.avi{color:#fbbf24}
+ nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:#12151d;border-top:1px solid #232833;z-index:10}
+ nav button{border-radius:0;background:none;color:#778;font-size:.78em;font-weight:600;padding:10px 2px}
+ nav button.act{color:#8fb3ff;border-top:2px solid #2b5cd9}
+ .tab{display:none}.tab.act{display:block}
+ .desc{font-size:.74em;color:#767f8c;margin:1px 0 4px;line-height:1.25}
+ #pad{width:100%;max-width:340px;aspect-ratio:1;background:#151923;border-radius:14px;margin:8px auto;position:relative;touch-action:none;border:1px solid #232833}
+ #stick{width:64px;height:64px;border-radius:50%;background:#2b5cd9;position:absolute;left:calc(50% - 32px);top:calc(50% - 32px)}
+ .chips-color{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}
+ .chips-color button{flex:0 0 auto;padding:7px 12px;font-size:.82em}
+ .acc{border-bottom:1px solid #20242e}
+ .acc>button{width:100%;text-align:left;background:none;color:#cdd3dc;font-size:.9em;padding:11px 4px;border-radius:0}
+ .acc>div{display:none;padding:0 4px 10px}
+ .acc.open>div{display:block}
+ .grid2{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px}
+ #aviso{position:fixed;top:8px;left:50%;transform:translateX(-50%);background:#1a7f37;color:#fff;padding:8px 16px;border-radius:8px;display:none;z-index:20;font-size:.85em;max-width:90%}
+ #aviso.mal{background:#c62828}
+ .sel-fila{display:flex;gap:6px}.sel-fila select{flex:1}.sel-fila button{flex:0 0 30%}
+</style>
+</head>
+<body>
+<h1>Piloto WRO — GreenTech Momboy
+ <span id="chips">
+   <span class="chip" id="chArm">—</span>
+   <span class="chip" id="chEsp">ESP32</span>
+   <span class="chip" id="chFps">0</span>
+ </span>
+</h1>
+<div id="aviso"></div>
+
+<!-- ======================= CARRERA ======================= -->
+<div class="tab act cont" id="tab-carrera">
+  <img class="cam" id="camCarrera" alt="camara">
+  <div class="fila">
+    <button id="btnArmar" onclick="armar()">ARMAR</button>
+    <button id="btnStop" onclick="cmd({emergencia:1})">PARAR</button>
+  </div>
+  <div class="fila">
+    <button id="mAuto" class="mini" onclick="cmd({modo:'auto'})">AUTO</button>
+    <button id="mManual" class="mini off" onclick="cmd({modo:'manual'})">MANUAL</button>
+    <button id="mParado" class="mini off" onclick="cmd({modo:'parado'})">PARADO</button>
+  </div>
+  <div class="caja">
+    <h3>Carrera</h3>
+    <div class="fila">
+      <button class="mini" id="sAuto" onclick="setp('carrera','sentido','auto')">Sentido AUTO</button>
+      <button class="mini off" id="sHor" onclick="setp('carrera','sentido','horario')">Horario</button>
+      <button class="mini off" id="sAnti" onclick="setp('carrera','sentido','antihorario')">Antihorario</button>
+    </div>
+    <table id="tCarrera"></table>
+    <div class="fila"><button class="mini off" onclick="cmd({reiniciar_carrera:1})">Reiniciar conteo</button></div>
+  </div>
+  <div class="caja" id="rapidos"><h3>Ajustes rapidos</h3></div>
+  <div class="caja"><h3>Telemetria</h3><table id="tTele"></table></div>
+</div>
+
+<!-- ======================= MANUAL ======================= -->
+<div class="tab cont" id="tab-manual">
+  <img class="cam" id="camManual" alt="camara">
+  <div class="fila">
+    <button id="btnArmar2" onclick="armar()">ARMAR</button>
+    <button class="mini off" onclick="cmd({modo:'manual'})">modo manual</button>
+  </div>
+  <div id="pad"><div id="stick"></div></div>
+  <div class="et"><span>vel <b id="jv">0</b>%</span><span>dir <b id="jd">0</b>%</span></div>
+  <p class="desc">Arrastra el circulo: arriba avanza, abajo reversa, izquierda/derecha dobla.
+  Al soltar, todo a cero. Tambien sirven las flechas o WASD del teclado.
+  Si el joystick deja de mandar (se cae la red), el carro se detiene solo.</p>
+</div>
+
+<!-- ======================= COLORES ======================= -->
+<div class="tab cont" id="tab-colores">
+  <img class="cam" id="camColores" alt="camara">
+  <div class="fila">
+    <button class="mini" id="vNormal" onclick="vistaColor('normal')">Ver normal</button>
+    <button class="mini off" id="vMask" onclick="vistaColor('mascara')">Ver mascara</button>
+    <button class="mini off" id="vPiso" onclick="vistaColor('piso')">Ver piso</button>
+  </div>
+  <div class="chips-color" id="chipsColor"></div>
+  <div class="fila">
+    <button class="mini" id="btnClic" onclick="modoClic('color')">Tomar color con clic</button>
+    <label class="mini" style="flex:0 0 40%;display:flex;align-items:center;gap:6px;color:#9aa">
+      <input type="checkbox" id="acumular" style="width:auto"> acumular clics</label>
+  </div>
+  <p class="desc">Con "tomar color" activo, toca el objeto en el video (la cara iluminada y
+  la sombreada, con acumular). El pixel exacto manda: los rangos HSV se calculan solos y
+  se afinan abajo.</p>
+  <div class="caja" id="editorColor"></div>
+  <div class="caja">
+    <h3>Perfiles de color (5 rotativos)</h3>
+    <div class="sel-fila"><select id="selPerfilColor"></select>
+      <button class="mini" onclick="cargarPerfilColor()">Cargar</button></div>
+    <div class="sel-fila" style="margin-top:6px">
+      <input type="text" id="nomPerfilColor" placeholder="nombre nuevo">
+      <button class="mini" onclick="guardarPerfilColor()">Guardar</button></div>
+  </div>
+</div>
+
+<!-- ======================= AJUSTES ======================= -->
+<div class="tab cont" id="tab-ajustes">
+  <div class="caja">
+    <h3>Perfiles de parametros (5 rotativos)</h3>
+    <div class="sel-fila"><select id="selPerfilParams"></select>
+      <button class="mini" onclick="cargarPerfilParams()">Cargar</button></div>
+    <div class="sel-fila" style="margin-top:6px">
+      <input type="text" id="nomPerfilParams" placeholder="nombre nuevo">
+      <button class="mini" onclick="guardarPerfilParams()">Guardar</button></div>
+    <p class="desc">Guarda una calibracion por pista ("casa", "pabellon"). Cargar un perfil
+    aplica TODOS los grupos de abajo en caliente.</p>
+  </div>
+  <div id="grupos"></div>
+</div>
+
+<!-- ======================= CALIBRAR ======================= -->
+<div class="tab cont" id="tab-calibrar">
+  <img class="cam" id="camCalibrar" alt="camara">
+  <div class="caja">
+    <h3>Distancias (camara)</h3>
+    <p class="desc">1) Mide y escribe la altura de la lente y su inclinacion (Ajustes &gt;
+    geometria si difieren). 2) Pon un objeto en el piso a una distancia conocida DEL MORRO
+    del carro, escribe la distancia y pulsa el boton; luego toca en el video el punto donde
+    el objeto TOCA EL PISO. Con eso las distancias en cm del video pasan a ser reales.</p>
+    <div class="grid2">
+      <div><div class="et"><span>distancia real (mm)</span></div>
+        <input type="number" id="calDist" value="500"></div>
+      <div><div class="et"><span>&nbsp;</span></div>
+        <button class="mini" id="btnFy" onclick="modoClic('fy')">Clic para calibrar fy</button></div>
+      <div><div class="et"><span>desplaz. lateral (mm, + der)</span></div>
+        <input type="number" id="calLat" value="200"></div>
+      <div><div class="et"><span>&nbsp;</span></div>
+        <button class="mini off" id="btnFx" onclick="modoClic('fx')">Clic para calibrar fx</button></div>
+    </div>
+    <table id="tGeo"></table>
+  </div>
+  <div class="caja">
+    <h3>Giroscopio (MPU6050 en el ESP32)</h3>
+    <div class="fila">
+      <button class="mini" onclick="cmd({calibrar_giro:1})">Calibrar (carro QUIETO)</button>
+      <button class="mini off" onclick="cmd({cero_yaw:1})">Yaw a cero</button>
+    </div>
+    <table id="tImu"></table>
+  </div>
+  <div class="caja">
+    <h3>Sensor de color del piso (TCS34725)</h3>
+    <p class="desc">Pon el carro con el sensor SOBRE la superficie y pulsa el boton que
+    corresponda: los umbrales se calculan solos y se mandan al ESP32.</p>
+    <div class="fila">
+      <button class="mini off" onclick="cmd({tcs_muestrear:'blanco'})">Sobre blanco</button>
+      <button class="mini" style="background:#b45309" onclick="cmd({tcs_muestrear:'naranja'})">Sobre naranja</button>
+      <button class="mini" style="background:#1d4ed8" onclick="cmd({tcs_muestrear:'azul'})">Sobre azul</button>
+    </div>
+    <table id="tTcs"></table>
+  </div>
+</div>
+
+<!-- ======================= SISTEMA ======================= -->
+<div class="tab cont" id="tab-sistema">
+  <div class="caja"><h3>Enlace con el ESP32</h3><table id="tEnlace"></table>
+    <div class="fila"><button class="mini off" onclick="cmd({redetectar:1})">Reintentar sensores I2C</button></div>
+  </div>
+  <div class="caja"><h3>Registro</h3>
+    <pre id="registro" style="font-size:.72em;white-space:pre-wrap;color:#9aa;max-height:300px;overflow:auto"></pre>
+  </div>
+</div>
+
+<nav>
+  <button class="act" data-tab="carrera">Carrera</button>
+  <button data-tab="manual">Manual</button>
+  <button data-tab="colores">Colores</button>
+  <button data-tab="ajustes">Ajustes</button>
+  <button data-tab="calibrar">Calibrar</button>
+  <button data-tab="sistema">Sistema</button>
+</nav>
+
+<script>
+"use strict";
+// ========================= utilidades =========================
+let S = null;                 // ultimo /api/estado
+let tocando = 0;              // para no pisar sliders mientras se mueven
+let clicModo = "";            // "" | "color" | "fy" | "fx"
+let vistaColores = "mascara";
+let colorActual = "negro";
+let esquema = null, valores = null;
+
+function $(id){ return document.getElementById(id); }
+function aviso(txt, mal){
+  const a = $("aviso");
+  a.textContent = txt; a.className = mal ? "mal" : ""; a.style.display = "block";
+  clearTimeout(a._t); a._t = setTimeout(()=>a.style.display="none", 2600);
+}
+function cmd(obj){
+  const q = Object.entries(obj).map(([k,v])=>k+"="+encodeURIComponent(v)).join("&");
+  return fetch("/api/cmd?"+q).then(r=>r.json()).then(r=>{
+    if(!r.ok) aviso(r.error||"error", true);
+    return r;
+  }).catch(()=>aviso("sin conexion", true));
+}
+function setp(grupo, clave, val){ tocando = Date.now(); return cmd({set:grupo+"."+clave, val:val}); }
+function armar(){ cmd({armar: S && S.armado ? 0 : 1}); }
+
+// ========================= pestañas y streams =========================
+const camsPorTab = {carrera:"camCarrera", manual:"camManual",
+                    colores:"camColores", calibrar:"camCalibrar"};
+function urlStream(tab){
+  if(tab==="colores"){
+    if(vistaColores==="mascara") return "/stream.mjpg?vista=mascara&color="+colorActual;
+    if(vistaColores==="piso") return "/stream.mjpg?vista=piso";
+    return "/stream.mjpg?vista=normal";
+  }
+  return "/stream.mjpg?vista=normal";
+}
+function activarTab(nombre){
+  document.querySelectorAll(".tab").forEach(t=>t.classList.remove("act"));
+  document.querySelectorAll("nav button").forEach(b=>b.classList.remove("act"));
+  $("tab-"+nombre).classList.add("act");
+  document.querySelector('nav button[data-tab="'+nombre+'"]').classList.add("act");
+  // un solo stream activo a la vez (ahorra CPU y red)
+  for(const [tab, id] of Object.entries(camsPorTab)){
+    const img = $(id);
+    if(tab===nombre){ if(!img.src.includes("stream")) img.src = urlStream(tab); }
+    else img.removeAttribute("src");
+  }
+}
+document.querySelectorAll("nav button").forEach(b=>
+  b.addEventListener("click", ()=>activarTab(b.dataset.tab)));
+
+// ========================= clics sobre el video =========================
+function modoClic(m){
+  clicModo = (clicModo===m) ? "" : m;
+  $("btnClic").classList.toggle("off", clicModo!=="color");
+  $("btnFy").classList.toggle("off", clicModo!=="fy");
+  $("btnFx").classList.toggle("off", clicModo!=="fx");
+  if(clicModo) aviso("toca el punto en el video");
+}
+function coordsRel(ev, img){
+  // con object-fit:contain el video puede quedar con bandas dentro del <img>:
+  // hay que mapear el clic al rectangulo REAL del contenido
+  const r = img.getBoundingClientRect();
+  const nw = img.naturalWidth || 640, nh = img.naturalHeight || 480;
+  const esc = Math.min(r.width/nw, r.height/nh);
+  const cw = nw*esc, ch = nh*esc;
+  const ox = r.left + (r.width-cw)/2, oy = r.top + (r.height-ch)/2;
+  return {x:(ev.clientX-ox)/cw, y:(ev.clientY-oy)/ch};
+}
+for(const id of Object.values(camsPorTab)){
+  $(id).addEventListener("click", ev=>{
+    if(!clicModo || !S) return;
+    const c = coordsRel(ev, $(id));
+    if(c.x<0||c.x>1||c.y<0||c.y>1) return;   // clic en la banda negra
+    // se mandan FRACCIONES 0..1: el servidor conoce la resolucion real
+    const x = c.x.toFixed(4), y = c.y.toFixed(4);
+    if(clicModo==="color"){
+      cmd({color_clic:1, color:colorActual, x:x, y:y,
+           acumular: $("acumular").checked?1:0})
+        .then(r=>{ if(r&&r.ok){ aviso("rangos de "+colorActual+" actualizados"); pintarEditorColor(); }});
+    }else if(clicModo==="fy"){
+      cmd({cal_fy:1, y:y, dist:$("calDist").value})
+        .then(r=>{ if(r&&r.ok) aviso("fy = "+r.fy.toFixed(0)+" px"); });
+      modoClic("fy");
+    }else if(clicModo==="fx"){
+      cmd({cal_fx:1, x:x, y:y, lat:$("calLat").value})
+        .then(r=>{ if(r&&r.ok) aviso("fx = "+r.fx.toFixed(0)+" px"); });
+      modoClic("fx");
+    }
+  });
+}
+
+// ========================= joystick =========================
+(function(){
+  const pad = $("pad"), stick = $("stick");
+  let activo = false, vel = 0, dir = 0, timer = null;
+  function mover(ev){
+    const r = pad.getBoundingClientRect();
+    const t = ev.touches ? ev.touches[0] : ev;
+    let nx = (t.clientX - r.left)/r.width*2 - 1;
+    let ny = (t.clientY - r.top)/r.height*2 - 1;
+    nx = Math.max(-1, Math.min(1, nx)); ny = Math.max(-1, Math.min(1, ny));
+    stick.style.left = "calc(" + ((nx+1)/2*100) + "% - 32px)";
+    stick.style.top  = "calc(" + ((ny+1)/2*100) + "% - 32px)";
+    dir = Math.round(nx*100); vel = Math.round(-ny*100);
+    $("jv").textContent = vel; $("jd").textContent = dir;
+  }
+  function soltar(){
+    activo = false; vel = 0; dir = 0;
+    stick.style.left = "calc(50% - 32px)"; stick.style.top = "calc(50% - 32px)";
+    $("jv").textContent = 0; $("jd").textContent = 0;
+    fetch("/api/cmd?manual=0,0");
+  }
+  pad.addEventListener("pointerdown", ev=>{activo=true; pad.setPointerCapture(ev.pointerId); mover(ev);});
+  pad.addEventListener("pointermove", ev=>{ if(activo) mover(ev); });
+  pad.addEventListener("pointerup", soltar);
+  pad.addEventListener("pointercancel", soltar);
+  timer = setInterval(()=>{ if(activo) fetch("/api/cmd?manual="+vel+","+dir); }, 100);
+
+  // teclado (para probar desde el PC)
+  const teclas = {};
+  let habiaTeclas = false;
+  addEventListener("keydown", ev=>{ teclas[ev.key.toLowerCase()] = true; });
+  addEventListener("keyup",   ev=>{ teclas[ev.key.toLowerCase()] = false; });
+  setInterval(()=>{
+    if(!$("tab-manual").classList.contains("act") || activo) return;
+    let v = 0, d = 0;
+    if(teclas["arrowup"]||teclas["w"]) v = 70;
+    if(teclas["arrowdown"]||teclas["s"]) v = -60;
+    if(teclas["arrowleft"]||teclas["a"]) d = -85;
+    if(teclas["arrowright"]||teclas["d"]) d = 85;
+    if(v||d||habiaTeclas){ fetch("/api/cmd?manual="+v+","+d); habiaTeclas = !!(v||d); }
+  }, 120);
+})();
+
+// ========================= colores =========================
+const COLORES = ["negro","blanco","rojo","verde","naranja","azul","magenta"];
+const COLOR_CSS = {negro:"#444",blanco:"#ddd",rojo:"#dc2626",verde:"#16a34a",
+                   naranja:"#ea580c",azul:"#2563eb",magenta:"#c026d3"};
+function pintarChipsColor(){
+  const cont = $("chipsColor"); cont.innerHTML = "";
+  for(const c of COLORES){
+    const b = document.createElement("button");
+    b.textContent = c;
+    b.style.background = COLOR_CSS[c];
+    b.style.color = (c==="blanco")?"#000":"#fff";
+    b.style.opacity = (c===colorActual)?1:.45;
+    b.onclick = ()=>{ colorActual=c; pintarChipsColor(); pintarEditorColor();
+                      if(vistaColores==="mascara") refrescarStreamColores(); };
+    cont.appendChild(b);
+  }
+}
+function vistaColor(v){
+  vistaColores = v;
+  $("vNormal").classList.toggle("off", v!=="normal");
+  $("vMask").classList.toggle("off", v!=="mascara");
+  $("vPiso").classList.toggle("off", v!=="piso");
+  refrescarStreamColores();
+}
+function refrescarStreamColores(){
+  if($("tab-colores").classList.contains("act"))
+    $("camColores").src = urlStream("colores");
+}
+// editor: sliders de rangos + filtros
+const CAMPOS_FILTRO = [
+  ["desenfoque",0,15,"medianBlur previo (impar, 0=off)"],
+  ["abrir",0,15,"borra motas sueltas (impar)"],
+  ["cerrar",0,21,"tapa huecos por brillo (impar)"],
+  ["unir_huecos",0,30,"junta manchas separadas hasta N px (mismo objeto)"],
+  ["area_min",0,5000,"area minima en px del objeto"],
+  ["llenado_min",0,1,"area/caja: pilar solido ~0.9, ruido ~0.2"],
+  ["roi_arriba",0,0.9,"fraccion superior de imagen que se ignora"],
+  ["roi_abajo",0.1,1,"limite inferior de la zona de busqueda"],
+  ["max_objetos",1,10,"cuantos objetos devolver"]
+];
+function pintarEditorColor(){
+  fetch("/api/color?color="+colorActual).then(r=>r.json()).then(info=>{
+    const p = info.params, ed = $("editorColor");
+    let html = "<h3>"+colorActual+"</h3>";
+    p.rangos.forEach((rg, i)=>{
+      html += '<div class="et"><span>rango '+(i+1)+' — H (0-179), S, V (0-255)</span></div>';
+      html += '<div class="grid2">';
+      const nombres = ["H min","H max","S min","S max","V min","V max"];
+      const vals = [rg[0][0],rg[1][0],rg[0][1],rg[1][1],rg[0][2],rg[1][2]];
+      const tops = [179,179,255,255,255,255];
+      for(let j=0;j<6;j++){
+        html += '<div><div class="et"><span>'+nombres[j]+'</span><b id="vr'+i+'_'+j+'">'+vals[j]+'</b></div>'+
+          '<input type="range" min="0" max="'+tops[j]+'" value="'+vals[j]+'" '+
+          'oninput="rango('+i+','+j+',this.value)"></div>';
+      }
+      html += "</div>";
+    });
+    if(p.rangos.length<2 && colorActual==="rojo")
+      html += '<div class="fila"><button class="mini off" onclick="agregarRango()">Añadir 2º rango (el rojo envuelve en H=0/179)</button></div>';
+    for(const [k,mn,mx,desc] of CAMPOS_FILTRO){
+      const paso = (mx<=1)?0.01:1;
+      html += '<div class="et"><span>'+k+'</span><b id="vf_'+k+'">'+p[k]+'</b></div>'+
+        '<div class="desc">'+desc+'</div>'+
+        '<input type="range" min="'+mn+'" max="'+mx+'" step="'+paso+'" value="'+p[k]+'" '+
+        'oninput="filtro(\''+k+'\',this.value)">';
+    }
+    ed.innerHTML = html;
+    ed._params = p;
+  });
+}
+function rango(i, j, v){
+  const p = $("editorColor")._params; if(!p) return;
+  v = +v;
+  const rg = p.rangos[i];
+  const mapa = [[0,0],[1,0],[0,1],[1,1],[0,2],[1,2]];
+  rg[mapa[j][0]][mapa[j][1]] = v;
+  $("vr"+i+"_"+j).textContent = v;
+  clearTimeout(rango._t);
+  rango._t = setTimeout(()=>cmd({color_set:"rangos", color:colorActual,
+                                 val:JSON.stringify(p.rangos)}), 120);
+}
+function filtro(k, v){
+  $("vf_"+k).textContent = v;
+  clearTimeout(filtro._t);
+  filtro._t = setTimeout(()=>cmd({color_set:k, color:colorActual,
+                                  val:JSON.stringify(+v)}), 120);
+}
+function agregarRango(){
+  const p = $("editorColor")._params;
+  p.rangos.push([[0,100,60],[10,255,255]]);
+  cmd({color_set:"rangos", color:colorActual, val:JSON.stringify(p.rangos)})
+    .then(pintarEditorColor);
+}
+function guardarPerfilColor(){
+  const n = $("nomPerfilColor").value.trim() || undefined;
+  cmd({perfil_color_guardar: n || ("calib_"+new Date().toISOString().slice(5,16).replace(/[-T:]/g,""))})
+    .then(()=>aviso("perfil de color guardado"));
+}
+function cargarPerfilColor(){
+  cmd({perfil_color_cargar: $("selPerfilColor").value})
+    .then(()=>{ aviso("perfil cargado"); pintarEditorColor(); });
+}
+
+// ========================= ajustes (auto-generados) =========================
+const RAPIDOS = [["limites","vmax"],["limites","vel_crucero"],["limites","vel_giro"],
+                 ["navegacion","kp"],["navegacion","kd"],["navegacion","girar_bajo_mm"],
+                 ["navegacion","ttc_min_s"]];
+function pintarAjustes(){
+  const cont = $("grupos"); cont.innerHTML = "";
+  for(const [grupo, claves] of Object.entries(esquema)){
+    const div = document.createElement("div"); div.className = "acc";
+    const btn = document.createElement("button");
+    btn.textContent = "▸ " + grupo;
+    btn.onclick = ()=>{ div.classList.toggle("open");
+                        btn.textContent = (div.classList.contains("open")?"▾ ":"▸ ")+grupo; };
+    const cuerpo = document.createElement("div");
+    for(const [clave, e] of Object.entries(claves))
+      cuerpo.appendChild(control(grupo, clave, e));
+    div.appendChild(btn); div.appendChild(cuerpo); cont.appendChild(div);
+  }
+  const rap = $("rapidos");
+  rap.innerHTML = "<h3>Ajustes rapidos</h3>";
+  for(const [g,k] of RAPIDOS){
+    if(esquema[g] && esquema[g][k]) rap.appendChild(control(g, k, esquema[g][k], true));
+  }
+}
+function control(grupo, clave, e, compacto){
+  const w = document.createElement("div");
+  const id = "p_"+grupo+"_"+clave;
+  const val = valores[grupo] ? valores[grupo][clave] : e.def;
+  let html = '<div class="et"><span>'+clave+'</span><b id="'+id+'_v">'+val+'</b></div>';
+  if(!compacto) html += '<div class="desc">'+e.desc+'</div>';
+  if(e.tipo==="bool"){
+    html += '<input type="checkbox" id="'+id+'" '+(val?"checked":"")+
+      ' onchange="tocando=Date.now();setp(\''+grupo+'\',\''+clave+'\',this.checked?1:0)">';
+  }else if(e.opciones){
+    html += '<select id="'+id+'" onchange="tocando=Date.now();setp(\''+grupo+'\',\''+clave+'\',this.value)">'+
+      e.opciones.map(o=>'<option '+(o===val?"selected":"")+'>'+o+'</option>').join("")+'</select>';
+  }else if(e.tipo==="str"){
+    html += '<input type="text" id="'+id+'" value="'+val+'" '+
+      'onchange="setp(\''+grupo+'\',\''+clave+'\',this.value)">';
+  }else{
+    const mn = ("min" in e)?e.min:0, mx = ("max" in e)?e.max:100;
+    const paso = e.tipo==="int" ? 1 : Math.max(0.01, (mx-mn)/500);
+    html += '<input type="range" id="'+id+'" min="'+mn+'" max="'+mx+'" step="'+paso+'" value="'+val+'" '+
+      'oninput="tocando=Date.now();document.getElementById(\''+id+'_v\').textContent=this.value;'+
+      'lento(\''+grupo+'\',\''+clave+'\',this.value)">';
+  }
+  w.innerHTML = html;
+  return w;
+}
+const _lentos = {};
+function lento(grupo, clave, val){
+  clearTimeout(_lentos[grupo+clave]);
+  _lentos[grupo+clave] = setTimeout(()=>setp(grupo, clave, val), 160);
+}
+function guardarPerfilParams(){
+  const n = $("nomPerfilParams").value.trim();
+  cmd({perfil_params_guardar: n || ("params_"+new Date().toISOString().slice(5,16).replace(/[-T:]/g,""))})
+    .then(()=>aviso("parametros guardados"));
+}
+function cargarPerfilParams(){
+  cmd({perfil_params_cargar: $("selPerfilParams").value}).then(()=>{
+    aviso("perfil cargado");
+    fetch("/api/valores").then(r=>r.json()).then(v=>{ valores=v; pintarAjustes(); });
+  });
+}
+
+// ========================= refresco de estado =========================
+function fila(t, k, v, c){ t.innerHTML += '<tr><td>'+k+'</td><td class="'+(c||"")+'">'+v+'</td></tr>'; }
+function refrescar(){
+  fetch("/api/estado").then(r=>r.json()).then(s=>{
+    S = s;
+    // chips y botones
+    $("chArm").textContent = s.armado ? "ARMADO" : "desarmado";
+    $("chArm").className = "chip " + (s.armado ? "on" : "");
+    const el = s.enlace;
+    $("chEsp").textContent = s.simulado ? "SIM" : (el.conectado ? "ESP32" : "sin ESP32");
+    $("chEsp").className = "chip " + (s.simulado ? "" : (el.conectado ? "on" : "mal"));
+    $("chFps").textContent = s.fps + " fps";
+    for(const id of ["btnArmar","btnArmar2"]){
+      $(id).classList.toggle("on", s.armado);
+      $(id).textContent = s.armado ? "ARMADO (soltar)" : "ARMAR";
+    }
+    $("mAuto").classList.toggle("off", s.modo!=="auto");
+    $("mManual").classList.toggle("off", s.modo!=="manual");
+    $("mParado").classList.toggle("off", s.modo!=="parado");
+    const sen = (valores&&valores.carrera)?valores.carrera.sentido:"auto";
+    $("sAuto").classList.toggle("off", sen!=="auto");
+    $("sHor").classList.toggle("off", sen!=="horario");
+    $("sAnti").classList.toggle("off", sen!=="antihorario");
+
+    // carrera
+    const tc = $("tCarrera"); tc.innerHTML = "";
+    const ca = s.carrera;
+    fila(tc, "estado", ca.estado + " — sentido " + ca.sentido);
+    fila(tc, "esquinas / vueltas", ca.esquinas + "/" + ca.meta_esquinas + " — vuelta " + ca.vueltas);
+    fila(tc, "tiempo", ca.transcurrido_s + " s");
+    fila(tc, "lineas", ca.lineas.ultimo + (ca.lineas.orden ? " (orden "+ca.lineas.orden+")" : ""));
+
+    // telemetria
+    const t = $("tTele"); t.innerHTML = "";
+    const d = s.decision, m = d.metricas || {};
+    fila(t, "decision", d.estado + " vel " + d.vel + "% dir " + d.dir + "%");
+    fila(t, "motivo", d.motivo);
+    if(s.perfil){
+      fila(t, "pasillo", s.perfil.pasillo_mm + " mm");
+      fila(t, "libre izq/der", s.perfil.izq + " / " + s.perfil.der);
+      fila(t, "cobertura izq/der", s.perfil.cob_izq + " / " + s.perfil.cob_der);
+    }
+    if(m.yaw!==undefined) fila(t, "yaw / rumbo", m.yaw + " / " + (m.rumbo_obj!==undefined?m.rumbo_obj:"-"));
+    if(s.obstaculo && s.obstaculo.color)
+      fila(t, "pilar", s.obstaculo.color+" a "+s.obstaculo.dist_mm+"mm peso "+s.obstaculo.peso, "avi");
+    fila(t, "ESP32", s.simulado ? "simulado" :
+         (el.conectado ? el.puerto+" "+el.latencia_ms+"ms" : el.motivo),
+         el.conectado||s.simulado ? "ok" : "mal");
+    if(el.conectado){
+      const sn = el.sensores;
+      fila(t, "MPU / TCS", (sn.mpu_ok?"ok":"NO") + " / " + (sn.tcs_ok?"ok":"NO"),
+           (sn.mpu_ok&&sn.tcs_ok)?"ok":"avi");
+      if(el.tele.failsafe) fila(t, "failsafe", "SI", "mal");
+    }
+    if(s.camara_error) fila(t, "camara", s.camara_error, "mal");
+
+    // calibrar: geo/imu/tcs
+    const tg = $("tGeo"); tg.innerHTML = "";
+    const g = s.geometria;
+    fila(tg, "fy / fx", g.fy_px + " / " + g.fx_px + " px");
+    fila(tg, "horizonte", "fila " + g.horizonte);
+    fila(tg, "dist al centro de imagen", g.dist_centro_mm + " mm");
+    fila(tg, "dist al borde inferior", g.dist_abajo_mm + " mm");
+    const ti = $("tImu"); ti.innerHTML = "";
+    const sn = el.sensores || {};
+    fila(ti, "yaw", (sn.yaw!==undefined?sn.yaw:"-") + "°" + (sn.calibrando?" (calibrando)":""));
+    fila(ti, "gz", (sn.gz!==undefined?sn.gz:"-") + " °/s");
+    fila(ti, "MPU6050", sn.mpu_ok?"conectado":"no detectado", sn.mpu_ok?"ok":"mal");
+    const tt = $("tTcs"); tt.innerHTML = "";
+    fila(tt, "TCS34725", sn.tcs_ok?"conectado":"no detectado", sn.tcs_ok?"ok":"mal");
+    fila(tt, "crudo C/R/G/B", sn.c+" / "+sn.r+" / "+sn.g+" / "+sn.b);
+    fila(tt, "ratios r/b", sn.ratio_r+" / "+sn.ratio_b);
+    fila(tt, "clase actual", sn.clase, sn.clase!=="-"?"avi":"");
+    fila(tt, "cruces naranja/azul", sn.cnt_naranja+" / "+sn.cnt_azul);
+
+    // sistema
+    const te = $("tEnlace"); te.innerHTML = "";
+    fila(te, "estado", el.conectado ? el.puerto : el.motivo, el.conectado?"ok":"mal");
+    fila(te, "tramas env/rec", el.enviados+" / "+el.recibidos);
+    fila(te, "CRC malos", el.crc_malos, el.crc_malos>0?"avi":"");
+    if(el.tele) fila(te, "firmware", "v"+el.tele.version+" pwm="+el.tele.pwm+" ang="+el.tele.angulo);
+
+    // perfiles (solo si no se esta escribiendo)
+    if(Date.now()-tocando > 2000){
+      llenarSelect("selPerfilColor", s.perfiles_color.lista, s.perfiles_color.activo);
+      llenarSelect("selPerfilParams", s.perfiles_params.lista, s.perfiles_params.activo);
+    }
+  }).catch(()=>{});
+}
+function llenarSelect(id, lista, activo){
+  const sel = $(id);
+  const firma = lista.join("|")+activo;
+  if(sel._firma===firma) return;
+  sel._firma = firma;
+  sel.innerHTML = lista.map(n=>'<option '+(n===activo?"selected":"")+'>'+n+'</option>').join("");
+}
+function refrescarRegistro(){
+  if(!$("tab-sistema").classList.contains("act")) return;
+  fetch("/api/registro").then(r=>r.json())
+    .then(l=>{ $("registro").textContent = l.join("\n"); }).catch(()=>{});
+}
+
+// ========================= arranque =========================
+Promise.all([fetch("/api/esquema").then(r=>r.json()),
+             fetch("/api/valores").then(r=>r.json())])
+.then(([e,v])=>{ esquema=e; valores=v; pintarAjustes(); });
+pintarChipsColor();
+pintarEditorColor();
+activarTab("carrera");
+setInterval(refrescar, 500);
+setInterval(refrescarRegistro, 1500);
+refrescar();
+</script>
+</body>
+</html>

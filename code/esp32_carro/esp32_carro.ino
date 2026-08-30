@@ -17,7 +17,8 @@
 //
 // TAREAS FreeRTOS
 //   nucleo 0: tareaRx (prio 5)        lee UARTs, valida CRC, publica el mando
-//             tareaTelemetria (2)     manda estado cada 50 ms
+//             tareaSensores (3)       MPU6050 (yaw) + TCS34725 (lineas) por I2C
+//             tareaTelemetria (2)     estado a 20 Hz + sensores a 40 Hz
 //   nucleo 1: tareaControl (4)        tick de 10 ms: rampas y escritura al HW
 //             tareaVigilante (6)      si el control o la Pi se callan, corta
 //
@@ -26,8 +27,11 @@
 // ===========================================================================
 
 #include <Arduino.h>
+#include <Wire.h>
 #include "protocolo.h"
 #include "seguridad.h"
+#include "sensores_i2c.h"
+#include "lineas.h"
 
 // ======================= PINES =======================
 // Puente H (tal cual tu montaje actual)
@@ -38,6 +42,11 @@ const int PIN_L_EN = 33;
 
 // Servo de direccion (MG996R)
 const int PIN_SERVO = 32;
+
+// I2C compartido: MPU6050 (0x68/0x69) + TCS34725 (0x29)
+const int PIN_SDA = 21;
+const int PIN_SCL = 22;
+const uint32_t I2C_HZ = 400000;
 
 // UART hacia la Raspberry
 const int PIN_RX2 = 16;   // <- TX de la Pi (GPIO14)
@@ -57,12 +66,14 @@ const int SERVO_PULSO_MIN_US = 500;
 const int SERVO_PULSO_MAX_US = 2400;
 
 // ======================= TIEMPOS =======================
-const uint32_t TICK_CONTROL_MS = 10;    // 100 Hz
-const uint32_t PERIODO_TELE_MS = 50;    // 20 Hz
-const uint32_t FAILSAFE_MS     = 300;   // silencio tolerado de la Pi
-const uint32_t VIGILANTE_MS    = 200;   // silencio tolerado del propio control
+const uint32_t TICK_CONTROL_MS  = 10;   // 100 Hz
+const uint32_t PERIODO_TELE_MS  = 50;   // 20 Hz (estado del motor/servo)
+const uint32_t PERIODO_SENS_MS  = 25;   // 40 Hz (yaw + color, si hay sensores)
+const uint32_t FAILSAFE_MS      = 300;  // silencio tolerado de la Pi
+const uint32_t VIGILANTE_MS     = 200;  // silencio tolerado del propio control
+const uint32_t REINTENTO_I2C_MS = 3000; // sondear sensores que falten
 
-const uint8_t VERSION_FIRMWARE = 2;
+const uint8_t VERSION_FIRMWARE = 3;
 
 // ======================= ESTADO COMPARTIDO =======================
 QueueHandle_t colaMando = NULL;         // longitud 1, el nuevo pisa al viejo
@@ -78,6 +89,18 @@ volatile int8_t   enlaceActivo    = -1;  // 0 = USB, 1 = GPIO, -1 = ninguno aun
 
 seg::ControlServo servo;
 seg::ControlMotor motor;
+
+// --- sensores I2C (los toca solo tareaSensores; la copia publicada se
+//     protege con un spinlock porque telemetria la lee desde otro nucleo) ---
+sens::Mpu6050 mpu;
+sens::Tcs34725 tcs;
+lin::Clasificador clasificador;
+proto::Sensores sensoresPub = {0, 0, 0, 0, 0, 0, 0, 0};
+portMUX_TYPE muxSensores = portMUX_INITIALIZER_UNLOCKED;
+
+volatile uint8_t calPendiente = 0;       // proto::CAL_* pedido por la Pi
+volatile bool cfgTcsPendiente = false;
+proto::CfgTcs cfgTcsNueva;
 
 HardwareSerial *enlaces[2] = { &Serial, &Serial2 };
 proto::Lector lectores[2];
@@ -160,6 +183,14 @@ void tareaRx(void *) {
         } else if (tipo == proto::TIPO_PING) {
           uint8_t eco = lectores[e].len() ? lectores[e].payload()[0] : 0;
           enviarTrama(proto::TIPO_PONG, &eco, 1);
+        } else if (tipo == proto::TIPO_CFG_TCS) {
+          proto::CfgTcs c;
+          if (proto::decodificarCfgTcs(lectores[e].payload(), lectores[e].len(), c)) {
+            cfgTcsNueva = c;
+            cfgTcsPendiente = true;     // la aplica tareaSensores (toca el I2C)
+          }
+        } else if (tipo == proto::TIPO_CMD_CAL && lectores[e].len() >= 1) {
+          calPendiente = lectores[e].payload()[0];
         } else if (tipo == proto::TIPO_CONFIG && lectores[e].len() >= 6) {
           const uint8_t *p = lectores[e].payload();
           seg::ConfigServo cs;
@@ -246,25 +277,128 @@ void tareaVigilante(void *) {
   }
 }
 
+// ======================= TAREA: SENSORES (I2C) =======================
+// Nucleo 0, prioridad baja: leer el MPU a ~200 Hz e integrar el yaw, leer el
+// TCS a su ritmo de integracion y clasificar la linea. Publica una copia
+// para telemetria. Si un sensor no esta, se reintenta cada 3 s sin bloquear.
+void tareaSensores(void *) {
+  vTaskDelay(pdMS_TO_TICKS(300));   // dejar despertar a los chips (leccion vieja)
+  Wire.begin(PIN_SDA, PIN_SCL, I2C_HZ);
+  Wire.setTimeOut(5);               // un sensor colgado no congela la tarea
+
+  uint32_t msSondeo = millis() - REINTENTO_I2C_MS;   // sondear ya mismo
+  uint32_t msTcs = 0;
+  TickType_t ultimo = xTaskGetTickCount();
+  uint32_t msPrev = millis();
+
+  for (;;) {
+    vTaskDelayUntil(&ultimo, pdMS_TO_TICKS(5));   // 200 Hz
+    const uint32_t ahora = millis();
+
+    // --- redeteccion de sensores ausentes -----------------------------
+    if ((!mpu.presente || !tcs.presente) &&
+        (ahora - msSondeo >= REINTENTO_I2C_MS || calPendiente == proto::CAL_REDETECTAR)) {
+      msSondeo = ahora;
+      if (!mpu.presente && mpu.detectar()) enviarLog("MPU6050 OK");
+      if (!tcs.presente && tcs.detectar()) enviarLog("TCS34725 OK");
+      if (calPendiente == proto::CAL_REDETECTAR) calPendiente = 0;
+    }
+
+    // --- ordenes de calibracion ---------------------------------------
+    if (calPendiente == proto::CAL_GIRO) {
+      calPendiente = 0;
+      enviarLog("CAL GIRO...");
+      // publicar "calibrando" antes de bloquear ~1 s
+      portENTER_CRITICAL(&muxSensores);
+      sensoresPub.estado |= proto::S_CALIBRANDO;
+      portEXIT_CRITICAL(&muxSensores);
+      mpu.calibrar();
+      enviarLog("CAL GIRO OK");
+    } else if (calPendiente == proto::CAL_CERO_YAW) {
+      calPendiente = 0;
+      mpu.ceroYaw();
+    }
+
+    if (cfgTcsPendiente) {
+      cfgTcsPendiente = false;
+      lin::Config lc;
+      lc.c_min = cfgTcsNueva.c_min;
+      lc.naranja_r_min = cfgTcsNueva.naranja_r_min;
+      lc.naranja_b_max = cfgTcsNueva.naranja_b_max;
+      lc.azul_b_min = cfgTcsNueva.azul_b_min;
+      lc.azul_r_max = cfgTcsNueva.azul_r_max;
+      lc.muestras_min = cfgTcsNueva.muestras_min;
+      lc.refractario_ms = (uint16_t)cfgTcsNueva.refractario_ds * 100;
+      clasificador.configurar(lc);
+      if (tcs.presente) tcs.configurar(cfgTcsNueva.atime, cfgTcsNueva.gain);
+      enviarLog("CFG TCS OK");
+    }
+
+    // --- giroscopio ----------------------------------------------------
+    const uint32_t dt = ahora - msPrev;
+    msPrev = ahora;
+    if (mpu.presente) mpu.paso(dt ? dt : 5);
+
+    // --- color ---------------------------------------------------------
+    if (tcs.presente && (ahora - msTcs) >= tcs.periodoMs()) {
+      msTcs = ahora;
+      if (tcs.leerColor()) {
+        clasificador.paso(tcs.c, tcs.r, tcs.g, tcs.b, ahora);
+      }
+    }
+
+    // --- publicar ------------------------------------------------------
+    proto::Sensores s;
+    s.yaw_deci = (int16_t)(mpu.yaw * 10.0f);
+    s.gz_deci = (int16_t)(mpu.gz * 10.0f);
+    s.c = tcs.c; s.r = tcs.r; s.g = tcs.g; s.b = tcs.b;
+    s.estado = 0;
+    if (mpu.presente) s.estado |= proto::S_MPU_OK;
+    if (tcs.presente) s.estado |= proto::S_TCS_OK;
+    if (mpu.calibrando) s.estado |= proto::S_CALIBRANDO;
+    if (clasificador.sobreLinea()) s.estado |= proto::S_SOBRE_LINEA;
+    s.estado |= (uint8_t)(clasificador.clase() << 6);
+    s.cnt_lineas = clasificador.contadores();
+    portENTER_CRITICAL(&muxSensores);
+    sensoresPub = s;
+    portEXIT_CRITICAL(&muxSensores);
+  }
+}
+
 // ======================= TAREA: TELEMETRIA =======================
 void tareaTelemetria(void *) {
   TickType_t ultimo = xTaskGetTickCount();
+  uint32_t msTele = 0;
   for (;;) {
-    vTaskDelayUntil(&ultimo, pdMS_TO_TICKS(PERIODO_TELE_MS));
-    proto::Telemetria t;
-    t.seq_eco = ultimaSeq;
-    t.estado = estadoBits;
-    t.pwm = pwmActual;
-    t.angulo = anguloActual;
-    uint32_t edad = millis() - msUltimoMando;
-    t.ms_desde_mando = (edad > 65535) ? 65535 : (uint16_t)edad;
-    t.tramas_malas = (tramasMalas > 255) ? 255 : (uint8_t)tramasMalas;
-    t.version = VERSION_FIRMWARE;
-
-    uint8_t buf[5 + proto::MAX_PAYLOAD];
-    uint8_t n = proto::empaquetarTelemetria(t, buf);
+    vTaskDelayUntil(&ultimo, pdMS_TO_TICKS(PERIODO_SENS_MS));
+    const uint32_t ahora = millis();
     int8_t e = enlaceActivo;
-    if (e >= 0) enlaces[e]->write(buf, n);
+    if (e < 0) continue;
+
+    // Sensores a 40 Hz (el yaw fresco es lo que mas ayuda a la navegacion)
+    proto::Sensores s;
+    portENTER_CRITICAL(&muxSensores);
+    s = sensoresPub;
+    portEXIT_CRITICAL(&muxSensores);
+    uint8_t buf[5 + proto::MAX_PAYLOAD];
+    uint8_t n = proto::empaquetarSensores(s, buf);
+    enlaces[e]->write(buf, n);
+
+    // Estado del motor/servo a 20 Hz
+    if (ahora - msTele >= PERIODO_TELE_MS) {
+      msTele = ahora;
+      proto::Telemetria t;
+      t.seq_eco = ultimaSeq;
+      t.estado = estadoBits;
+      t.pwm = pwmActual;
+      t.angulo = anguloActual;
+      uint32_t edad = ahora - msUltimoMando;
+      t.ms_desde_mando = (edad > 65535) ? 65535 : (uint16_t)edad;
+      t.tramas_malas = (tramasMalas > 255) ? 255 : (uint8_t)tramasMalas;
+      t.version = VERSION_FIRMWARE;
+      n = proto::empaquetarTelemetria(t, buf);
+      enlaces[e]->write(buf, n);
+    }
   }
 }
 
@@ -308,6 +442,7 @@ void setup() {
 
   xTaskCreatePinnedToCore(tareaRx,          "Rx",       4096, NULL, 5, NULL, 0);
   xTaskCreatePinnedToCore(tareaTelemetria,  "Tele",     3072, NULL, 2, NULL, 0);
+  xTaskCreatePinnedToCore(tareaSensores,    "Sensores", 4096, NULL, 3, NULL, 0);
   xTaskCreatePinnedToCore(tareaControl,     "Control",  4096, NULL, 4, NULL, 1);
   xTaskCreatePinnedToCore(tareaVigilante,   "Vigilante",2048, NULL, 6, NULL, 1);
 
