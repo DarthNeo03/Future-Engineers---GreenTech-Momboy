@@ -1,7 +1,250 @@
 {
   "version": 2,
-  "activo": "Prueba1",
+  "activo": "calib_0830_1136",
   "perfiles": [
+    {
+      "nombre": "calib_0830_1136",
+      "fecha": "2026-08-30 11:41:29",
+      "notas": "calibrado con tools/calibrador.py",
+      "camara": {
+        "indice": 0,
+        "ancho": 640,
+        "alto": 480,
+        "fps": 30,
+        "fourcc": "MJPG",
+        "voltear": false
+      },
+      "colores": {
+        "rojo": {
+          "rangos": [
+            [
+              [
+                150,
+                100,
+                6
+              ],
+              [
+                179,
+                255,
+                255
+              ]
+            ],
+            [
+              [
+                0,
+                104,
+                6
+              ],
+              [
+                10,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 7,
+          "area_min": 475,
+          "area_max": 300100,
+          "llenado_min": 0.55,
+          "aspecto_min": 0.6,
+          "aspecto_max": 4.0,
+          "usar_aspecto": true,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.15,
+          "roi_abajo": 1.0,
+          "max_objetos": 6,
+          "color_dibujo": [
+            0,
+            0,
+            255
+          ]
+        },
+        "verde": {
+          "rangos": [
+            [
+              [
+                40,
+                70,
+                50
+              ],
+              [
+                93,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 5,
+          "area_min": 350,
+          "area_max": 250000,
+          "llenado_min": 0.55,
+          "aspecto_min": 0.6,
+          "aspecto_max": 4.0,
+          "usar_aspecto": true,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.15,
+          "roi_abajo": 1.0,
+          "max_objetos": 4,
+          "color_dibujo": [
+            0,
+            200,
+            0
+          ]
+        },
+        "negro": {
+          "rangos": [
+            [
+              [
+                0,
+                0,
+                0
+              ],
+              [
+                179,
+                255,
+                88
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 7,
+          "unir_huecos": 7,
+          "area_min": 1200,
+          "area_max": 300000,
+          "llenado_min": 0.2,
+          "aspecto_min": 0.0,
+          "aspecto_max": 50.0,
+          "usar_aspecto": false,
+          "ancho_min": 4,
+          "alto_min": 4,
+          "roi_arriba": 0.0,
+          "roi_abajo": 1.0,
+          "max_objetos": 3,
+          "color_dibujo": [
+            255,
+            0,
+            255
+          ]
+        },
+        "magenta": {
+          "rangos": [
+            [
+              [
+                140,
+                80,
+                60
+              ],
+              [
+                168,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 5,
+          "area_min": 400,
+          "area_max": 250000,
+          "llenado_min": 0.35,
+          "aspecto_min": 0.5,
+          "aspecto_max": 5.0,
+          "usar_aspecto": false,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.1,
+          "roi_abajo": 1.0,
+          "max_objetos": 3,
+          "color_dibujo": [
+            200,
+            0,
+            200
+          ]
+        },
+        "naranja": {
+          "rangos": [
+            [
+              [
+                8,
+                120,
+                90
+              ],
+              [
+                24,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 8,
+          "area_min": 500,
+          "area_max": 250000,
+          "llenado_min": 0.25,
+          "aspecto_min": 0.5,
+          "aspecto_max": 5.0,
+          "usar_aspecto": false,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.45,
+          "roi_abajo": 1.0,
+          "max_objetos": 2,
+          "color_dibujo": [
+            0,
+            140,
+            255
+          ]
+        },
+        "azul": {
+          "rangos": [
+            [
+              [
+                95,
+                90,
+                60
+              ],
+              [
+                125,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 8,
+          "area_min": 500,
+          "area_max": 250000,
+          "llenado_min": 0.25,
+          "aspecto_min": 0.5,
+          "aspecto_max": 5.0,
+          "usar_aspecto": false,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.45,
+          "roi_abajo": 1.0,
+          "max_objetos": 2,
+          "color_dibujo": [
+            255,
+            120,
+            0
+          ]
+        }
+      }
+    },
     {
       "nombre": "Prueba1",
       "fecha": "2026-08-19 11:41:05",
@@ -133,6 +376,114 @@
             255,
             0,
             255
+          ]
+        },
+        "magenta": {
+          "rangos": [
+            [
+              [
+                140,
+                80,
+                60
+              ],
+              [
+                168,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 5,
+          "area_min": 400,
+          "area_max": 250000,
+          "llenado_min": 0.35,
+          "aspecto_min": 0.5,
+          "aspecto_max": 5.0,
+          "usar_aspecto": false,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.1,
+          "roi_abajo": 1.0,
+          "max_objetos": 3,
+          "color_dibujo": [
+            200,
+            0,
+            200
+          ]
+        },
+        "naranja": {
+          "rangos": [
+            [
+              [
+                8,
+                120,
+                90
+              ],
+              [
+                24,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 8,
+          "area_min": 500,
+          "area_max": 250000,
+          "llenado_min": 0.25,
+          "aspecto_min": 0.5,
+          "aspecto_max": 5.0,
+          "usar_aspecto": false,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.45,
+          "roi_abajo": 1.0,
+          "max_objetos": 2,
+          "color_dibujo": [
+            0,
+            140,
+            255
+          ]
+        },
+        "azul": {
+          "rangos": [
+            [
+              [
+                95,
+                90,
+                60
+              ],
+              [
+                125,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 8,
+          "area_min": 500,
+          "area_max": 250000,
+          "llenado_min": 0.25,
+          "aspecto_min": 0.5,
+          "aspecto_max": 5.0,
+          "usar_aspecto": false,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.45,
+          "roi_abajo": 1.0,
+          "max_objetos": 2,
+          "color_dibujo": [
+            255,
+            120,
+            0
           ]
         }
       }
@@ -269,6 +620,114 @@
             0,
             255
           ]
+        },
+        "magenta": {
+          "rangos": [
+            [
+              [
+                140,
+                80,
+                60
+              ],
+              [
+                168,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 5,
+          "area_min": 400,
+          "area_max": 250000,
+          "llenado_min": 0.35,
+          "aspecto_min": 0.5,
+          "aspecto_max": 5.0,
+          "usar_aspecto": false,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.1,
+          "roi_abajo": 1.0,
+          "max_objetos": 3,
+          "color_dibujo": [
+            200,
+            0,
+            200
+          ]
+        },
+        "naranja": {
+          "rangos": [
+            [
+              [
+                8,
+                120,
+                90
+              ],
+              [
+                24,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 8,
+          "area_min": 500,
+          "area_max": 250000,
+          "llenado_min": 0.25,
+          "aspecto_min": 0.5,
+          "aspecto_max": 5.0,
+          "usar_aspecto": false,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.45,
+          "roi_abajo": 1.0,
+          "max_objetos": 2,
+          "color_dibujo": [
+            0,
+            140,
+            255
+          ]
+        },
+        "azul": {
+          "rangos": [
+            [
+              [
+                95,
+                90,
+                60
+              ],
+              [
+                125,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 8,
+          "area_min": 500,
+          "area_max": 250000,
+          "llenado_min": 0.25,
+          "aspecto_min": 0.5,
+          "aspecto_max": 5.0,
+          "usar_aspecto": false,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.45,
+          "roi_abajo": 1.0,
+          "max_objetos": 2,
+          "color_dibujo": [
+            255,
+            120,
+            0
+          ]
         }
       }
     },
@@ -403,6 +862,114 @@
             255,
             0,
             255
+          ]
+        },
+        "magenta": {
+          "rangos": [
+            [
+              [
+                140,
+                80,
+                60
+              ],
+              [
+                168,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 5,
+          "area_min": 400,
+          "area_max": 250000,
+          "llenado_min": 0.35,
+          "aspecto_min": 0.5,
+          "aspecto_max": 5.0,
+          "usar_aspecto": false,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.1,
+          "roi_abajo": 1.0,
+          "max_objetos": 3,
+          "color_dibujo": [
+            200,
+            0,
+            200
+          ]
+        },
+        "naranja": {
+          "rangos": [
+            [
+              [
+                8,
+                120,
+                90
+              ],
+              [
+                24,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 8,
+          "area_min": 500,
+          "area_max": 250000,
+          "llenado_min": 0.25,
+          "aspecto_min": 0.5,
+          "aspecto_max": 5.0,
+          "usar_aspecto": false,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.45,
+          "roi_abajo": 1.0,
+          "max_objetos": 2,
+          "color_dibujo": [
+            0,
+            140,
+            255
+          ]
+        },
+        "azul": {
+          "rangos": [
+            [
+              [
+                95,
+                90,
+                60
+              ],
+              [
+                125,
+                255,
+                255
+              ]
+            ]
+          ],
+          "desenfoque": 3,
+          "abrir": 3,
+          "cerrar": 5,
+          "unir_huecos": 8,
+          "area_min": 500,
+          "area_max": 250000,
+          "llenado_min": 0.25,
+          "aspecto_min": 0.5,
+          "aspecto_max": 5.0,
+          "usar_aspecto": false,
+          "ancho_min": 6,
+          "alto_min": 6,
+          "roi_arriba": 0.45,
+          "roi_abajo": 1.0,
+          "max_objetos": 2,
+          "color_dibujo": [
+            255,
+            120,
+            0
           ]
         }
       }
