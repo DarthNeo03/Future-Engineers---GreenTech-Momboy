@@ -27,8 +27,10 @@ from src import protocolo as P          # noqa: E402
 from src import params as params_mod    # noqa: E402
 from src.geometria import Geometria     # noqa: E402
 from src import muro                    # noqa: E402
-from src.lineas import GestorLineas, HORARIO, ANTIHORARIO  # noqa: E402
-from src.navegacion import Navegador, RECTO, ESCAPE        # noqa: E402
+from src.lineas import (GestorLineas, HORARIO, ANTIHORARIO,   # noqa: E402
+                        ZONA_RECTA, ZONA_ESQUINA)
+from src.navegacion import (Navegador, RECTO, PRE_GIRO,      # noqa: E402
+                            GIRO, GIRO_2T, ESCAPE)
 
 FALLOS = []
 TOTAL = 0
@@ -211,6 +213,27 @@ prueba("giro+linea de la misma esquina no duplica", gl3.esquinas == 1)
 
 prueba("sentido forzado gana", gl2.sentido_efectivo("horario") == HORARIO)
 
+print("== zona de esquina (anti-bucle) ==")
+zcfg = dict(lcfg, esquina_max_ms=400)
+gz = GestorLineas(zcfg)
+prueba("arranca en recta", gz.zona == ZONA_RECTA and not gz.en_esquina)
+gz.evento_tcs("naranja")
+prueba("primera linea => ENTRA en la esquina", gz.en_esquina)
+gz.evento_tcs("azul")
+prueba("la segunda linea del par NO saca de la esquina", gz.en_esquina)
+gz.giro_completado(1)
+prueba("giro de 90 completado => SALE de la esquina",
+       gz.zona == ZONA_RECTA, gz.motivo_zona)
+
+gz2 = GestorLineas(zcfg)
+gz2.evento_tcs("naranja")
+gz2.paso_zona()
+prueba("sin timeout sigue en la esquina", gz2.en_esquina)
+time.sleep(0.45)
+gz2.paso_zona()
+prueba("timeout de seguridad devuelve a recta (giroscopio caido)",
+       gz2.zona == ZONA_RECTA, gz2.motivo_zona)
+
 # ===========================================================================
 print("== navegacion ==")
 ncfg = params_mod.valores_por_defecto()
@@ -245,6 +268,136 @@ if nav4.estado in ("pre_giro", "giro"):
            str(girado))
 else:
     prueba("con a pared a un lado navega o gira", d4.vel != 0, d4.estado)
+
+# ===========================================================================
+print("== esquinas: bucle y giro de dos tiempos ==")
+
+def nav_esquina(**cambios_nav):
+    """Navegador listo para entrar en esquina de inmediato."""
+    v = params_mod.valores_por_defecto()
+    v["navegacion"].update(dict(min_recto_ms=0, retardo_giro_ms=0), **cambios_nav)
+    hechos = []
+    n = Navegador(v["navegacion"], v["limites"], v["escape"], v["giro2t"],
+                  al_completar_giro=lambda lado: hechos.append(lado))
+    return n, hechos, v
+
+# El escenario del bucle: DENTRO de la curva, sin giroscopio, con el hueco de
+# piso blanco enorme que deja el muro interno al acabarse. Para el perfil todo
+# esta despejado, asi que la vision dice "sigue recto" justo cuando hay que
+# girar. Ese hueco es el falso camino que hacia dar vueltas al carro.
+sin_bloqueo, hechos_sb, _ = nav_esquina(bloqueo_esquina=False)
+estados_sb = []
+for _ in range(8):
+    d = sin_bloqueo.paso(p_libre, None, 1, en_esquina=True)
+    estados_sb.append(d.estado)
+giro_sb = estados_sb.count(GIRO)
+prueba("SIN anti-bucle el hueco blanco aborta el giro nada mas empezarlo",
+       giro_sb == 0 and sin_bloqueo.estado == RECTO,
+       f"ticks en giro={giro_sb} estado={sin_bloqueo.estado} {estados_sb}")
+prueba("SIN anti-bucle el carro se va recto hacia el hueco (no dobla)",
+       abs(sin_bloqueo.ultimo.direccion) < 30 and sin_bloqueo.ultimo.vel > 0,
+       f"dir={sin_bloqueo.ultimo.direccion} vel={sin_bloqueo.ultimo.vel}")
+
+con_bloqueo, hechos_cb, _ = nav_esquina(bloqueo_esquina=True)
+estados_cb = []
+for _ in range(8):
+    d = con_bloqueo.paso(p_libre, None, 1, en_esquina=True)
+    estados_cb.append(d.estado)
+prueba("CON anti-bucle el giro se mantiene aunque vea hueco libre",
+       len(hechos_cb) == 0 and con_bloqueo.estado == GIRO,
+       f"giros={len(hechos_cb)} estado={con_bloqueo.estado} {estados_cb}")
+prueba("CON anti-bucle el carro esta doblando de verdad",
+       abs(con_bloqueo.ultimo.direccion) > 50,
+       f"dir={con_bloqueo.ultimo.direccion}")
+prueba("el motivo avisa de que esta en esquina",
+       "en esquina" in con_bloqueo.ultimo.motivo, con_bloqueo.ultimo.motivo)
+
+# Una esquina, UN giro: aunque la zona de curva siga activa mucho rato (el
+# TCS no vio la segunda linea, el timeout es largo), no se encadenan giros.
+una_vez, hechos_uv, _ = nav_esquina()
+for _ in range(60):
+    una_vez.paso(p_libre, 0.0, 1, en_esquina=True)   # yaw quieto: no completa
+prueba("la misma curva no vuelve a disparar el giro",
+       len(hechos_uv) == 0 and una_vez.estado in (GIRO, PRE_GIRO),
+       f"giros={len(hechos_uv)} estado={una_vez.estado}")
+
+# La linea del piso entra en la esquina por si sola, sin esperar al pasillo
+solo_linea, _h, _v = nav_esquina()
+d = solo_linea.paso(p_libre, None, 1, en_esquina=True)
+prueba("la linea del piso dispara la esquina con el frente despejado",
+       solo_linea.estado in (PRE_GIRO, GIRO), solo_linea.estado)
+
+# --- giro de dos tiempos, cableado como en el robot de verdad -------------
+def curva_completa(activo_2t: bool, pasos: int = 400, k: float = 9.0):
+    """Esquina entera: cruzar la linea -> girar -> salir de la esquina.
+
+    El gestor de lineas y el navegador van conectados igual que en robot.py,
+    asi que esto prueba el lazo completo, no las piezas por separado.
+    Modelo Ackermann: la rotacion va con signo(vel)*signo(direccion), asi que
+    retroceder con el volante al reves sigue girando hacia el mismo lado.
+    """
+    v = params_mod.valores_por_defecto()
+    v["navegacion"].update(min_recto_ms=0, retardo_giro_ms=0)
+    v["giro2t"]["activo"] = activo_2t
+    gl = GestorLineas(dict(lcfg, esquina_max_ms=60000))
+    nav = Navegador(v["navegacion"], v["limites"], v["escape"], v["giro2t"],
+                    al_completar_giro=gl.giro_completado)
+    gl.evento_tcs("naranja")               # cruza la primera linea del par
+    yaw = 0.0
+    traza = []
+    for _ in range(pasos):
+        gl.paso_zona()
+        d = nav.paso(p_libre, yaw, 1, en_esquina=gl.en_esquina)
+        traza.append((nav.estado, d.vel, d.direccion, yaw))
+        yaw = ((yaw + k * (d.vel / 100.0) * (d.direccion / 100.0)) + 180) % 360 - 180
+        if not gl.en_esquina and nav.estado == RECTO:
+            break
+    return traza, yaw, gl, nav
+
+traza, yaw_fin, gl2t, n2t = curva_completa(True)
+estados = [t[0] for t in traza]
+prueba("entra en el giro de dos tiempos", GIRO_2T in estados, str(set(estados)))
+avances = [t for t in traza if t[0] == GIRO_2T and t[1] > 0]
+reversas = [t for t in traza if t[0] == GIRO_2T and t[1] < 0]
+prueba("tiene tramo de avance", len(avances) > 0, str(len(avances)))
+prueba("tiene tramo de reversa", len(reversas) > 0, str(len(reversas)))
+prueba("en reversa la direccion va al lado CONTRARIO del avance",
+       avances[0][2] > 0 and reversas[0][2] < 0,
+       f"avance dir={avances[0][2]} reversa dir={reversas[0][2]}")
+prueba("la maniobra termina y vuelve a recto", n2t.estado == RECTO, n2t.estado)
+prueba("giro de 90 grados completado", 80 <= yaw_fin <= 105, f"{yaw_fin:.1f}")
+prueba("al terminar el giro SALE de la esquina", not gl2t.en_esquina,
+       gl2t.zona)
+prueba("la esquina se conto una sola vez", gl2t.esquinas == 1,
+       str(gl2t.esquinas))
+
+# la misma curva con el giro normal de un tiempo: tambien sale y cuenta una
+traza1, yaw1, gl1, n1 = curva_completa(False)
+prueba("giro normal: tambien completa los 90", 80 <= yaw1 <= 105, f"{yaw1:.1f}")
+prueba("giro normal: sale de la esquina y cuenta una",
+       not gl1.en_esquina and gl1.esquinas == 1,
+       f"{gl1.zona} {gl1.esquinas}")
+prueba("el de un tiempo no retrocede", all(t[1] >= 0 for t in traza1),
+       "hay reversa en el giro normal")
+
+# sin giroscopio el 2T no se puede medir: se usa el giro normal
+n2t_sin, _h, _v = nav_esquina()
+n2t_sin.g2t["activo"] = True
+for _ in range(3):
+    n2t_sin.paso(p_libre, None, 1, en_esquina=True)
+prueba("sin giroscopio cae al giro normal", n2t_sin.estado == GIRO,
+       n2t_sin.estado)
+
+# el escape no puede secuestrar la maniobra de dos tiempos
+n2t_cerca, _h, _v = nav_esquina()
+n2t_cerca.g2t["activo"] = True
+for _ in range(2):
+    n2t_cerca.paso(p_libre, 0.0, 1, en_esquina=True)      # entrar en 2T
+est_antes = n2t_cerca.estado
+d = n2t_cerca.paso(p_cerca, 1.0, 1, en_esquina=True)      # muro encima
+prueba("con muro delante el 2T corta a reversa, no lo secuestra el escape",
+       est_antes == GIRO_2T and n2t_cerca.estado == GIRO_2T and d.estado != ESCAPE,
+       f"{est_antes} -> {n2t_cerca.estado} ({d.motivo})")
 
 # ===========================================================================
 print("== parametros ==")

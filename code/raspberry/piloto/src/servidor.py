@@ -205,6 +205,14 @@ class Servidor:
                     r.carrera.reiniciar()
                     if r.armado and r.modo == "auto":
                         r.carrera.arrancar()
+                elif k == "probar_linea":
+                    # Inyecta un cruce de linea como si lo hubiera visto el
+                    # TCS. Sirve para probar la maniobra de esquina en el
+                    # banco, sin tener que empujar el carro sobre la linea.
+                    color = v if v in ("naranja", "azul") else "naranja"
+                    r.lineas.evento_tcs(color)
+                    r.t_linea_reciente = time.time()
+                    r.log(f"[prueba] cruce de linea {color} inyectado")
                 elif k in ("val", "color", "x", "y", "dist", "lat", "acumular"):
                     pass          # argumentos de otras ordenes
         except Exception as e:

@@ -30,6 +30,7 @@ from .carrera import Carrera, LISTO
 from .enlace import Enlace
 from .geometria import Geometria
 from .lineas import GestorLineas
+from . import navegacion as nav
 from .navegacion import Decision, Navegador
 from .obstaculos import Esquivador
 
@@ -49,7 +50,7 @@ class Robot:
         self.lineas = GestorLineas(self.p["lineas"])
         self.carrera = Carrera(self.p["carrera"], self.lineas)
         self.navegador = Navegador(self.p["navegacion"], self.p["limites"],
-                                   self.p["escape"],
+                                   self.p["escape"], self.p["giro2t"],
                                    al_completar_giro=self._giro_completado)
         self.esquivador = Esquivador(self.p["obstaculos"])
         self.enlace = Enlace(self.p["enlace"], simulado=simulado, al_log=self.log)
@@ -392,9 +393,19 @@ class Robot:
                     time.time() - self.lineas._t_evento < 0.1:
                 self.t_linea_reciente = time.time()
 
+            self.lineas.paso_zona()          # timeout de la zona de esquina
             yaw = self.enlace.yaw()
             sentido = self.carrera.sentido()
             linea_reciente = time.time() - self.t_linea_reciente < 1.2
+            # "Dentro de la curva" tiene dos fuentes, y basta con una:
+            #   - las lineas del piso (lo fiable, via TCS o camara);
+            #   - que el propio navegador ya este girando.
+            # La segunda importa porque el TCS puede no estar montado y las
+            # lineas se ven fatal si la camara va sobreexpuesta: sin ella, el
+            # anti-bucle no protegeria en el caso mas comun de todos.
+            en_esquina = (self.lineas.en_esquina or
+                          self.navegador.estado in (nav.PRE_GIRO, nav.GIRO,
+                                                    nav.GIRO_2T))
             debe_parar = self.carrera.paso()
 
             bias = self.esquivador.paso(dets, perfil, self.geo)
@@ -406,7 +417,7 @@ class Robot:
                                  motivo="carrera terminada: parado en meta")
                 else:
                     d = self.navegador.paso(perfil, yaw, sentido,
-                                            linea_reciente, bias)
+                                            linea_reciente, bias, en_esquina)
             elif self.modo == "manual" and self.armado:
                 caducado = (time.time() - self.manual["t"]) * 1000 > \
                     float(self.p["manual"]["timeout_ms"])

@@ -20,6 +20,24 @@ Reglas de conteo (lecciones del programa viejo):
   * Despues de contar una esquina hay un refractario de verdad
     (refractario_esquina_ms) durante el cual no se admite otra, venga del
     sensor que venga.
+
+ZONA: DENTRO DE LA ESQUINA O EN RECTA
+Ademas de contar, este modulo dice DONDE esta el carro, y eso resuelve el
+bucle de las esquinas. El problema: cuando el muro interno se acaba, queda un
+hueco de piso blanco enorme que la navegacion por espacio libre lee como
+"camino". El carro se mete, desde el sitio nuevo ve otro hueco, se vuelve a
+meter, y da vueltas dentro de la curva sin salir.
+
+Las lineas del piso marcan FISICAMENTE donde esta la curva:
+
+    ... recta ...  |naranja|   <-- ENTRA en la esquina
+                    ( curva )   <-- aqui NO se decide por espacio libre:
+                                    se ejecuta un giro de 90 comprometido
+                   |azul|      <-- SALE de la esquina
+    ... recta ...
+
+Entrar es fiable (la primera linea del par); salir se confirma con el giro de
+90 completado, y hay un timeout de seguridad por si el giroscopio falla.
 """
 
 from __future__ import annotations
@@ -34,6 +52,9 @@ from .muro import PerfilMuro
 HORARIO = 1
 ANTIHORARIO = -1
 DESCONOCIDO = 0
+
+ZONA_RECTA = "recta"
+ZONA_ESQUINA = "esquina"
 
 
 class GestorLineas:
@@ -52,6 +73,9 @@ class GestorLineas:
         self._t_cam = {"naranja": 0.0, "azul": 0.0}   # refractario camara
         self.ultimo_evento = ""             # para telemetria
         self.dist_lineas: Dict[str, float] = {}       # distancia visible (mm)
+        self.zona = ZONA_RECTA
+        self._t_zona = 0.0
+        self.motivo_zona = ""
 
     # -- entrada 1: eventos del TCS (ya convertidos por el enlace) ---------
     def evento_tcs(self, color: str) -> None:
@@ -103,11 +127,16 @@ class GestorLineas:
 
     # -- entrada 3: giro de 90 completado (respaldo) ----------------------
     def giro_completado(self, lado: int) -> None:
-        """lado: +1 giro a la derecha, -1 a la izquierda."""
+        """lado: +1 giro a la derecha, -1 a la izquierda.
+
+        Ademas de contar (si no lo hicieron ya las lineas), esto es lo que
+        SACA al carro de la zona de esquina: el giro de 90 esta hecho, la
+        curva quedo atras."""
         ahora = time.time()
         if self.sentido == DESCONOCIDO and lado != 0:
             # girar a la derecha en las esquinas = sentido horario
             self.sentido = HORARIO if lado > 0 else ANTIHORARIO
+        self.salir_de_esquina("giro de 90 completado")
         # si la esquina ya se conto por lineas hace poco, no contar doble
         if (ahora - self._t_esquina) * 1000 < float(
                 self.cfg.get("refractario_esquina_ms", 3000)):
@@ -116,6 +145,35 @@ class GestorLineas:
         self._t_esquina = ahora
         self._colores_esquina = []
         self.ultimo_evento = "esquina por giro"
+
+    # -- zona: dentro de la curva o en recta -------------------------------
+    @property
+    def en_esquina(self) -> bool:
+        return self.zona == ZONA_ESQUINA
+
+    def entrar_en_esquina(self, motivo: str) -> None:
+        if self.zona != ZONA_ESQUINA:
+            self.zona = ZONA_ESQUINA
+            self._t_zona = time.time()
+            self.motivo_zona = motivo
+
+    def salir_de_esquina(self, motivo: str = "") -> None:
+        if self.zona != ZONA_RECTA:
+            self.zona = ZONA_RECTA
+            self._t_zona = time.time()
+            self.motivo_zona = motivo
+
+    def paso_zona(self) -> None:
+        """Red de seguridad: nadie puede quedarse eternamente 'en la esquina'.
+        Si el giro no se confirmo (giroscopio caido, patinazo), a los
+        esquina_max_ms se vuelve a recta y la navegacion normal retoma."""
+        if self.zona == ZONA_ESQUINA:
+            limite = float(self.cfg.get("esquina_max_ms", 6000)) / 1000.0
+            if time.time() - self._t_zona > limite:
+                self.salir_de_esquina("timeout de esquina")
+
+    def tiempo_en_zona(self) -> float:
+        return time.time() - self._t_zona if self._t_zona else 0.0
 
     # -- interno ----------------------------------------------------------
     def _sentido_de(self, primer_color: str) -> int:
@@ -131,7 +189,7 @@ class GestorLineas:
         refract = float(self.cfg.get("refractario_esquina_ms", 3000)) / 1000.0
 
         if self._colores_esquina and ahora - self._t_evento <= ventana:
-            # segunda linea de la MISMA esquina
+            # segunda linea de la MISMA esquina: sigue DENTRO de la curva
             self._t_evento = ahora
             if color not in self._colores_esquina:
                 self._colores_esquina.append(color)
@@ -143,7 +201,7 @@ class GestorLineas:
             self._t_evento = ahora
             return
 
-        # primera linea de una esquina nueva
+        # primera linea de una esquina nueva: el carro ENTRA en la curva
         self.esquinas += 1
         self._t_esquina = ahora
         self._t_evento = ahora
@@ -151,6 +209,7 @@ class GestorLineas:
         self.orden_observado = [color]
         if self.sentido == DESCONOCIDO:
             self.sentido = self._sentido_de(color)
+        self.entrar_en_esquina(f"linea {color} ({fuente})")
 
     # -- salida ------------------------------------------------------------
     def vueltas(self, esquinas_por_vuelta: int = 4) -> int:
@@ -177,4 +236,7 @@ class GestorLineas:
             "orden": "+".join(self.orden_observado),
             "ultimo": self.ultimo_evento,
             "dist_lineas": {k: round(v, 0) for k, v in self.dist_lineas.items()},
+            "zona": self.zona,
+            "zona_motivo": self.motivo_zona,
+            "zona_s": round(self.tiempo_en_zona(), 1),
         }
