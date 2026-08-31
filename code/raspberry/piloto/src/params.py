@@ -110,9 +110,25 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "min_recto_ms": _p("int", 700, "Tiempo minimo en recto antes de admitir OTRA esquina (evita encadenar giros sobre si mismo).", 0, 4000),
         "cobertura_esquina": _p("float", 0.22, "Si la banda del lado interno pasa de ver muro a ver menos que esta fraccion, se dispara la esquina (el muro interno desaparece en cada esquina).", 0.05, 0.8),
         "giro_por_linea": _p("bool", True, "Permitir que el cruce de linea del piso (TCS/camara) tambien dispare el giro cuando el pasillo ya se esta cerrando."),
+        "linea_dispara_esquina": _p("bool", True, "MUY RECOMENDADO. Cruzar la primera linea del piso ENTRA en la esquina por si sola, sin esperar a que el pasillo se cierre. Las lineas marcan fisicamente donde esta la curva: es el disparo mas fiable que existe."),
+        "bloqueo_esquina": _p("bool", True, "ANTI-BUCLE. Mientras el carro esta DENTRO de la esquina (entre las lineas del piso), el giro de 90 se ejecuta comprometido y la vision NO puede redirigirlo. Sin esto, el hueco blanco que deja el muro interno al terminar parece 'camino libre', el centrado se mete ahi, vuelve a ver otro hueco y el carro entra en bucle sin salir nunca de la curva."),
         "usar_yaw": _p("bool", True, "Usar el giroscopio: la camara decide CUANDO girar, el giroscopio decide CUANTO (90 grados clavados)."),
         "yaw_kp": _p("float", 1.6, "Correccion de rumbo en recta: % de direccion por grado de error.", 0.0, 10.0),
         "yaw_max": _p("float", 45.0, "Tope de la correccion por rumbo (que el giroscopio ayude, no que mande).", 0.0, 100.0),
+    },
+
+    "giro2t": {
+        "activo": _p("bool", False, "GIRO DE DOS TIEMPOS en las esquinas: avanzar en diagonal y luego retroceder con la direccion invertida, logrando un 90 limpio en el sitio. Al terminar el carro queda ALINEADO con el tramo nuevo y ve el pasillo entero, asi no se le escapa ningun obstaculo. Mas lento pero mucho mas seguro para el reto con obstaculos. Necesita giroscopio."),
+        "frac_avance": _p("float", 0.6, "Que fraccion de los 90 grados se hace en el tramo de AVANCE. El resto se completa en reversa. 0.6 = 54 grados adelante y 36 atras.", 0.2, 0.9),
+        "vel_avance": _p("int", 32, "Velocidad del tramo de avance, en % de vmax. Despacio: el giro es cerrado.", 10, 100),
+        "vel_reversa": _p("int", 30, "Velocidad del tramo de reversa, en % de vmax.", 10, 100),
+        "dir_avance": _p("float", 100.0, "Direccion en el avance, en %. A tope para que el radio sea el minimo posible.", 40.0, 100.0),
+        "dir_reversa": _p("float", 100.0, "Direccion en la reversa, en %. Va al lado CONTRARIO del avance: con Ackermann eso hace que el carro siga rotando en el mismo sentido mientras recupera sitio.", 40.0, 100.0),
+        "min_pasillo_mm": _p("float", 340.0, "Si durante el avance el pasillo baja de esto, cortar ya y pasar a la reversa (sin esperar a completar la fraccion). Mantenlo POR ENCIMA de navegacion.parar_bajo_mm: asi la maniobra corta sola antes de que salte el escape.", 100.0, 900.0),
+        "reversa_max_ms": _p("int", 1100, "Tope de cada tramo de reversa. Importante: el reglamento solo permite ir marcha atras dentro de la seccion; con esto no se cruza el limite hacia atras.", 200, 4000),
+        "avance_max_ms": _p("int", 2000, "Tope de cada tramo de avance.", 200, 6000),
+        "max_ciclos": _p("int", 3, "Cuantas veces puede repetir avance+reversa si aun le faltan grados.", 1, 6),
+        "max_ms": _p("int", 7000, "Tiempo total maximo de la maniobra antes de rendirse y seguir de frente.", 1000, 20000),
     },
 
     "escape": {
@@ -129,6 +145,7 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "umbral_cruce_mm": _p("float", 260.0, "(camara) una linea del piso a menos de esta distancia del morro cuenta como cruzada.", 50.0, 800.0),
         "ventana_par_ms": _p("int", 2500, "Las dos lineas de una misma esquina llegan dentro de esta ventana; lo que caiga dentro es LA MISMA esquina, no dos.", 500, 6000),
         "refractario_esquina_ms": _p("int", 3000, "Tras contar una esquina no se admite otra (venga del sensor que venga) durante este tiempo.", 500, 10000),
+        "esquina_max_ms": _p("int", 6000, "Red de seguridad: tiempo maximo que el carro puede considerarse DENTRO de una esquina. Si lo supera vuelve a modo recta aunque el giro no se haya confirmado, para no quedarse bloqueado si el giroscopio falla.", 1000, 20000),
     },
 
     "tcs": {

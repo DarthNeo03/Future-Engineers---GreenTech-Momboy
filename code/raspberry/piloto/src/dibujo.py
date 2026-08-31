@@ -16,12 +16,13 @@ import numpy as np
 from . import vision
 from .geometria import Geometria
 from .muro import PerfilMuro
-from .navegacion import Decision, RECTO, PRE_GIRO, GIRO, ESCAPE
+from .navegacion import Decision, RECTO, PRE_GIRO, GIRO, GIRO_2T, ESCAPE
 
 COLOR_ESTADO = {
     RECTO: (80, 220, 80),
     PRE_GIRO: (0, 200, 255),
     GIRO: (0, 165, 255),
+    GIRO_2T: (0, 140, 255),
     ESCAPE: (0, 0, 255),
     "manual": (255, 200, 0),
     "parado": (160, 160, 160),
@@ -131,6 +132,7 @@ def anotar(frame: np.ndarray,
 
     # --- HUD ----------------------------------------------------------------
     col_est = COLOR_ESTADO.get(d.estado, (255, 255, 255))
+    zona = carrera.get("lineas", {}).get("zona", "recta")
     lineas_hud = [
         (f"{hud.get('armado_txt', '')} | {hud.get('modo', '')} | "
          f"{hud.get('fps', 0):.1f} fps", (200, 200, 200)),
@@ -140,6 +142,11 @@ def anotar(frame: np.ndarray,
          f"{carrera.get('vueltas', 0)} | {carrera.get('estado', '')}",
          (255, 220, 100)),
     ]
+    if zona == "esquina":
+        # marco naranja: mientras esto se ve, la vision NO decide el rumbo
+        cv2.rectangle(frame, (2, 2), (W - 3, H - 3), (0, 140, 255), 3)
+        cv2.putText(frame, "EN ESQUINA (giro comprometido)", (8, H - 92),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 140, 255), 1, cv2.LINE_AA)
     y = 14
     for txt, col in lineas_hud:
         cv2.putText(frame, txt, (6, y), cv2.FONT_HERSHEY_SIMPLEX, 0.42,

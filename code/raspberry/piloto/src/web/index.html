@@ -80,6 +80,23 @@
     <table id="tCarrera"></table>
     <div class="fila"><button class="mini off" onclick="cmd({reiniciar_carrera:1})">Reiniciar conteo</button></div>
   </div>
+  <div class="caja">
+    <h3>Esquinas</h3>
+    <div class="fila">
+      <button class="mini" id="btn2T" onclick="toggle2T()">Giro 2 tiempos: —</button>
+      <button class="mini" id="btnBloq" onclick="toggleBloq()">Anti-bucle: —</button>
+    </div>
+    <div class="fila">
+      <button class="mini off" onclick="cmd({probar_linea:'naranja'})">Probar esquina (simular linea)</button>
+    </div>
+    <p class="desc">
+    <b>Anti-bucle</b>: dentro de la curva (entre las lineas del piso) el giro de 90 se ejecuta
+    comprometido y la camara no puede redirigirlo. Sin esto, el hueco blanco que deja el muro
+    interno parece camino libre y el carro da vueltas dentro de la esquina.<br>
+    <b>Giro 2 tiempos</b>: avanza en diagonal y retrocede con la direccion invertida para clavar
+    los 90 en el sitio. Termina alineado con el tramo nuevo, asi ve todos los obstaculos.
+    Mas lento; necesita giroscopio.</p>
+  </div>
   <div class="caja" id="rapidos"><h3>Ajustes rapidos</h3></div>
   <div class="caja"><h3>Telemetria</h3><table id="tTele"></table></div>
 </div>
@@ -227,6 +244,18 @@ function cmd(obj){
 }
 function setp(grupo, clave, val){ tocando = Date.now(); return cmd({set:grupo+"."+clave, val:val}); }
 function armar(){ cmd({armar: S && S.armado ? 0 : 1}); }
+function refrescarValores(){
+  return fetch("/api/valores").then(r=>r.json()).then(v=>{ valores=v; return v; });
+}
+function toggle2T(){
+  if(!valores) return;
+  setp("giro2t","activo", valores.giro2t.activo?0:1).then(refrescarValores);
+}
+function toggleBloq(){
+  if(!valores) return;
+  setp("navegacion","bloqueo_esquina", valores.navegacion.bloqueo_esquina?0:1)
+    .then(refrescarValores);
+}
 
 // ========================= pestañas y streams =========================
 const camsPorTab = {carrera:"camCarrera", manual:"camManual",
@@ -502,7 +531,7 @@ function guardarPerfilParams(){
 function cargarPerfilParams(){
   cmd({perfil_params_cargar: $("selPerfilParams").value}).then(()=>{
     aviso("perfil cargado");
-    fetch("/api/valores").then(r=>r.json()).then(v=>{ valores=v; pintarAjustes(); });
+    refrescarValores().then(pintarAjustes);
   });
 }
 
@@ -537,6 +566,14 @@ function refrescar(){
     fila(tc, "esquinas / vueltas", ca.esquinas + "/" + ca.meta_esquinas + " — vuelta " + ca.vueltas);
     fila(tc, "tiempo", ca.transcurrido_s + " s");
     fila(tc, "lineas", ca.lineas.ultimo + (ca.lineas.orden ? " (orden "+ca.lineas.orden+")" : ""));
+    fila(tc, "zona", ca.lineas.zona + " (" + ca.lineas.zona_s + "s) " + ca.lineas.zona_motivo,
+         ca.lineas.zona==="esquina" ? "avi" : "ok");
+    if(valores){
+      $("btn2T").textContent = "Giro 2 tiempos: " + (valores.giro2t.activo?"SI":"no");
+      $("btn2T").classList.toggle("off", !valores.giro2t.activo);
+      $("btnBloq").textContent = "Anti-bucle: " + (valores.navegacion.bloqueo_esquina?"SI":"no");
+      $("btnBloq").classList.toggle("off", !valores.navegacion.bloqueo_esquina);
+    }
 
     // telemetria
     const t = $("tTele"); t.innerHTML = "";

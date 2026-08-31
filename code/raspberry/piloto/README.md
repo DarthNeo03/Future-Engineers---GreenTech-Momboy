@@ -21,7 +21,7 @@ MPU6050 y el TCS34725 por I2C y manda yaw + cruces de linea a la Pi).
 ```bash
 python3 -m venv .venv && source .venv/bin/activate    # en Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python tools/selftest.py            # 47 pruebas, sin hardware
+python tools/selftest.py            # 73 pruebas, sin hardware
 python main.py                      # camara + ESP32 + web
 python main.py --simulado           # sin ESP32 (pruebas en el PC)
 python main.py --imagen foto.jpg    # sin camara, sobre una foto
@@ -54,8 +54,8 @@ carrera (cronometro + conteo).
    en recta y clava los giros de 90.
 3. **Esquinas**: PRE_GIRO (frena + deja pasar las ruedas traseras + **giro
    abierto** tipo camion si hay sitio) -> GIRO de 90 por giroscopio -> RECTO.
-   Disparadores: pasillo cerrandose, muro interno que desaparece, o linea de
-   esquina cruzada.
+   Disparadores: **linea del piso cruzada** (el mas fiable), pasillo
+   cerrandose, o muro interno que desaparece. Ver "El bucle de las esquinas".
 4. **Conteo**: cada esquina tiene un par de lineas naranja+azul; el par cuenta
    UNA esquina (ventana de par + refractario de verdad). 4 esquinas = vuelta.
 5. **Parada final**: tras la esquina 12 avanza `carrera.parada_ms` para meter
@@ -94,6 +94,63 @@ pista. `tools/selftest.py` incluye un caso sintetico donde el viejo falla y
 el nuevo no.
 
 ---
+
+## El bucle de las esquinas (y por que las lineas lo arreglan)
+
+Sintoma: al llegar a la curva el carro se queda dando vueltas dentro de ella,
+como si el hueco fuera el camino.
+
+Causa: cuando el muro interno se acaba deja un hueco de piso blanco enorme.
+Para cualquier navegacion por espacio libre ese hueco **es** el camino: el
+carro se mete, desde la posicion nueva vuelve a ver otro hueco, se vuelve a
+meter, y nunca sale. No es un problema de umbrales; la vision esta
+contestando bien a la pregunta equivocada. En una captura real de esquina el
+pasillo mide 1064 mm de via libre justo cuando hay que doblar.
+
+Arreglo, en tres piezas:
+
+1. **La linea del piso dice donde esta la curva** (`linea_dispara_esquina`).
+   Cruzar la primera linea del par ENTRA en la esquina por si solo, sin
+   esperar a que el pasillo se cierre. Es informacion fisica, no inferencia.
+2. **Anti-bucle** (`bloqueo_esquina`): mientras el carro esta dentro de la
+   curva, el giro de 90 se ejecuta comprometido y la camara no puede
+   redirigirlo. Se termina por angulo de giroscopio o por timeout, nunca
+   porque se vea un hueco tentador. La vision sigue mandando en la seguridad.
+3. **Una esquina, un giro**: la curva ya girada no vuelve a disparar aunque
+   la zona siga activa. Sin esto el carro encadenaba dos giros de 90 seguidos
+   (180 grados) y se metia en la pared.
+
+Se sale de la zona al completar el giro, y hay un timeout
+(`lineas.esquina_max_ms`) por si el giroscopio falla: nadie se queda
+bloqueado "en la esquina" para siempre.
+
+La zona se marca tambien cuando el giro nace de la vision, asi que el
+anti-bucle protege aunque el TCS no este montado o las lineas no se vean.
+
+En la web: caja **Esquinas** de la pestaña Carrera, con un boton *Probar
+esquina* que inyecta un cruce de linea para ensayar la maniobra en el banco
+sin empujar el carro. Mientras el carro esta en la curva el video se enmarca
+en naranja.
+
+## Giro de 90 en dos tiempos (para no perderse obstaculos)
+
+`giro2t.activo`. En vez de doblar de una sola pasada, el carro **avanza en
+diagonal y luego retrocede con la direccion invertida**. Con direccion
+Ackermann el sentido de rotacion es el mismo en los dos tramos (es la
+maniobra de dar la vuelta en una calle estrecha), asi que gira casi sobre el
+sitio y termina **alineado con el tramo nuevo**, viendo el pasillo entero de
+frente. Eso es lo que evita que un pilar se quede fuera de cuadro y el carro
+se lo salte.
+
+Es mas lento y necesita giroscopio (mide el angulo acumulado paso a paso, no
+por diferencia contra el inicio, que se envuelve). Sin MPU cae solo al giro
+normal. Si le faltan grados repite avance+reversa hasta `max_ciclos`.
+
+El retroceso esta acotado por `reversa_max_ms`: el reglamento solo permite ir
+marcha atras dentro de la seccion y la vecina, y esta maniobra no debe cruzar
+el limite hacia atras. El escape de seguridad no interrumpe la maniobra (ella
+lleva su propia reversa); corta sola en `min_pasillo_mm`, que va por encima
+de `parar_bajo_mm`.
 
 ## Distancias reales (calibracion geometrica)
 
@@ -141,6 +198,9 @@ distancias fisicas y valen igual en pista ancha (1000 mm) o angosta (600 mm).
 | `navegacion.apertura_pct` | Cuanto se abre (contra-direccion) antes de cortar la esquina. |
 | `carrera.parada_ms` | Cuanto avanza tras la ultima esquina antes de pararse en meta. |
 | `muro.k_transicion` | Filas no-piso seguidas para creer el muro (sube si hay muros fantasma). |
+| `navegacion.bloqueo_esquina` | Anti-bucle en las curvas. Dejalo encendido. |
+| `giro2t.activo` | Giro de 90 en dos tiempos: mas lento, ve todos los obstaculos. |
+| `giro2t.frac_avance` | Cuanto del giro se hace hacia adelante antes de retroceder. |
 
 ## Estructura
 
@@ -154,8 +214,8 @@ piloto/
 │   ├── vision.py           mascaras HSV y deteccion de objetos (del reconizer)
 │   ├── color_config.py     perfiles de color (mismo formato que el reconizer)
 │   ├── params.py           esquema autodocumentado de parametros + perfiles
-│   ├── lineas.py           sentido / esquinas / vueltas (TCS + camara + giros)
-│   ├── navegacion.py       RECTO / PRE_GIRO / GIRO / ESCAPE
+│   ├── lineas.py           sentido / esquinas / vueltas + zona (dentro de la curva)
+│   ├── navegacion.py       RECTO / PRE_GIRO / GIRO / GIRO_2T / ESCAPE
 │   ├── carrera.py          director de la ronda (3 vueltas y parada en meta)
 │   ├── obstaculos.py       esquive basico rojo/verde
 │   ├── protocolo.py        trama binaria v2 (gemela de protocolo.h)
@@ -164,13 +224,19 @@ piloto/
 │   ├── dibujo.py           overlay del video
 │   ├── servidor.py         http.server + MJPEG
 │   └── web/index.html      la interfaz
-└── tools/selftest.py       47 pruebas sin hardware
+└── tools/selftest.py       73 pruebas sin hardware
 ```
 
 ## Notas practicas (heredadas a golpes)
 
 - **Congela exposicion y balance de blancos antes de calibrar colores**
   (`camara.exposicion` / `balance_blancos`; -1 = automatico).
+- **No dejes que el piso salga quemado.** Medido sobre capturas reales: con
+  el blanco a V=244 las lineas del piso bajan a saturacion 15-36 y NINGUN
+  umbral HSV las distingue del piso; con V=161 el naranja llega a 255 de
+  saturacion. Si las lineas no se detectan, el problema es la exposicion, no
+  el rango de color. (El TCS por contacto no depende de esto: por eso es la
+  fuente fiable para contar.)
 - El giroscopio se calibra solo al detectarse (con el carro quieto en la
   preparacion) y hay boton para repetirlo. Sin calibrar deriva 1-3 grados/s.
 - Los cruces de linea del TCS viajan como CONTADORES: perder tramas no pierde

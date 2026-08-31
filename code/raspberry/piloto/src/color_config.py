@@ -163,8 +163,13 @@ def colores_por_defecto() -> Dict[str, Dict[str, Any]]:
         # Naranja: una de las dos lineas del piso (cuenta de vueltas y esquinas).
         # Va pegada al suelo, por eso la ROI mira solo la mitad de abajo y el
         # filtro de aspecto esta apagado (es una franja ancha y fina).
+        # Nota de pista: si el piso blanco sale QUEMADO (V > 235) las lineas
+        # pierden casi toda su saturacion y no hay umbral que las salve; se
+        # arregla bajando la exposicion (camara.exposicion), no aqui. El
+        # minimo de S se deja en 60: muy por encima del piso (S ~ 6-15) y
+        # suficientemente bajo para luz de pabellon.
         "naranja": _color(
-            rangos=[[[8, 120, 90], [24, 255, 255]]],
+            rangos=[[[8, 60, 90], [24, 255, 255]]],
             desenfoque=3,
             abrir=3,
             cerrar=5,
@@ -179,7 +184,7 @@ def colores_por_defecto() -> Dict[str, Dict[str, Any]]:
         ),
         # Azul: la otra linea del piso.
         "azul": _color(
-            rangos=[[[95, 90, 60], [125, 255, 255]]],
+            rangos=[[[95, 60, 60], [125, 255, 255]]],
             desenfoque=3,
             abrir=3,
             cerrar=5,
