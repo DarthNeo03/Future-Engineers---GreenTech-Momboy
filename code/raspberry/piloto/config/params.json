@@ -1,13 +1,13 @@
 {
  "version": 1,
- "activo": "base",
+ "activo": "funcional",
  "perfiles": [
   {
-   "nombre": "base",
-   "fecha": "2026-08-30 14:55:28",
+   "nombre": "funcional",
+   "fecha": "2026-08-31 11:10:40",
    "valores": {
     "limites": {
-     "vmax": 130,
+     "vmax": 255,
      "vel_crucero": 55,
      "vel_giro": 38,
      "vel_reversa": 35,
@@ -33,7 +33,433 @@
      "morro_mm": 60.0
     },
     "muro": {
-     "metodo": "piso",
+     "metodo": "negro",
+     "alcance_mm": 2500.0,
+     "k_transicion": 6,
+     "margen_horizonte_px": 4,
+     "ignorar_abajo": 0.0,
+     "px_min_columna": 4,
+     "suavizado": 7,
+     "banda_lateral": 0.28,
+     "salto_borde_mm": 400.0,
+     "seg_tolerancia_mm": 45.0,
+     "seg_gap_max_mm": 350.0,
+     "seg_angulo_fusion_deg": 12.0
+    },
+    "navegacion": {
+     "estrategia": "centrado",
+     "kp": 56.8,
+     "kd": 136.8,
+     "pared_objetivo_mm": 320.0,
+     "kp_pared": 0.22,
+     "kd_pared": 0.05,
+     "girar_bajo_mm": 650.0,
+     "salir_giro_mm": 950.0,
+     "frenar_bajo_mm": 1000.0,
+     "parar_bajo_mm": 300.0,
+     "ttc_min_s": 0.7,
+     "dir_giro": 85.0,
+     "retardo_giro_ms": 220,
+     "apertura_pct": 25.0,
+     "apertura_min_libre_mm": 400.0,
+     "giro_grados": 90.0,
+     "giro_tolerancia_deg": 14.096,
+     "giro_max_ms": 3000,
+     "min_recto_ms": 700,
+     "cobertura_esquina": 0.22,
+     "giro_por_linea": true,
+     "usar_yaw": true,
+     "yaw_kp": 1.6,
+     "yaw_max": 45.0
+    },
+    "escape": {
+     "escape_min_ms": 771,
+     "escape_k_ms_por_mm": 3.0,
+     "escape_dir": 100.0,
+     "escape_max_intentos": 2
+    },
+    "lineas": {
+     "naranja_es_horario": true,
+     "usar_tcs": true,
+     "usar_camara": false,
+     "umbral_cruce_mm": 279.5,
+     "ventana_par_ms": 2500,
+     "refractario_esquina_ms": 3000
+    },
+    "tcs": {
+     "c_min": 842,
+     "naranja_r_min": 130,
+     "naranja_b_max": 85,
+     "azul_b_min": 98,
+     "azul_r_max": 133,
+     "muestras_min": 1,
+     "refractario_ds": 3,
+     "atime": 246,
+     "gain": 2
+    },
+    "carrera": {
+     "vueltas": 3,
+     "esquinas_por_vuelta": 4,
+     "sentido": "horario",
+     "parada_ms": 1400,
+     "autostop": true,
+     "tiempo_max_s": 180
+    },
+    "obstaculos": {
+     "activo": true,
+     "activar_desde_mm": 4000.0,
+     "mandar_desde_mm": 506.6,
+     "margen_mm": 261.0,
+     "semi_pilar_mm": 40.7,
+     "k_dir": 2.8324,
+     "peso_max": 1.0
+    },
+    "manual": {
+     "timeout_ms": 400,
+     "manual_seguro": false,
+     "vel_max_manual": 60
+    },
+    "enlace": {
+     "puerto": "",
+     "baudios": 115200,
+     "hz_envio": 50,
+     "timeout_tele_ms": 500,
+     "reintento_s": 2.0
+    },
+    "servo": {
+     "centro": 100,
+     "izquierda": 65,
+     "derecha": 135,
+     "grados_s": 320,
+     "rampa_pwm": 10
+    },
+    "red": {
+     "puerto_http": 8080,
+     "calidad_jpeg": 70,
+     "fps_stream": 15,
+     "ancho_stream": 640
+    },
+    "velocidad": {
+     "vel_max_mm_s": 850.0
+    }
+   }
+  },
+  {
+   "nombre": "Obtaculos3Color1Muro2",
+   "fecha": "2026-08-31 10:57:31",
+   "valores": {
+    "limites": {
+     "vmax": 255,
+     "vel_crucero": 55,
+     "vel_giro": 38,
+     "vel_reversa": 35,
+     "dir_max": 100
+    },
+    "camara": {
+     "indice": 0,
+     "ancho": 640,
+     "alto": 480,
+     "fps": 30,
+     "voltear": false,
+     "exposicion": -1.0,
+     "balance_blancos": -1.0,
+     "indice_trasera": -1
+    },
+    "geometria": {
+     "alto_cam_mm": 125.0,
+     "inclinacion_deg": 7.5,
+     "fy_px": 460.0,
+     "fx_px": 460.0,
+     "ancho_carro_mm": 200.0,
+     "margen_ruedas_mm": 30.0,
+     "morro_mm": 60.0
+    },
+    "muro": {
+     "metodo": "negro",
+     "alcance_mm": 2500.0,
+     "k_transicion": 6,
+     "margen_horizonte_px": 4,
+     "ignorar_abajo": 0.0,
+     "px_min_columna": 4,
+     "suavizado": 7,
+     "banda_lateral": 0.28,
+     "salto_borde_mm": 400.0,
+     "seg_tolerancia_mm": 45.0,
+     "seg_gap_max_mm": 350.0,
+     "seg_angulo_fusion_deg": 12.0
+    },
+    "navegacion": {
+     "estrategia": "centrado",
+     "kp": 56.8,
+     "kd": 136.8,
+     "pared_objetivo_mm": 320.0,
+     "kp_pared": 0.22,
+     "kd_pared": 0.05,
+     "girar_bajo_mm": 650.0,
+     "salir_giro_mm": 950.0,
+     "frenar_bajo_mm": 1000.0,
+     "parar_bajo_mm": 300.0,
+     "ttc_min_s": 0.7,
+     "dir_giro": 85.0,
+     "retardo_giro_ms": 220,
+     "apertura_pct": 25.0,
+     "apertura_min_libre_mm": 400.0,
+     "giro_grados": 90.0,
+     "giro_tolerancia_deg": 14.096,
+     "giro_max_ms": 3000,
+     "min_recto_ms": 700,
+     "cobertura_esquina": 0.22,
+     "giro_por_linea": true,
+     "usar_yaw": true,
+     "yaw_kp": 1.6,
+     "yaw_max": 45.0
+    },
+    "escape": {
+     "escape_min_ms": 771,
+     "escape_k_ms_por_mm": 3.0,
+     "escape_dir": 100.0,
+     "escape_max_intentos": 2
+    },
+    "lineas": {
+     "naranja_es_horario": true,
+     "usar_tcs": true,
+     "usar_camara": false,
+     "umbral_cruce_mm": 279.5,
+     "ventana_par_ms": 2500,
+     "refractario_esquina_ms": 3000
+    },
+    "tcs": {
+     "c_min": 842,
+     "naranja_r_min": 130,
+     "naranja_b_max": 85,
+     "azul_b_min": 98,
+     "azul_r_max": 133,
+     "muestras_min": 1,
+     "refractario_ds": 3,
+     "atime": 246,
+     "gain": 2
+    },
+    "carrera": {
+     "vueltas": 3,
+     "esquinas_por_vuelta": 4,
+     "sentido": "horario",
+     "parada_ms": 1400,
+     "autostop": true,
+     "tiempo_max_s": 180
+    },
+    "obstaculos": {
+     "activo": true,
+     "activar_desde_mm": 4000.0,
+     "mandar_desde_mm": 506.6,
+     "margen_mm": 261.0,
+     "semi_pilar_mm": 40.7,
+     "k_dir": 2.8324,
+     "peso_max": 1.0
+    },
+    "manual": {
+     "timeout_ms": 400,
+     "manual_seguro": false,
+     "vel_max_manual": 60
+    },
+    "enlace": {
+     "puerto": "",
+     "baudios": 115200,
+     "hz_envio": 50,
+     "timeout_tele_ms": 500,
+     "reintento_s": 2.0
+    },
+    "servo": {
+     "centro": 100,
+     "izquierda": 65,
+     "derecha": 135,
+     "grados_s": 320,
+     "rampa_pwm": 10
+    },
+    "red": {
+     "puerto_http": 8080,
+     "calidad_jpeg": 70,
+     "fps_stream": 15,
+     "ancho_stream": 640
+    },
+    "velocidad": {
+     "vel_max_mm_s": 850.0
+    }
+   }
+  },
+  {
+   "nombre": "Obtaculos2Color1Muro2",
+   "fecha": "2026-08-31 10:53:30",
+   "valores": {
+    "limites": {
+     "vmax": 255,
+     "vel_crucero": 55,
+     "vel_giro": 38,
+     "vel_reversa": 35,
+     "dir_max": 100
+    },
+    "camara": {
+     "indice": 0,
+     "ancho": 640,
+     "alto": 480,
+     "fps": 30,
+     "voltear": false,
+     "exposicion": -1.0,
+     "balance_blancos": -1.0,
+     "indice_trasera": -1
+    },
+    "geometria": {
+     "alto_cam_mm": 125.0,
+     "inclinacion_deg": 7.5,
+     "fy_px": 460.0,
+     "fx_px": 460.0,
+     "ancho_carro_mm": 200.0,
+     "margen_ruedas_mm": 30.0,
+     "morro_mm": 60.0
+    },
+    "muro": {
+     "metodo": "negro",
+     "alcance_mm": 2500.0,
+     "k_transicion": 6,
+     "margen_horizonte_px": 4,
+     "ignorar_abajo": 0.0,
+     "px_min_columna": 4,
+     "suavizado": 7,
+     "banda_lateral": 0.28,
+     "salto_borde_mm": 400.0,
+     "seg_tolerancia_mm": 45.0,
+     "seg_gap_max_mm": 350.0,
+     "seg_angulo_fusion_deg": 12.0
+    },
+    "navegacion": {
+     "estrategia": "centrado",
+     "kp": 56.8,
+     "kd": 136.8,
+     "pared_objetivo_mm": 320.0,
+     "kp_pared": 0.22,
+     "kd_pared": 0.05,
+     "girar_bajo_mm": 650.0,
+     "salir_giro_mm": 950.0,
+     "frenar_bajo_mm": 1000.0,
+     "parar_bajo_mm": 300.0,
+     "ttc_min_s": 0.7,
+     "dir_giro": 85.0,
+     "retardo_giro_ms": 220,
+     "apertura_pct": 25.0,
+     "apertura_min_libre_mm": 400.0,
+     "giro_grados": 90.0,
+     "giro_tolerancia_deg": 14.096,
+     "giro_max_ms": 3000,
+     "min_recto_ms": 700,
+     "cobertura_esquina": 0.22,
+     "giro_por_linea": true,
+     "usar_yaw": true,
+     "yaw_kp": 1.6,
+     "yaw_max": 45.0
+    },
+    "escape": {
+     "escape_min_ms": 771,
+     "escape_k_ms_por_mm": 3.0,
+     "escape_dir": 100.0,
+     "escape_max_intentos": 2
+    },
+    "lineas": {
+     "naranja_es_horario": true,
+     "usar_tcs": true,
+     "usar_camara": false,
+     "umbral_cruce_mm": 279.5,
+     "ventana_par_ms": 2500,
+     "refractario_esquina_ms": 3000
+    },
+    "tcs": {
+     "c_min": 842,
+     "naranja_r_min": 130,
+     "naranja_b_max": 85,
+     "azul_b_min": 98,
+     "azul_r_max": 133,
+     "muestras_min": 1,
+     "refractario_ds": 3,
+     "atime": 246,
+     "gain": 2
+    },
+    "carrera": {
+     "vueltas": 3,
+     "esquinas_por_vuelta": 4,
+     "sentido": "horario",
+     "parada_ms": 1400,
+     "autostop": true,
+     "tiempo_max_s": 180
+    },
+    "obstaculos": {
+     "activo": true,
+     "activar_desde_mm": 3711.4,
+     "mandar_desde_mm": 806.8,
+     "margen_mm": 179.4,
+     "semi_pilar_mm": 30.0,
+     "k_dir": 7.921,
+     "peso_max": 1.0
+    },
+    "manual": {
+     "timeout_ms": 400,
+     "manual_seguro": false,
+     "vel_max_manual": 60
+    },
+    "enlace": {
+     "puerto": "",
+     "baudios": 115200,
+     "hz_envio": 50,
+     "timeout_tele_ms": 500,
+     "reintento_s": 2.0
+    },
+    "servo": {
+     "centro": 100,
+     "izquierda": 65,
+     "derecha": 135,
+     "grados_s": 320,
+     "rampa_pwm": 10
+    },
+    "red": {
+     "puerto_http": 8080,
+     "calidad_jpeg": 70,
+     "fps_stream": 15,
+     "ancho_stream": 640
+    },
+    "velocidad": {
+     "vel_max_mm_s": 850.0
+    }
+   }
+  },
+  {
+   "nombre": "Obtaculos2Color1Muro1",
+   "fecha": "2026-08-31 10:50:00",
+   "valores": {
+    "limites": {
+     "vmax": 255,
+     "vel_crucero": 55,
+     "vel_giro": 38,
+     "vel_reversa": 35,
+     "dir_max": 100
+    },
+    "camara": {
+     "indice": 0,
+     "ancho": 640,
+     "alto": 480,
+     "fps": 30,
+     "voltear": false,
+     "exposicion": -1.0,
+     "balance_blancos": -1.0,
+     "indice_trasera": -1
+    },
+    "geometria": {
+     "alto_cam_mm": 125.0,
+     "inclinacion_deg": 7.5,
+     "fy_px": 460.0,
+     "fx_px": 460.0,
+     "ancho_carro_mm": 200.0,
+     "margen_ruedas_mm": 30.0,
+     "morro_mm": 60.0
+    },
+    "muro": {
+     "metodo": "negro",
      "alcance_mm": 2500.0,
      "k_transicion": 6,
      "margen_horizonte_px": 4,
@@ -48,8 +474,8 @@
     },
     "navegacion": {
      "estrategia": "centrado",
-     "kp": 95.0,
-     "kd": 22.0,
+     "kp": 272.8,
+     "kd": 84.4,
      "pared_objetivo_mm": 320.0,
      "kp_pared": 0.22,
      "kd_pared": 0.05,
@@ -63,7 +489,149 @@
      "apertura_pct": 25.0,
      "apertura_min_libre_mm": 400.0,
      "giro_grados": 90.0,
-     "giro_tolerancia_deg": 8.0,
+     "giro_tolerancia_deg": 14.096,
+     "giro_max_ms": 3000,
+     "min_recto_ms": 700,
+     "cobertura_esquina": 0.22,
+     "giro_por_linea": true,
+     "usar_yaw": true,
+     "yaw_kp": 1.6,
+     "yaw_max": 45.0
+    },
+    "escape": {
+     "escape_min_ms": 2389,
+     "escape_k_ms_por_mm": 3.0,
+     "escape_dir": 88.4,
+     "escape_max_intentos": 2
+    },
+    "lineas": {
+     "naranja_es_horario": true,
+     "usar_tcs": true,
+     "usar_camara": false,
+     "umbral_cruce_mm": 279.5,
+     "ventana_par_ms": 2500,
+     "refractario_esquina_ms": 3000
+    },
+    "tcs": {
+     "c_min": 842,
+     "naranja_r_min": 130,
+     "naranja_b_max": 85,
+     "azul_b_min": 98,
+     "azul_r_max": 133,
+     "muestras_min": 1,
+     "refractario_ds": 3,
+     "atime": 246,
+     "gain": 2
+    },
+    "carrera": {
+     "vueltas": 3,
+     "esquinas_por_vuelta": 4,
+     "sentido": "auto",
+     "parada_ms": 1400,
+     "autostop": true,
+     "tiempo_max_s": 180
+    },
+    "obstaculos": {
+     "activo": true,
+     "activar_desde_mm": 3711.4,
+     "mandar_desde_mm": 806.8,
+     "margen_mm": 179.4,
+     "semi_pilar_mm": 30.0,
+     "k_dir": 7.921,
+     "peso_max": 1.0
+    },
+    "manual": {
+     "timeout_ms": 400,
+     "manual_seguro": false,
+     "vel_max_manual": 60
+    },
+    "enlace": {
+     "puerto": "",
+     "baudios": 115200,
+     "hz_envio": 50,
+     "timeout_tele_ms": 500,
+     "reintento_s": 2.0
+    },
+    "servo": {
+     "centro": 100,
+     "izquierda": 65,
+     "derecha": 135,
+     "grados_s": 320,
+     "rampa_pwm": 10
+    },
+    "red": {
+     "puerto_http": 8080,
+     "calidad_jpeg": 70,
+     "fps_stream": 15,
+     "ancho_stream": 640
+    },
+    "velocidad": {
+     "vel_max_mm_s": 850.0
+    }
+   }
+  },
+  {
+   "nombre": "Obtaculos2Color1",
+   "fecha": "2026-08-31 10:43:14",
+   "valores": {
+    "limites": {
+     "vmax": 255,
+     "vel_crucero": 55,
+     "vel_giro": 38,
+     "vel_reversa": 35,
+     "dir_max": 100
+    },
+    "camara": {
+     "indice": 0,
+     "ancho": 640,
+     "alto": 480,
+     "fps": 30,
+     "voltear": false,
+     "exposicion": -1.0,
+     "balance_blancos": -1.0,
+     "indice_trasera": -1
+    },
+    "geometria": {
+     "alto_cam_mm": 125.0,
+     "inclinacion_deg": 7.5,
+     "fy_px": 460.0,
+     "fx_px": 460.0,
+     "ancho_carro_mm": 200.0,
+     "margen_ruedas_mm": 30.0,
+     "morro_mm": 60.0
+    },
+    "muro": {
+     "metodo": "negro",
+     "alcance_mm": 2500.0,
+     "k_transicion": 6,
+     "margen_horizonte_px": 4,
+     "ignorar_abajo": 0.05,
+     "px_min_columna": 4,
+     "suavizado": 7,
+     "banda_lateral": 0.28,
+     "salto_borde_mm": 400.0,
+     "seg_tolerancia_mm": 45.0,
+     "seg_gap_max_mm": 350.0,
+     "seg_angulo_fusion_deg": 12.0
+    },
+    "navegacion": {
+     "estrategia": "centrado",
+     "kp": 272.8,
+     "kd": 84.4,
+     "pared_objetivo_mm": 320.0,
+     "kp_pared": 0.22,
+     "kd_pared": 0.05,
+     "girar_bajo_mm": 650.0,
+     "salir_giro_mm": 950.0,
+     "frenar_bajo_mm": 1000.0,
+     "parar_bajo_mm": 300.0,
+     "ttc_min_s": 0.7,
+     "dir_giro": 85.0,
+     "retardo_giro_ms": 220,
+     "apertura_pct": 25.0,
+     "apertura_min_libre_mm": 400.0,
+     "giro_grados": 90.0,
+     "giro_tolerancia_deg": 14.096,
      "giro_max_ms": 3000,
      "min_recto_ms": 700,
      "cobertura_esquina": 0.22,
@@ -81,17 +649,17 @@
     "lineas": {
      "naranja_es_horario": true,
      "usar_tcs": true,
-     "usar_camara": true,
-     "umbral_cruce_mm": 260.0,
+     "usar_camara": false,
+     "umbral_cruce_mm": 279.5,
      "ventana_par_ms": 2500,
      "refractario_esquina_ms": 3000
     },
     "tcs": {
-     "c_min": 80,
-     "naranja_r_min": 120,
-     "naranja_b_max": 60,
-     "azul_b_min": 110,
-     "azul_r_max": 70,
+     "c_min": 842,
+     "naranja_r_min": 130,
+     "naranja_b_max": 85,
+     "azul_b_min": 98,
+     "azul_r_max": 133,
      "muestras_min": 1,
      "refractario_ds": 3,
      "atime": 246,
@@ -106,13 +674,13 @@
      "tiempo_max_s": 180
     },
     "obstaculos": {
-     "activo": false,
-     "activar_desde_mm": 1600.0,
-     "mandar_desde_mm": 700.0,
-     "margen_mm": 70.0,
-     "semi_pilar_mm": 25.0,
-     "k_dir": 1.4,
-     "peso_max": 0.8
+     "activo": true,
+     "activar_desde_mm": 3711.4,
+     "mandar_desde_mm": 806.8,
+     "margen_mm": 179.4,
+     "semi_pilar_mm": 30.0,
+     "k_dir": 7.921,
+     "peso_max": 1.0
     },
     "manual": {
      "timeout_ms": 400,

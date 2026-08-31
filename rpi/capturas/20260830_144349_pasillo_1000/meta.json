@@ -1,0 +1,456 @@
+{
+  "nombre": "pasillo_1000",
+  "fecha": "2026-08-30 14:43:52",
+  "config": {
+    "cam_index": 0,
+    "cam_width": 640,
+    "cam_height": 480,
+    "cam_fps": 60,
+    "cam_mjpg": true,
+    "cam_auto_exposure": false,
+    "cam_exposure": 570,
+    "cam_gain": 42,
+    "cam_flip": false,
+    "cam_height_mm": 150.5,
+    "cam_pitch_deg": 20.6,
+    "cam_roll_deg": 1.7,
+    "cam_hfov_deg": 80.0,
+    "cam_cx_off": 0.0,
+    "cam_cy_off": 0.0,
+    "lens_k1": 0.32,
+    "lens_k2": 0.0,
+    "cam_offset_x_mm": 172.0,
+    "cam_offset_y_mm": 0.0,
+    "wheelbase_mm": 150.0,
+    "wall_v_max": 145,
+    "wall_s_max": 163,
+    "wall_auto_thresh": false,
+    "wall_min_run_px": 6,
+    "roi_bottom_crop_px": 6,
+    "roi_x_min_mm": 120.0,
+    "roi_x_max_mm": 2200.0,
+    "col_step": 3,
+    "boundary_median": 5,
+    "morph_open": 3,
+    "seg_split_tol_mm": 45.0,
+    "seg_gap_mm": 220.0,
+    "seg_min_points": 5,
+    "seg_range_ref_mm": 700.0,
+    "side_angle_band_deg": 8.0,
+    "side_min_y_mm": 90.0,
+    "side_min_len_mm": 90.0,
+    "side_max_angle_deg": 42.0,
+    "front_band_mm": 150.0,
+    "wall_max_y_mm": 1300.0,
+    "wall_eval_x_mm": 260.0,
+    "fit_x_lo_mm": 150.0,
+    "fit_x_hi_mm": 1100.0,
+    "ransac_tol_mm": 35.0,
+    "wall_end_max_mm": 1250.0,
+    "smooth_alpha": 0.45,
+    "wall_mode": "center",
+    "target_inner_mm": 340.0,
+    "outer_min_mm": 220.0,
+    "k_heading": 2.4,
+    "k_lateral": 0.16,
+    "lat_err_max_mm": 260.0,
+    "seek_inner_deg": 9.0,
+    "lat_head_max_deg": 26.0,
+    "steer_limit": 100.0,
+    "steer_slew": 420.0,
+    "base_speed": 45.0,
+    "turn_speed": 32.0,
+    "min_speed": 22.0,
+    "slow_front_mm": 750.0,
+    "speed_steer_gain": 0.45,
+    "yaw_vision_gain": 0.35,
+    "turn_trigger_front_mm": 720.0,
+    "corner_arm_mm": 650.0,
+    "turn_hard_front_mm": 300.0,
+    "turn_angle_deg": 90.0,
+    "turn_exit_tol_deg": 10.0,
+    "turn_min_time_s": 0.45,
+    "turn_max_time_s": 4.5,
+    "corner_cooldown_s": 1.6,
+    "laps_target": 3,
+    "finish_end_mm": 600.0,
+    "finish_max_time_s": 4.5,
+    "direction_source": "auto",
+    "use_color_lines": true,
+    "stuck_time_s": 1.3,
+    "stuck_front_delta_mm": 25.0,
+    "reverse_time_s": 0.9,
+    "reverse_speed": 38.0,
+    "emergency_front_mm": 170.0,
+    "round_time_limit_s": 175.0,
+    "obstacles_enabled": false,
+    "red_h1_lo": 0,
+    "red_h1_hi": 8,
+    "red_h2_lo": 170,
+    "red_h2_hi": 180,
+    "red_s_min": 110,
+    "red_v_min": 60,
+    "green_h_lo": 40,
+    "green_h_hi": 85,
+    "green_s_min": 90,
+    "green_v_min": 55,
+    "magenta_h_lo": 140,
+    "magenta_h_hi": 168,
+    "magenta_s_min": 90,
+    "pillar_min_area": 90,
+    "pillar_min_fill": 0.45,
+    "pillar_max_range_mm": 1500.0,
+    "pillar_pass_offset_mm": 260.0,
+    "pillar_react_mm": 950.0,
+    "servo_center_us": 1437,
+    "servo_left_us": 2000,
+    "servo_right_us": 1000,
+    "servo_slew_us": 4000,
+    "steer_invert": false,
+    "motor_invert": false,
+    "motor_min_pwm": 40,
+    "motor_max_pwm": 255,
+    "motor_slew": 900,
+    "yaw_invert": false,
+    "brake_active": true,
+    "th_orange_r": 0.44,
+    "th_orange_b": 0.22,
+    "th_blue_b": 0.42,
+    "th_blue_r": 0.26,
+    "th_clear_min": 60,
+    "confirm_n": 2,
+    "refractory_ms": 220,
+    "serial_port": "auto",
+    "serial_baud": 115200,
+    "control_hz": 40,
+    "web_port": 8000,
+    "start_button_pin": -1,
+    "record_run": false,
+    "record_fps": 10,
+    "record_quality": 85,
+    "log_enabled": true
+  },
+  "camara": {
+    "negociado": {
+      "fourcc": "MJPG",
+      "width": 640,
+      "height": 480,
+      "fps": 30.0
+    },
+    "fps": 17.54,
+    "tiron_ms": 61.2,
+    "exposicion_ms": 57.0,
+    "tope_fps": 17.5,
+    "controles": "v4l2-ctl"
+  },
+  "esp32": {
+    "conectado": true,
+    "yaw": 78.95,
+    "naranja": 0,
+    "azul": 52
+  },
+  "modo": "manual",
+  "armado": true,
+  "fotogramas": [
+    {
+      "file": "f000.png",
+      "stamp": 1788115429.1246,
+      "seq": 8451
+    },
+    {
+      "file": "f001.png",
+      "stamp": 1788115429.1797,
+      "seq": 8452
+    },
+    {
+      "file": "f002.png",
+      "stamp": 1788115429.2397,
+      "seq": 8453
+    },
+    {
+      "file": "f003.png",
+      "stamp": 1788115429.2958,
+      "seq": 8454
+    },
+    {
+      "file": "f004.png",
+      "stamp": 1788115429.3519,
+      "seq": 8455
+    },
+    {
+      "file": "f005.png",
+      "stamp": 1788115429.408,
+      "seq": 8456
+    },
+    {
+      "file": "f006.png",
+      "stamp": 1788115429.4678,
+      "seq": 8457
+    },
+    {
+      "file": "f007.png",
+      "stamp": 1788115429.524,
+      "seq": 8458
+    },
+    {
+      "file": "f008.png",
+      "stamp": 1788115429.5798,
+      "seq": 8459
+    },
+    {
+      "file": "f009.png",
+      "stamp": 1788115429.6398,
+      "seq": 8460
+    },
+    {
+      "file": "f010.png",
+      "stamp": 1788115429.6957,
+      "seq": 8461
+    },
+    {
+      "file": "f011.png",
+      "stamp": 1788115429.7525,
+      "seq": 8462
+    },
+    {
+      "file": "f012.png",
+      "stamp": 1788115429.8083,
+      "seq": 8463
+    },
+    {
+      "file": "f013.png",
+      "stamp": 1788115429.8679,
+      "seq": 8464
+    },
+    {
+      "file": "f014.png",
+      "stamp": 1788115429.9238,
+      "seq": 8465
+    },
+    {
+      "file": "f015.png",
+      "stamp": 1788115429.9798,
+      "seq": 8466
+    },
+    {
+      "file": "f016.png",
+      "stamp": 1788115430.0356,
+      "seq": 8467
+    },
+    {
+      "file": "f017.png",
+      "stamp": 1788115430.0958,
+      "seq": 8468
+    },
+    {
+      "file": "f018.png",
+      "stamp": 1788115430.1519,
+      "seq": 8469
+    },
+    {
+      "file": "f019.png",
+      "stamp": 1788115430.2078,
+      "seq": 8470
+    },
+    {
+      "file": "f020.png",
+      "stamp": 1788115430.2638,
+      "seq": 8471
+    },
+    {
+      "file": "f021.png",
+      "stamp": 1788115430.3239,
+      "seq": 8472
+    },
+    {
+      "file": "f022.png",
+      "stamp": 1788115430.3804,
+      "seq": 8473
+    },
+    {
+      "file": "f023.png",
+      "stamp": 1788115430.4358,
+      "seq": 8474
+    },
+    {
+      "file": "f024.png",
+      "stamp": 1788115430.4959,
+      "seq": 8475
+    },
+    {
+      "file": "f025.png",
+      "stamp": 1788115430.5519,
+      "seq": 8476
+    },
+    {
+      "file": "f026.png",
+      "stamp": 1788115430.6077,
+      "seq": 8477
+    },
+    {
+      "file": "f027.png",
+      "stamp": 1788115430.6647,
+      "seq": 8478
+    },
+    {
+      "file": "f028.png",
+      "stamp": 1788115430.7237,
+      "seq": 8479
+    },
+    {
+      "file": "f029.png",
+      "stamp": 1788115430.7797,
+      "seq": 8480
+    },
+    {
+      "file": "f030.png",
+      "stamp": 1788115430.8359,
+      "seq": 8481
+    },
+    {
+      "file": "f031.png",
+      "stamp": 1788115430.8918,
+      "seq": 8482
+    },
+    {
+      "file": "f032.png",
+      "stamp": 1788115430.9525,
+      "seq": 8483
+    },
+    {
+      "file": "f033.png",
+      "stamp": 1788115431.0078,
+      "seq": 8484
+    },
+    {
+      "file": "f034.png",
+      "stamp": 1788115431.0637,
+      "seq": 8485
+    },
+    {
+      "file": "f035.png",
+      "stamp": 1788115431.1198,
+      "seq": 8486
+    },
+    {
+      "file": "f036.png",
+      "stamp": 1788115431.1798,
+      "seq": 8487
+    },
+    {
+      "file": "f037.png",
+      "stamp": 1788115431.2357,
+      "seq": 8488
+    },
+    {
+      "file": "f038.png",
+      "stamp": 1788115431.2918,
+      "seq": 8489
+    },
+    {
+      "file": "f039.png",
+      "stamp": 1788115431.3518,
+      "seq": 8490
+    },
+    {
+      "file": "f040.png",
+      "stamp": 1788115431.4078,
+      "seq": 8491
+    },
+    {
+      "file": "f041.png",
+      "stamp": 1788115431.4637,
+      "seq": 8492
+    },
+    {
+      "file": "f042.png",
+      "stamp": 1788115431.5197,
+      "seq": 8493
+    },
+    {
+      "file": "f043.png",
+      "stamp": 1788115431.5797,
+      "seq": 8494
+    },
+    {
+      "file": "f044.png",
+      "stamp": 1788115431.6361,
+      "seq": 8495
+    },
+    {
+      "file": "f045.png",
+      "stamp": 1788115431.6917,
+      "seq": 8496
+    },
+    {
+      "file": "f046.png",
+      "stamp": 1788115431.7478,
+      "seq": 8497
+    },
+    {
+      "file": "f047.png",
+      "stamp": 1788115431.809,
+      "seq": 8498
+    },
+    {
+      "file": "f048.png",
+      "stamp": 1788115431.8639,
+      "seq": 8499
+    },
+    {
+      "file": "f049.png",
+      "stamp": 1788115431.9198,
+      "seq": 8500
+    },
+    {
+      "file": "f050.png",
+      "stamp": 1788115431.9758,
+      "seq": 8501
+    },
+    {
+      "file": "f051.png",
+      "stamp": 1788115432.0358,
+      "seq": 8502
+    },
+    {
+      "file": "f052.png",
+      "stamp": 1788115432.0918,
+      "seq": 8503
+    },
+    {
+      "file": "f053.png",
+      "stamp": 1788115432.1478,
+      "seq": 8504
+    },
+    {
+      "file": "f054.png",
+      "stamp": 1788115432.2079,
+      "seq": 8505
+    },
+    {
+      "file": "f055.png",
+      "stamp": 1788115432.2641,
+      "seq": 8506
+    },
+    {
+      "file": "f056.png",
+      "stamp": 1788115432.3206,
+      "seq": 8507
+    },
+    {
+      "file": "f057.png",
+      "stamp": 1788115432.3759,
+      "seq": 8508
+    },
+    {
+      "file": "f058.png",
+      "stamp": 1788115432.4362,
+      "seq": 8509
+    },
+    {
+      "file": "f059.png",
+      "stamp": 1788115432.4926,
+      "seq": 8510
+    }
+  ]
+}

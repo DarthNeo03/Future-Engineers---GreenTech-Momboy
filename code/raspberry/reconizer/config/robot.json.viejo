@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "enlace": {
+    "puerto": "",
+    "baudios": 115200,
+    "hz_envio": 50,
+    "timeout_tele_ms": 500,
+    "reintento_s": 2.0
+  },
+  "camara": {
+    "indice": 0,
+    "ancho": 640,
+    "alto": 480,
+    "fps": 30,
+    "fourcc": "MJPG",
+    "voltear": false
+  },
+  "limites": {
+    "vmax": 148,
+    "vel_crucero": 82,
+    "vel_giro": 51,
+    "dir_max": 100
+  },
+  "navegacion": {
+    "estrategia": "centrado",
+    "color_muro": "negro",
+    "px_min_columna": 6,
+    "suavizado": 15,
+    "ignorar_abajo": 0.06,
+    "banda_lateral": 0.28,
+    "ruedas_izq": 0.32,
+    "ruedas_der": 0.68,
+    "kp": 121.0,
+    "kd": 178.0,
+    "lado_pared": "izq",
+    "pared_objetivo": 0.45,
+    "kp_pared": 130.0,
+    "kd_pared": 28.0,
+    "girar_bajo": 0.4,
+    "salir_giro_sobre": 0.55,
+    "frenar_bajo": 0.5,
+    "parar_bajo": 0.24,
+    "giro_max_ms": 3000,
+    "min_recto_ms": 600,
+    "dir_giro": 90.0,
+    "usar_yaw": true,
+    "yaw_kp": 1.6,
+    "yaw_max": 45.0,
+    "giro_grados": 90.0,
+    "giro_tolerancia": 8.0
+  },
+  "imu": {
+    "activo": true,
+    "bus": 1,
+    "direcciones": [
+      104,
+      105
+    ],
+    "hz": 100,
+    "alfa_complementario": 0.98,
+    "muestras_calibracion": 400
+  },
+  "red": {
+    "puerto_http": 8080,
+    "calidad_jpeg": 70,
+    "fps_stream": 15,
+    "ancho_stream": 640,
+    "hostname": "carrito"
+  }
+}
