@@ -21,7 +21,7 @@ MPU6050 y el TCS34725 por I2C y manda yaw + cruces de linea a la Pi).
 ```bash
 python3 -m venv .venv && source .venv/bin/activate    # en Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python tools/selftest.py            # 73 pruebas, sin hardware
+python tools/selftest.py            # 84 pruebas, sin hardware
 python main.py                      # camara + ESP32 + web
 python main.py --simulado           # sin ESP32 (pruebas en el PC)
 python main.py --imagen foto.jpg    # sin camara, sobre una foto
@@ -180,7 +180,11 @@ distancias fisicas y valen igual en pista ancha (1000 mm) o angosta (600 mm).
   vista de mascara y de piso, 5 perfiles rotativos.
 - **Ajustes**: TODOS los parametros, generados del esquema con su descripcion
   (añadir un parametro en `src/params.py` lo hace aparecer solo). 5 perfiles
-  rotativos ("casa", "pabellon"...).
+  rotativos ("casa", "pabellon"...). Cada numero lleva **slider + casilla para
+  escribir el valor exacto**, y los que admiten "automatico" (exposicion,
+  balance de blancos, camara trasera) llevan un **boton AUTO**: ese valor es
+  un centinela (-1) que con un slider de -14 a 1000 seria imposible de clavar.
+  Al apagar AUTO cae en un valor manual razonable, listo para afinar.
 - **Calibrar**: focales por clic, giroscopio (calibrar con el carro QUIETO),
   y TCS: poner el sensor sobre blanco/naranja/azul y pulsar el boton; los
   umbrales se calculan y viajan al ESP32.
@@ -224,7 +228,7 @@ piloto/
 │   ├── dibujo.py           overlay del video
 │   ├── servidor.py         http.server + MJPEG
 │   └── web/index.html      la interfaz
-└── tools/selftest.py       73 pruebas sin hardware
+└── tools/selftest.py       84 pruebas sin hardware
 ```
 
 ## Notas practicas (heredadas a golpes)
