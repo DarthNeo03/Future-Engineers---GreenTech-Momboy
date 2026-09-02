@@ -281,7 +281,9 @@ def empaquetar_cfg_tcs(c_min: int,
                        naranja_r_min: int, naranja_b_max: int,
                        azul_b_min: int, azul_r_max: int,
                        muestras_min: int, refractario_ds: int,
-                       atime: int, gain: int) -> bytes:
+                       atime: int, gain: int,
+                       naranja_dif_min: int = 30,
+                       azul_dif_min: int = 18) -> bytes:
     """Umbrales del clasificador de lineas del ESP32.
 
     El clasificador trabaja con RATIOS normalizados r*255/c y b*255/c, que casi
@@ -296,11 +298,12 @@ def empaquetar_cfg_tcs(c_min: int,
     atime/gain: registros crudos del TCS34725 (0xF6 = 24 ms; gain 2 = x16).
     """
     return empaquetar(TIPO_CFG_TCS, struct.pack(
-        "<HBBBBBBBB", _lim(c_min, 0, 65535),
+        "<HBBBBBBBBBB", _lim(c_min, 0, 65535),
         _lim(naranja_r_min, 0, 255), _lim(naranja_b_max, 0, 255),
         _lim(azul_b_min, 0, 255), _lim(azul_r_max, 0, 255),
         _lim(muestras_min, 1, 10), _lim(refractario_ds, 1, 255),
-        _lim(atime, 0, 255), _lim(gain, 0, 3)))
+        _lim(atime, 0, 255), _lim(gain, 0, 3),
+        _lim(naranja_dif_min, 0, 255), _lim(azul_dif_min, 0, 255)))
 
 
 def empaquetar_cal(cmd: int) -> bytes:

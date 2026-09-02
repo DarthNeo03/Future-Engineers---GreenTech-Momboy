@@ -128,7 +128,9 @@ class Enlace:
                 int(tcs.get("naranja_r_min", 120)), int(tcs.get("naranja_b_max", 60)),
                 int(tcs.get("azul_b_min", 110)), int(tcs.get("azul_r_max", 70)),
                 int(tcs.get("muestras_min", 1)), int(tcs.get("refractario_ds", 3)),
-                int(tcs.get("atime", 246)), int(tcs.get("gain", 2))))
+                int(tcs.get("atime", 246)), int(tcs.get("gain", 2)),
+                int(tcs.get("naranja_dif_min", 30)),
+                int(tcs.get("azul_dif_min", 18))))
 
     def enviar_cal(self, cmd: int) -> None:
         with self._lock:

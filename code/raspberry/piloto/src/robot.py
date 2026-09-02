@@ -29,6 +29,7 @@ from . import protocolo as P
 from .carrera import Carrera, LISTO
 from .enlace import Enlace
 from .geometria import Geometria
+from . import lineas as lineas_mod
 from .lineas import GestorLineas
 from . import navegacion as nav
 from .navegacion import Decision, Navegador
@@ -290,22 +291,14 @@ class Robot:
         if not rs:
             raise ValueError("lecturas del TCS sin canal claro")
         rm, bm, cm = (sum(rs) / len(rs)), (sum(bs) / len(bs)), (sum(cs) / len(cs))
-        t = self.p["tcs"]
-        if que == "naranja":
-            t["naranja_r_min"] = int(rm * 0.85)
-            t["naranja_b_max"] = int(bm * 1.6 + 10)
-        elif que == "azul":
-            t["azul_b_min"] = int(bm * 0.85)
-            t["azul_r_max"] = int(rm * 1.6 + 10)
-        elif que == "blanco":
-            # el blanco define la zona muerta: los umbrales de color deben
-            # quedar bien lejos de estos ratios
-            t["c_min"] = int(cm * 0.25)
-        else:
-            raise ValueError("que debe ser blanco/naranja/azul")
+        nuevos = lineas_mod.umbrales_desde_muestra(que, rm, bm, cm)
+        for k, v in nuevos.items():
+            self.p["tcs"][k] = params_mod.validar("tcs", k, v)
         self._cfg_esp_firma = ""
-        self.log(f"[tcs] muestreado {que}: ratio_r={rm:.0f} ratio_b={bm:.0f} c={cm:.0f}")
-        return {"ratio_r": round(rm), "ratio_b": round(bm), "c": round(cm)}
+        self.log(f"[tcs] muestreado {que}: ratio_r={rm:.0f} ratio_b={bm:.0f} "
+                 f"dif={bm - rm:+.0f} c={cm:.0f} -> {nuevos}")
+        return {"ratio_r": round(rm), "ratio_b": round(bm),
+                "dif": round(bm - rm), "c": round(cm), "umbrales": nuevos}
 
     def calibrar_fy(self, y_rel: float, distancia_mm: float) -> float:
         fy = self.geo.calibrar_fy(y_rel * self.geo.H, distancia_mm)
@@ -424,7 +417,8 @@ class Robot:
                                                     nav.GIRO_2T))
             debe_parar = self.carrera.paso()
 
-            bias = self.esquivador.paso(dets, perfil, self.geo)
+            bias = self.esquivador.paso(dets, perfil, self.geo,
+                                        self.lineas.dist_lineas, en_esquina)
 
             # --- decidir ---------------------------------------------------
             if self.modo == "auto" and self.armado and perfil is not None:
@@ -530,6 +524,18 @@ class Robot:
                 return dibujo.vista_piso(self.masks, self.perfil)
             return None if self.frame_anotado is None else self.frame_anotado.copy()
 
+    def _estado_enlace(self) -> Dict[str, Any]:
+        """El estado del enlace mas lo que la Pi opinaria del color con los
+        umbrales de ahora. Si la Pi dice 'azul' y el ESP32 dice '-', el
+        firmware del ESP32 es viejo y hay que volver a subirlo."""
+        est = self.enlace.estado()
+        sn = self.enlace.sensores
+        est["sensores"]["clase_pi"] = lineas_mod.clase_tcs(
+            sn.c, sn.r, sn.g, sn.b, self.p["tcs"])
+        est["sensores"]["dif"] = (round((sn.b - sn.r) * 255.0 / sn.c)
+                                  if sn.c else 0)
+        return est
+
     def estado(self) -> Dict[str, Any]:
         d = self.decision
         p = self.perfil
@@ -556,7 +562,7 @@ class Robot:
                     for e in p.esquinas[:4]],
             },
             "obstaculo": self.esquivador.info,
-            "enlace": self.enlace.estado(),
+            "enlace": self._estado_enlace(),
             "geometria": self.geo.estado(),
             "camara_error": self.error_camara,
             "perfil_color": self.perfil_color.get("nombre", ""),

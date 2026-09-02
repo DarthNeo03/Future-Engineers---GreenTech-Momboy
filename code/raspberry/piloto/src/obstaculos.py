@@ -15,6 +15,18 @@ Como funciona:
   5. Se devuelve (direccion_deseada_pct, peso). El peso sube de 0 a peso_max
      entre activar_desde_mm y mandar_desde_mm; la navegacion mezcla.
 
+LO QUE HAY MAS ALLA DE LA LINEA DEL PISO NO ES DE ESTA RECTA
+Las lineas naranja y azul marcan el limite de la seccion. Un pilar que se ve
+por detras de ellas esta en el tramo SIGUIENTE: todavia no es asunto nuestro.
+Si se le hace caso desde la recta, el esquive tira del carro justo cuando hay
+que prepararse para la curva; el carro se pega a la esquina interna, no le
+queda sitio para abrirse y engancha el canto al girar.
+
+Por eso se descartan los pilares mas lejanos que la linea mientras se viene
+por la recta. En cuanto se cruza (el carro entra en la zona de esquina), el
+filtro se levanta y esos pilares pasan a contar, que es cuando de verdad hay
+que esquivarlos.
+
 Version basica a proposito: suficiente para probar el reto con obstaculos.
 Cuando el Open Challenge este solido se mejora (siguiente pilar, arcos).
 """
@@ -35,8 +47,16 @@ class Esquivador:
         self.info: Dict[str, Any] = {}     # para telemetria y dibujo
 
     def paso(self, dets: Dict[str, List[vision.Deteccion]],
-             perfil: Optional[PerfilMuro], geo: Geometria) -> Tuple[float, float]:
-        """Devuelve (direccion_deseada_pct, peso 0..1)."""
+             perfil: Optional[PerfilMuro], geo: Geometria,
+             dist_lineas: Optional[Dict[str, float]] = None,
+             en_esquina: bool = False) -> Tuple[float, float]:
+        """Devuelve (direccion_deseada_pct, peso 0..1).
+
+        dist_lineas: distancia a las lineas del piso que se ven delante
+                     (de GestorLineas). Marca el final de esta seccion.
+        en_esquina:  si el carro ya entro en la curva, el limite se levanta:
+                     los pilares del tramo nuevo pasan a ser asunto suyo.
+        """
         self.info = {}
         if not bool(self.cfg.get("activo", False)):
             return 0.0, 0.0
@@ -45,18 +65,32 @@ class Esquivador:
         mandar = float(self.cfg.get("mandar_desde_mm", 700.0))
         morro = float(geo.cfg.get("morro_mm", 60.0))
 
+        # --- hasta donde llega ESTA seccion --------------------------------
+        limite = None
+        if (bool(self.cfg.get("limitar_por_lineas", True)) and not en_esquina
+                and dist_lineas):
+            cerca = min(dist_lineas.values())
+            limite = cerca + float(self.cfg.get("margen_linea_mm", 60.0))
+            self.info["limite_mm"] = round(limite)
+
         # --- pilar mas cercano dentro del alcance --------------------------
+        descartados = 0
         mejor: Optional[Tuple[float, float, str]] = None   # (dist, lat, color)
         for color in ("rojo", "verde"):
             for d in dets.get(color, []):
                 dist = float(geo.fila_a_distancia(d.base_y)) - morro
                 if dist <= 0 or dist > activar:
                     continue
+                if limite is not None and dist > limite:
+                    descartados += 1     # esta detras de la linea: otra seccion
+                    continue
                 lat = float(geo.lateral_mm(d.cx, d.base_y))
                 if abs(lat) > 900:                 # muy afuera: otro carril
                     continue
                 if mejor is None or dist < mejor[0]:
                     mejor = (dist, lat, color)
+        if descartados:
+            self.info["tras_linea"] = descartados
         if mejor is None:
             return 0.0, 0.0
         dist, lat, color = mejor
@@ -81,8 +115,9 @@ class Esquivador:
         t = (activar - dist) / max(1.0, activar - mandar)
         peso = float(self.cfg.get("peso_max", 0.8)) * min(1.0, max(0.0, t))
 
-        self.info = {"color": color, "dist_mm": round(dist), "lat_mm": round(lat),
-                     "objetivo_mm": round(objetivo), "peso": round(peso, 2)}
+        self.info.update({"color": color, "dist_mm": round(dist),
+                          "lat_mm": round(lat), "objetivo_mm": round(objetivo),
+                          "peso": round(peso, 2)})
         return direccion, peso
 
     def _recortar(self, objetivo: float, dist: float, p: PerfilMuro,

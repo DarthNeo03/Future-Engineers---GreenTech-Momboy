@@ -180,6 +180,7 @@ struct CfgTcs {
   uint8_t  azul_b_min, azul_r_max;
   uint8_t  muestras_min, refractario_ds;
   uint8_t  atime, gain;
+  uint8_t  naranja_dif_min, azul_dif_min;   // discriminadores (ver lineas.h)
 };
 
 inline bool decodificarCfgTcs(const uint8_t *p, uint8_t n, CfgTcs &c) {
@@ -193,6 +194,15 @@ inline bool decodificarCfgTcs(const uint8_t *p, uint8_t n, CfgTcs &c) {
   c.refractario_ds = p[7] < 1 ? 1 : p[7];
   c.atime         = p[8];
   c.gain          = p[9] > 3 ? 3 : p[9];
+  // Bytes 10 y 11 son de la version 2 del mensaje. Si la Pi es mas vieja y
+  // manda solo 10, se quedan los valores por defecto del clasificador.
+  if (n >= 12) {
+    c.naranja_dif_min = p[10];
+    c.azul_dif_min    = p[11];
+  } else {
+    c.naranja_dif_min = 30;
+    c.azul_dif_min    = 18;
+  }
   return true;
 }
 

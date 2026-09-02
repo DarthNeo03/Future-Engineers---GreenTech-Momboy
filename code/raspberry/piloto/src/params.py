@@ -168,10 +168,12 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
 
     "tcs": {
         "c_min": _p("int", 80, "Canal claro minimo del TCS para clasificar (por debajo es sombra o sensor tapado).", 0, 65535),
-        "naranja_r_min": _p("int", 120, "Ratio rojo (r*255/claro) minimo para llamar naranja a la lectura. Se ajusta solo con 'Muestrear naranja'.", 0, 255),
-        "naranja_b_max": _p("int", 60, "Ratio azul maximo del naranja.", 0, 255),
-        "azul_b_min": _p("int", 110, "Ratio azul minimo para llamar azul a la lectura.", 0, 255),
-        "azul_r_max": _p("int", 70, "Ratio rojo maximo del azul.", 0, 255),
+        "naranja_dif_min": _p("int", 30, "DISCRIMINADOR del naranja: cuanto tiene que superar el ratio rojo al azul (r-b). Sobre el piso blanco esa diferencia es ~0 y sobre una linea es grande, asi que separa mucho mejor que un umbral absoluto y no depende de la luz. Es el que hay que tocar.", 0, 255),
+        "azul_dif_min": _p("int", 18, "DISCRIMINADOR del azul: cuanto tiene que superar el ratio azul al rojo (b-r). Medido en la pista del equipo, la linea azul da b-r = +37 contra ~0 del blanco.", 0, 255),
+        "naranja_r_min": _p("int", 110, "Reja de seguridad del naranja (ratio rojo minimo), no discriminador: dejalo holgado y decide con naranja_dif_min.", 0, 255),
+        "naranja_b_max": _p("int", 90, "Reja de seguridad del naranja (ratio azul maximo).", 0, 255),
+        "azul_b_min": _p("int", 95, "Reja de seguridad del azul (ratio azul minimo). OJO: con 110 la linea azul del equipo NO se detectaba, porque medía 107.", 0, 255),
+        "azul_r_max": _p("int", 95, "Reja de seguridad del azul (ratio rojo maximo).", 0, 255),
         "muestras_min": _p("int", 1, "Lecturas seguidas iguales antes de confirmar el cruce.", 1, 5),
         "refractario_ds": _p("int", 3, "Decimas de segundo sin admitir otro cruce del MISMO color (que una linea no cuente doble).", 1, 30),
         "atime": _p("int", 246, "Registro ATIME del TCS: 255=2.4ms, 246=24ms, 235=50ms de integracion. Menos tiempo = mas rapido pero mas ruido.", 0, 255),
@@ -195,6 +197,8 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "semi_pilar_mm": _p("float", 25.0, "Medio ancho del pilar (son de 50x50 mm).", 10.0, 60.0),
         "k_dir": _p("float", 1.4, "Ganancia de la correccion hacia el punto de paso: % de direccion por grado de desvio.", 0.1, 10.0),
         "peso_max": _p("float", 0.8, "Peso maximo del esquive frente al centrado (1 = el pilar manda del todo).", 0.0, 1.0),
+        "limitar_por_lineas": _p("bool", True, "No hacer caso a los pilares que quedan MAS ALLA de la linea del piso: esos son de la seccion siguiente. Si se les hace caso desde la recta, el esquive pega el carro a la esquina interna justo antes de la curva y engancha el canto al girar. En cuanto se cruza la linea el filtro se levanta y esos pilares cuentan."),
+        "margen_linea_mm": _p("float", 60.0, "Holgura sobre la distancia a la linea: un pilar justo antes de ella sigue contando. Subelo si descarta pilares que si son de esta recta.", 0.0, 400.0),
     },
 
     "manual": {

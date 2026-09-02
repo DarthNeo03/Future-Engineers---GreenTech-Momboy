@@ -715,7 +715,12 @@ function refrescar(){
     fila(tt, "TCS34725", sn.tcs_ok?"conectado":"no detectado", sn.tcs_ok?"ok":"mal");
     fila(tt, "crudo C/R/G/B", sn.c+" / "+sn.r+" / "+sn.g+" / "+sn.b);
     fila(tt, "ratios r/b", sn.ratio_r+" / "+sn.ratio_b);
-    fila(tt, "clase actual", sn.clase, sn.clase!=="-"?"avi":"");
+    fila(tt, "diferencia b-r", sn.dif + "  (lo que decide: ~0 blanco, + azul, &minus; naranja)");
+    fila(tt, "clase segun el ESP32", sn.clase, sn.clase!=="-"?"avi":"");
+    fila(tt, "clase segun la Pi", sn.clase_pi, sn.clase_pi!=="-"?"avi":"");
+    if(sn.clase_pi !== sn.clase)
+      fila(tt, "&iexcl;OJO!", "la Pi y el ESP32 no coinciden: sube otra vez el firmware "+
+           "(code/esp32_carro) para que use los umbrales nuevos", "mal");
     fila(tt, "cruces naranja/azul", sn.cnt_naranja+" / "+sn.cnt_azul);
 
     // sistema

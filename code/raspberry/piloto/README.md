@@ -21,7 +21,7 @@ MPU6050 y el TCS34725 por I2C y manda yaw + cruces de linea a la Pi).
 ```bash
 python3 -m venv .venv && source .venv/bin/activate    # en Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python tools/selftest.py            # 133 pruebas, sin hardware
+python tools/selftest.py            # 154 pruebas, sin hardware
 python main.py                      # camara + ESP32 + web
 python main.py --simulado           # sin ESP32 (pruebas en el PC)
 python main.py --imagen foto.jpg    # sin camara, sobre una foto
@@ -210,6 +210,46 @@ el limite hacia atras. El escape de seguridad no interrumpe la maniobra (ella
 lleva su propia reversa); corta sola en `min_pasillo_mm`, que va por encima
 de `parar_bajo_mm`.
 
+## Los pilares de la seccion siguiente no son de esta recta
+
+Las lineas naranja y azul marcan el limite de la seccion. Un pilar que se ve
+por DETRAS de ellas esta en el tramo siguiente. Si se le hace caso desde la
+recta, el esquive tira del carro justo cuando toca prepararse para la curva:
+se pega a la esquina interna, no le queda sitio para abrirse y engancha el
+canto al girar.
+
+`obstaculos.limitar_por_lineas` (encendido) descarta los pilares mas lejanos
+que la linea mas cercana, con `margen_linea_mm` de holgura para que uno justo
+antes de ella siga contando. **En cuanto el carro entra en la zona de esquina
+el filtro se levanta** y esos pilares pasan a contar, que es cuando de verdad
+hay que esquivarlos. Si no se ve ninguna linea, no se filtra nada.
+
+## El sensor de color y la trampa del c_min
+
+Sintoma real en pista: el TCS contaba naranjas y **nunca una azul**, asi que
+ningun par se completaba ("pares a medias" subiendo en la telemetria).
+
+Habia dos causas, y la segunda es la que de verdad mordia:
+
+1. **Umbrales absolutos con margen ridiculo.** Sobre la linea azul el sensor
+   dio C=678 R=186 B=284, o sea ratios r=70 y b=107. El piso blanco da ~85 en
+   los dos. El azul solo sacaba 22 puntos al blanco en su propio canal, y el
+   umbral por defecto estaba en 110: fallaba por tres unidades. Ahora el
+   discriminador es la **diferencia** b-r (+37 en el azul contra ~0 en el
+   blanco), que separa mucho mejor y no depende de la luz. Los umbrales
+   absolutos se quedan como reja holgada, no como criterio.
+
+2. **`c_min` por encima del claro de la linea.** El perfil guardado tenia
+   `c_min=842`, sacado del 25 % de un blanco muy brillante; pero una linea de
+   color ABSORBE luz y devuelve mucho menos claro (678, un 20 % del blanco).
+   La lectura se descartaba antes de mirar el color. Ahora "Sobre blanco" usa
+   el 8 %, y **muestrear una linea baja el `c_min`** si hace falta para que esa
+   linea entre.
+
+En la pestaña Calibrar se ve la diferencia b-r, lo que dice el ESP32 y **lo
+que diria la Pi con los umbrales de ahora**. Si no coinciden, el ESP32 tiene
+firmware viejo: vuelve a subir `code/esp32_carro`.
+
 ## Distancias reales (calibracion geometrica)
 
 Todo el perfil trabaja en **milimetros sobre el suelo**, no en pixeles:
@@ -286,7 +326,7 @@ piloto/
 │   ├── dibujo.py           overlay del video
 │   ├── servidor.py         http.server + MJPEG
 │   └── web/index.html      la interfaz
-└── tools/selftest.py       133 pruebas sin hardware
+└── tools/selftest.py       154 pruebas sin hardware
 ```
 
 ## Notas practicas (heredadas a golpes)
