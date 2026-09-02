@@ -378,9 +378,17 @@ class Robot:
             dets, masks_det = self.vision.detectar_en(hsv, quiere_det)
             masks.update(masks_det)
 
+            # El perfil necesita saber cuanto se desvia el carro del rumbo de
+            # la recta (giroscopio) y en que sentido corre la ronda: con eso
+            # distingue la pared de su carril de la de enfrente aunque llegue
+            # torcido a la curva.
+            yaw_ahora = self.enlace.yaw()
+            error_rumbo = self.navegador.error_de_rumbo(yaw_ahora)
+            sentido_ahora = self.carrera.sentido()
             perfil: Optional[muro.PerfilMuro] = None
             try:
-                perfil = muro.perfil(masks, self.geo, self.p["muro"])
+                perfil = muro.perfil(masks, self.geo, self.p["muro"],
+                                     error_rumbo, sentido_ahora)
             except Exception as e:
                 self.log(f"[muro] error en el perfil: {e}")
 
@@ -394,7 +402,7 @@ class Robot:
                 self.t_linea_reciente = time.time()
 
             self.lineas.paso_zona()          # timeout de la zona de esquina
-            yaw = self.enlace.yaw()
+            yaw = yaw_ahora
             sentido = self.carrera.sentido()
             linea_reciente = time.time() - self.t_linea_reciente < 1.2
             # "Dentro de la curva" tiene dos fuentes, y basta con una:
@@ -403,7 +411,15 @@ class Robot:
             # La segunda importa porque el TCS puede no estar montado y las
             # lineas se ven fatal si la camara va sobreexpuesta: sin ella, el
             # anti-bucle no protegeria en el caso mas comun de todos.
-            en_esquina = (self.lineas.en_esquina or
+            # Dos niveles, a proposito:
+            #  - en_esquina: basta con que la vision haya decidido girar. Sirve
+            #    para el anti-bucle, que no puede depender de tener el TCS
+            #    montado ni de que se vean las lineas.
+            #  - esquina_confirmada: SOLO las lineas del piso. Es la unica
+            #    prueba fisica de que hay curva, y es lo que habilita el giro
+            #    de dos tiempos, que es el que retrocede.
+            esquina_confirmada = self.lineas.en_esquina
+            en_esquina = (esquina_confirmada or
                           self.navegador.estado in (nav.PRE_GIRO, nav.GIRO,
                                                     nav.GIRO_2T))
             debe_parar = self.carrera.paso()
@@ -417,7 +433,8 @@ class Robot:
                                  motivo="carrera terminada: parado en meta")
                 else:
                     d = self.navegador.paso(perfil, yaw, sentido,
-                                            linea_reciente, bias, en_esquina)
+                                            linea_reciente, bias, en_esquina,
+                                            esquina_confirmada)
             elif self.modo == "manual" and self.armado:
                 caducado = (time.time() - self.manual["t"]) * 1000 > \
                     float(self.p["manual"]["timeout_ms"])
@@ -530,6 +547,10 @@ class Robot:
                 "cob_izq": round(p.cobertura_izq, 2),
                 "cob_der": round(p.cobertura_der, 2),
                 "segmentos": len(p.segmentos),
+                "interna_mm": None if p.interna_mm is None else round(p.interna_mm),
+                "externa_mm": None if p.externa_mm is None else round(p.externa_mm),
+                "frontal_mm": None if p.frontal_mm is None else round(p.frontal_mm),
+                "desvio_recta": None if p.error_rumbo is None else round(p.error_rumbo, 1),
                 "esquinas_vistas": [
                     {"x": round(e.x), "y": round(e.y), "tipo": e.tipo}
                     for e in p.esquinas[:4]],

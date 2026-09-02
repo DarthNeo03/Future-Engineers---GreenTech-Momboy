@@ -21,7 +21,7 @@ MPU6050 y el TCS34725 por I2C y manda yaw + cruces de linea a la Pi).
 ```bash
 python3 -m venv .venv && source .venv/bin/activate    # en Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python tools/selftest.py            # 84 pruebas, sin hardware
+python tools/selftest.py            # 133 pruebas, sin hardware
 python main.py                      # camara + ESP32 + web
 python main.py --simulado           # sin ESP32 (pruebas en el PC)
 python main.py --imagen foto.jpg    # sin camara, sobre una foto
@@ -56,8 +56,13 @@ carrera (cronometro + conteo).
    abierto** tipo camion si hay sitio) -> GIRO de 90 por giroscopio -> RECTO.
    Disparadores: **linea del piso cruzada** (el mas fiable), pasillo
    cerrandose, o muro interno que desaparece. Ver "El bucle de las esquinas".
-4. **Conteo**: cada esquina tiene un par de lineas naranja+azul; el par cuenta
-   UNA esquina (ventana de par + refractario de verdad). 4 esquinas = vuelta.
+4. **Conteo**: solo suma cuando se cruza el PAR COMPLETO de lineas y **en el
+   orden correcto**. Las cuatro esquinas de una vuelta se cruzan siempre igual
+   (horario: naranja y luego azul), asi que el orden es una comprobacion de
+   coherencia gratis: un par al reves o es basura o el carro se dio la vuelta.
+   Uno suelto se descarta sin contar; dos seguidos invierten el sentido. Si se
+   pierde una linea, el par caduca y esa esquina la cuenta el giro de 90.
+   4 esquinas = vuelta.
 5. **Parada final**: tras la esquina 12 avanza `carrera.parada_ms` para meter
    el carro ENTERO en la seccion de meta y se detiene solo (bono del
    reglamento). Tope de 3 minutos.
@@ -132,6 +137,47 @@ esquina* que inyecta un cruce de linea para ensayar la maniobra en el banco
 sin empujar el carro. Mientras el carro esta en la curva el video se enmarca
 en naranja.
 
+## Que recta es cada pared (y por que hace falta el giroscopio)
+
+Sintoma: el carro cruza la esquina, esquiva un pilar que lo empuja hacia la
+esquina interna y llega TORCIDO. Ahi ve las dos rectas a la vez -- la del
+tramo que deja y la del que entra -- y se desorienta: toma la pared de
+enfrente por la de su carril.
+
+El angulo de una pared MEDIDO DESDE EL CARRO no sirve para distinguirlas,
+porque cambia con lo torcido que vaya. El angulo respecto a la PISTA si, y
+pasar de uno a otro solo necesita cuanto se ha desviado del rumbo de la recta,
+que es justo lo que da el giroscopio:
+
+    angulo_pista = angulo_carro - desvio_de_rumbo
+
+Con eso, ~90 grados es una pared LATERAL (la de tu carril) y ~0 es la pared de
+FRENTE (el fondo de la curva), aunque el carro vaya cruzado 45 grados. Y basta
+con ver UNA pared para saber cual es: no hace falta ver las dos.
+
+Medido sobre la escena sintetica del selftest, con el carro cruzado 45:
+
+| | sin giroscopio | con giroscopio |
+|---|---|---|
+| pared de enfrente | no la reconoce (`otro`) | `frontal` a 1100 mm |
+
+Sin giroscopio el fallo es SEGURO (no sabe) y no peligroso (confundirse): al
+salirse de la tolerancia, la pared se marca `otro` y no se usa.
+
+Que se hace con eso:
+
+- `interna_mm` / `externa_mm`: distancia a la pared de tu carril, resuelta con
+  el sentido de la ronda (en horario la interna es la derecha).
+- `frontal_mm`: la pared cruzada. Dispara la esquina por si sola, y es un
+  disparo POSITIVO: no se confunde con una pared lateral vista de refilon.
+- La estrategia `pared` sigue la interna identificada en vez de la media de la
+  banda de la imagen, que en una curva mezcla las dos rectas.
+
+En el video: verde = pared lateral (con `lat izq` / `lat der`), rojo = pared
+de FRENTE, gris = tramo sin orientacion clara. Debajo, la linea
+`int ... | ext ... | frente ... | desvio ...`. Se apaga con
+`navegacion.usar_rectas`.
+
 ## Giro de 90 en dos tiempos (para no perderse obstaculos)
 
 `giro2t.activo`. En vez de doblar de una sola pasada, el carro **avanza en
@@ -141,6 +187,18 @@ maniobra de dar la vuelta en una calle estrecha), asi que gira casi sobre el
 sitio y termina **alineado con el tramo nuevo**, viendo el pasillo entero de
 frente. Eso es lo que evita que un pilar se quede fuera de cuadro y el carro
 se lo salte.
+
+**SOLO se ejecuta en una esquina confirmada por el PAR DE LINEAS del piso**
+(TCS o camara). Es la unica maniobra del carro que retrocede, y retroceder en
+mitad de una recta -- porque la vision creyo ver una esquina donde no la hay --
+es meterse contra lo que venga detras. Sin esa prueba fisica se hace el giro
+normal, que solo va hacia adelante. Si la zona de esquina caduca a mitad de la
+maniobra, la reversa se corta en el acto y los grados que falten se completan
+hacia adelante. (Consecuencia practica: con el TCS sin montar y las lineas mal
+vistas, el giro de dos tiempos no llega a usarse nunca.)
+
+El **escape de seguridad** es otra cosa y no lleva ese candado: es la ultima
+red contra un choque y tiene que poder retroceder este donde este.
 
 Es mas lento y necesita giroscopio (mide el angulo acumulado paso a paso, no
 por diferencia contra el inicio, que se envuelve). Sin MPU cae solo al giro
@@ -214,7 +272,7 @@ piloto/
 ├── config/                 params.json y colors.json (se crean solos; 5 perfiles c/u)
 ├── src/
 │   ├── geometria.py        pixeles <-> mm sobre el suelo; horizonte; corredor
-│   ├── muro.py             perfil de contacto robusto + rectas + esquinas
+│   ├── muro.py             perfil robusto + rectas clasificadas + esquinas
 │   ├── vision.py           mascaras HSV y deteccion de objetos (del reconizer)
 │   ├── color_config.py     perfiles de color (mismo formato que el reconizer)
 │   ├── params.py           esquema autodocumentado de parametros + perfiles
@@ -228,7 +286,7 @@ piloto/
 │   ├── dibujo.py           overlay del video
 │   ├── servidor.py         http.server + MJPEG
 │   └── web/index.html      la interfaz
-└── tools/selftest.py       84 pruebas sin hardware
+└── tools/selftest.py       133 pruebas sin hardware
 ```
 
 ## Notas practicas (heredadas a golpes)

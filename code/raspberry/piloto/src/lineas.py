@@ -76,6 +76,13 @@ class GestorLineas:
         self.zona = ZONA_RECTA
         self._t_zona = 0.0
         self.motivo_zona = ""
+        # Orden canonico del par de lineas de la ronda (p.ej. naranja+azul en
+        # horario). Lo fija el primer par completo y sirve para descartar
+        # lecturas incoherentes.
+        self.orden_esperado: Optional[List[str]] = None
+        self.incoherencias = 0
+        self.pares_incompletos = 0
+        self._pares_invertidos = 0
 
     # -- entrada 1: eventos del TCS (ya convertidos por el enlace) ---------
     def evento_tcs(self, color: str) -> None:
@@ -166,10 +173,22 @@ class GestorLineas:
     def paso_zona(self) -> None:
         """Red de seguridad: nadie puede quedarse eternamente 'en la esquina'.
         Si el giro no se confirmo (giroscopio caido, patinazo), a los
-        esquina_max_ms se vuelve a recta y la navegacion normal retoma."""
+        esquina_max_ms se vuelve a recta y la navegacion normal retoma.
+
+        Aqui tambien caduca el par de lineas a medias: si la segunda linea no
+        llego dentro de la ventana, se olvida la primera para que no se empareje
+        con la de la esquina SIGUIENTE (eso daria un par al reves y una
+        incoherencia inventada). Esa esquina la contara el giro de 90.
+        """
+        ahora = time.time()
+        if self._colores_esquina and len(self._colores_esquina) == 1:
+            ventana = float(self.cfg.get("ventana_par_ms", 2500)) / 1000.0
+            if ahora - self._t_evento > ventana:
+                self.pares_incompletos += 1
+                self._colores_esquina = []
         if self.zona == ZONA_ESQUINA:
             limite = float(self.cfg.get("esquina_max_ms", 6000)) / 1000.0
-            if time.time() - self._t_zona > limite:
+            if ahora - self._t_zona > limite:
                 self.salir_de_esquina("timeout de esquina")
 
     def tiempo_en_zona(self) -> float:
@@ -189,11 +208,13 @@ class GestorLineas:
         refract = float(self.cfg.get("refractario_esquina_ms", 3000)) / 1000.0
 
         if self._colores_esquina and ahora - self._t_evento <= ventana:
-            # segunda linea de la MISMA esquina: sigue DENTRO de la curva
             self._t_evento = ahora
             if color not in self._colores_esquina:
+                # PAR COMPLETO: las dos lineas de la esquina, en el orden en
+                # que se cruzaron. Aqui es donde se decide si cuenta.
                 self._colores_esquina.append(color)
                 self.orden_observado = list(self._colores_esquina)
+                self._cerrar_par(list(self._colores_esquina))
             return
 
         if ahora - self._t_esquina < refract:
@@ -201,15 +222,59 @@ class GestorLineas:
             self._t_evento = ahora
             return
 
-        # primera linea de una esquina nueva: el carro ENTRA en la curva
-        self.esquinas += 1
-        self._t_esquina = ahora
+        # Primera linea de una esquina nueva. El carro ENTRA en la curva ya
+        # mismo (eso es lo que corta el bucle), pero el CONTADOR todavia no
+        # se toca: se espera a ver la segunda linea del par.
         self._t_evento = ahora
         self._colores_esquina = [color]
         self.orden_observado = [color]
         if self.sentido == DESCONOCIDO:
             self.sentido = self._sentido_de(color)
         self.entrar_en_esquina(f"linea {color} ({fuente})")
+
+    def _cerrar_par(self, orden: List[str]) -> None:
+        """Decide si un par de lineas completo cuenta como esquina.
+
+        Las cuatro esquinas de una vuelta se cruzan SIEMPRE en el mismo orden:
+        yendo en horario, naranja y luego azul en todas; en antihorario, al
+        reves. Por eso el orden es una comprobacion de coherencia gratis: si
+        aparece un par al reves, o el carro se dio la vuelta, o esa lectura es
+        basura. Contar una esquina de mas estropea la cuenta de vueltas y hace
+        que el carro se pare donde no debe, asi que ante la duda no se cuenta.
+        """
+        ahora = time.time()
+        if self.orden_esperado is None:
+            # el primer par completo fija la referencia de toda la ronda
+            self.orden_esperado = list(orden)
+            self.sentido = self._sentido_de(orden[0])
+            self._contar_esquina(ahora, f"par {'+'.join(orden)} (referencia)")
+            return
+
+        if orden == self.orden_esperado:
+            self._pares_invertidos = 0
+            self._contar_esquina(ahora, f"par {'+'.join(orden)}")
+            return
+
+        # --- par al reves ---------------------------------------------------
+        self.incoherencias += 1
+        self._pares_invertidos += 1
+        minimo = int(self.cfg.get("pares_para_invertir", 2))
+        if self._pares_invertidos >= minimo:
+            # ya no es una lectura suelta: el carro va de verdad al reves
+            self.orden_esperado = list(orden)
+            self.sentido = self._sentido_de(orden[0])
+            self._pares_invertidos = 0
+            self._contar_esquina(ahora, f"par {'+'.join(orden)}: SENTIDO INVERTIDO")
+        else:
+            # una sola vez: incoherente, no se cuenta (pero si se esta en la
+            # curva, que de eso se encarga la zona)
+            self.ultimo_evento = (f"par {'+'.join(orden)} INCOHERENTE "
+                                  f"(esperaba {'+'.join(self.orden_esperado)}), no cuenta")
+
+    def _contar_esquina(self, ahora: float, motivo: str) -> None:
+        self.esquinas += 1
+        self._t_esquina = ahora
+        self.ultimo_evento = motivo
 
     # -- salida ------------------------------------------------------------
     def vueltas(self, esquinas_por_vuelta: int = 4) -> int:
@@ -239,4 +304,7 @@ class GestorLineas:
             "zona": self.zona,
             "zona_motivo": self.motivo_zona,
             "zona_s": round(self.tiempo_en_zona(), 1),
+            "orden_esperado": "+".join(self.orden_esperado or []),
+            "incoherencias": self.incoherencias,
+            "pares_incompletos": self.pares_incompletos,
         }

@@ -13,6 +13,7 @@ fijos que el firmware C++ debe reproducir), el lector con ruido, la geometria
 
 from __future__ import annotations
 
+import math
 import sys
 import tempfile
 import time
@@ -181,24 +182,190 @@ prueba("borde detectado en el cambio",
 prueba("segmentos ajustados", len(p.segmentos) >= 1, str(len(p.segmentos)))
 
 # ===========================================================================
+print("== que recta es cada pared (giroscopio) ==")
+from src.muro import clasificar_recta, Segmento   # noqa: E402
+
+# Carro derecho: la pared de la izquierda sale a +90, la de la derecha a -90
+# y la de enfrente a 0 (ver el docstring de Segmento.angulo).
+prueba("derecho: pared izquierda", clasificar_recta(90, -300, 0.0) == "lateral_izq")
+prueba("derecho: pared derecha", clasificar_recta(-90, 300, 0.0) == "lateral_der")
+prueba("derecho: pared de frente", clasificar_recta(0, 0, 0.0) == "frontal")
+
+# Carro cruzado 40 grados a la derecha (viene de esquivar un pilar y se ha
+# ido hacia la esquina interna). Todas las paredes aparecen giradas 40 grados.
+prueba("cruzado 40: la pared de enfrente se reconoce igual",
+       clasificar_recta(40, 0, 40.0) == "frontal",
+       clasificar_recta(40, 0, 40.0))
+prueba("cruzado 40: la lateral izquierda tambien",
+       clasificar_recta(130, -300, 40.0) == "lateral_izq",
+       clasificar_recta(130, -300, 40.0))
+# Sin giroscopio, con ese desvio, ninguna se reconoce: queda "otro". Es el
+# fallo seguro (no saber) en vez del peligroso (confundir frente con lateral).
+prueba("cruzado 40 SIN giroscopio: no confunde, se declara ignorante",
+       clasificar_recta(40, 0, None) == "otro" and
+       clasificar_recta(130, -300, None) == "otro")
+
+# El caso que rompia al carro: cruzado 50 grados, la pared de ENFRENTE
+# aparece a 50 y sin correccion se tomaria por la pared del carril.
+prueba("cruzado 50 SIN giroscopio la de enfrente parece lateral",
+       clasificar_recta(50, 0, None, tolerancia_deg=45.0) == "lateral_der",
+       clasificar_recta(50, 0, None, tolerancia_deg=45.0))
+prueba("cruzado 50 CON giroscopio sigue siendo la de enfrente",
+       clasificar_recta(50, 0, 50.0, tolerancia_deg=45.0) == "frontal")
+
+# --- sobre el perfil completo, con una escena sintetica -------------------
+def escena_pasillo(x_izq_mm=-450.0, x_der_mm=450.0, y_frente_mm=None):
+    """Piso blanco con dos paredes laterales rectas y, opcionalmente, una
+    pared cruzada delante.
+
+    El muestreo va en pasos de 0.5 mm a proposito: con pasos gruesos quedan
+    columnas sin pintar (la perspectiva comprime la distancia cerca del
+    horizonte), las rectas salen troceadas y la prueba mediria el ruido del
+    generador de escenas en vez del clasificador.
+    """
+    blanco = np.full((H, W), 255, np.uint8)
+    for y_mm in np.arange(150.0, 2600.0, 0.5):
+        for xm in (x_izq_mm, x_der_mm):
+            u, v = geo.suelo_a_pixel(xm, y_mm)
+            if 0 <= u < W and 0 <= v < H:
+                blanco[:v + 1, u] = 0          # encima del contacto: no es piso
+    if y_frente_mm is not None:
+        for xm in np.arange(-900.0, 900.0, 0.5):
+            u, v = geo.suelo_a_pixel(xm, y_frente_mm)
+            if 0 <= u < W and 0 <= v < H:
+                blanco[:v + 1, u] = 0
+    return {"blanco": blanco, "negro": np.zeros((H, W), np.uint8)}
+
+pr = muro.perfil(escena_pasillo(), geo, mcfg, error_rumbo=0.0, sentido=1)
+clases = [s.clase for s in pr.segmentos]
+prueba("pasillo recto: reconoce las dos paredes laterales",
+       "lateral_izq" in clases and "lateral_der" in clases, str(clases))
+prueba("y ninguna de frente", "frontal" not in clases, str(clases))
+prueba("distancias laterales del orden esperado (450mm)",
+       pr.lateral_izq_mm is not None and pr.lateral_der_mm is not None and
+       abs(pr.lateral_izq_mm - 450) < 150 and abs(pr.lateral_der_mm - 450) < 150,
+       f"izq={pr.lateral_izq_mm} der={pr.lateral_der_mm}")
+prueba("en horario la interna es la DERECHA",
+       pr.interna_mm == pr.lateral_der_mm and pr.externa_mm == pr.lateral_izq_mm)
+pr_anti = muro.perfil(escena_pasillo(), geo, mcfg, error_rumbo=0.0, sentido=-1)
+prueba("en antihorario la interna es la IZQUIERDA",
+       pr_anti.interna_mm == pr_anti.lateral_izq_mm)
+
+pf = muro.perfil(escena_pasillo(y_frente_mm=900.0), geo, mcfg,
+                 error_rumbo=0.0, sentido=1)
+prueba("con pared cruzada delante, la reconoce",
+       pf.frontal_mm is not None, str([s.clase for s in pf.segmentos]))
+prueba("y la situa a la distancia correcta (900mm)",
+       pf.frontal_mm is not None and abs(pf.frontal_mm - 900) < 250,
+       str(pf.frontal_mm))
+
+# --- la navegacion usa la pared interna identificada ----------------------
+vn = params_mod.valores_por_defecto()
+vn["navegacion"]["estrategia"] = "pared"
+nav_p = Navegador(vn["navegacion"], vn["limites"], vn["escape"], vn["giro2t"])
+d = nav_p.paso(pr, 0.0, 1)
+prueba("la estrategia 'pared' sigue la recta identificada",
+       "pared int(recta)" in d.motivo, d.motivo)
+
+# sin clasificacion (sin rectas) cae a la banda, sin romperse
+vn2 = params_mod.valores_por_defecto()
+vn2["navegacion"]["estrategia"] = "pared"
+vn2["navegacion"]["usar_rectas"] = False
+nav_b = Navegador(vn2["navegacion"], vn2["limites"], vn2["escape"], vn2["giro2t"])
+d2 = nav_b.paso(pr, 0.0, 1)
+prueba("con usar_rectas apagado vuelve a la banda", "pared int(banda)" in d2.motivo,
+       d2.motivo)
+
+# error_de_rumbo: lo que alimenta toda la clasificacion
+nav_r = Navegador(vn["navegacion"], vn["limites"], vn["escape"], vn["giro2t"])
+prueba("sin rumbo de referencia no hay desvio", nav_r.error_de_rumbo(10.0) is None)
+nav_r.rumbo_objetivo = 90.0
+prueba("desvio = yaw - rumbo de la recta", abs(nav_r.error_de_rumbo(120.0) - 30.0) < 1e-6,
+       str(nav_r.error_de_rumbo(120.0)))
+prueba("y no se envuelve mal cerca de 180",
+       abs(nav_r.error_de_rumbo(-170.0) - 100.0) < 1e-6,
+       str(nav_r.error_de_rumbo(-170.0)))
+
+# El caso que describe el equipo: el carro cruza la esquina, esquiva un pilar
+# que lo empuja hacia la esquina interna y llega TORCIDO viendo las dos rectas
+# a la vez. Sin referencia de rumbo no sabe cual es cual.
+def escena_esquina(desvio_deg, x_pared_mm=-500.0, y_frente_mm=1100.0):
+    blanco = np.full((H, W), 255, np.uint8)
+    th = math.radians(desvio_deg)
+    def pintar(px, py):
+        # del marco de la PISTA al del CARRO, girado 'desvio' a la derecha
+        xc = px * math.cos(th) - py * math.sin(th)
+        yc = px * math.sin(th) + py * math.cos(th)
+        if yc < 120:
+            return
+        u, v = geo.suelo_a_pixel(xc, yc)
+        if 0 <= u < W and 0 <= v < H:
+            blanco[:v + 1, u] = 0
+    for t in np.arange(120.0, 2600.0, 0.5):
+        pintar(x_pared_mm, t)              # pared lateral de la recta actual
+    for t in np.arange(-900.0, 900.0, 0.5):
+        pintar(t, y_frente_mm)             # pared de enfrente (fondo de curva)
+    return {"blanco": blanco, "negro": np.zeros((H, W), np.uint8)}
+
+pe = muro.perfil(escena_esquina(0), geo, mcfg, error_rumbo=0.0, sentido=1)
+clases_e = [s.clase for s in pe.segmentos if s.largo > 120]
+prueba("derecho en la curva: separa su carril de la pared de enfrente",
+       "lateral_izq" in clases_e and "frontal" in clases_e, str(clases_e))
+prueba("y da las dos distancias",
+       pe.externa_mm is not None and pe.frontal_mm is not None,
+       f"ext={pe.externa_mm} frente={pe.frontal_mm}")
+
+esc45 = escena_esquina(45)
+sin_giro = muro.perfil(esc45, geo, mcfg, error_rumbo=None, sentido=1)
+con_giro = muro.perfil(esc45, geo, mcfg, error_rumbo=45.0, sentido=1)
+prueba("cruzado 45 SIN giroscopio: no identifica nada (no se inventa)",
+       sin_giro.frontal_mm is None and sin_giro.interna_mm is None and
+       sin_giro.externa_mm is None,
+       f"frente={sin_giro.frontal_mm} int={sin_giro.interna_mm}")
+prueba("cruzado 45 CON giroscopio: reconoce la pared de enfrente",
+       con_giro.frontal_mm is not None, str(con_giro.frontal_mm))
+prueba("y a una distancia razonable (1100mm)",
+       con_giro.frontal_mm is not None and abs(con_giro.frontal_mm - 1100) < 300,
+       str(con_giro.frontal_mm))
+
+# esa pared de frente identificada dispara la esquina por si sola
+vf = params_mod.valores_por_defecto()
+vf["navegacion"].update(min_recto_ms=0, girar_bajo_mm=1400.0)
+nav_f = Navegador(vf["navegacion"], vf["limites"], vf["escape"], vf["giro2t"])
+df = nav_f.paso(con_giro, 45.0, 1)
+prueba("la pared de frente identificada dispara la esquina",
+       "pared de frente" in df.motivo, df.motivo)
+
+# ===========================================================================
 print("== lineas / sentido / vueltas ==")
 lcfg = {"naranja_es_horario": True, "usar_tcs": True, "usar_camara": True,
         "umbral_cruce_mm": 260.0, "ventana_par_ms": 300,
-        "refractario_esquina_ms": 400}
+        "refractario_esquina_ms": 400, "pares_para_invertir": 2}
+
+def par(g, a, b):
+    """Cruza las dos lineas de una esquina, en ese orden."""
+    g.evento_tcs(a)
+    g.evento_tcs(b)
+
 gl = GestorLineas(lcfg)
 gl.evento_tcs("naranja")
 prueba("primera linea naranja => horario", gl.sentido == HORARIO)
-prueba("cuenta 1 esquina", gl.esquinas == 1)
-gl.evento_tcs("azul")            # segunda linea del par: no cuenta otra
-prueba("el par no cuenta doble", gl.esquinas == 1)
+prueba("una linea SOLA no cuenta esquina (falta el par)",
+       gl.esquinas == 0, str(gl.esquinas))
+prueba("pero ya entra en la zona de esquina", gl.en_esquina)
+gl.evento_tcs("azul")
+prueba("el par completo cuenta UNA esquina", gl.esquinas == 1, str(gl.esquinas))
+prueba("el primer par fija el orden de referencia",
+       gl.orden_esperado == ["naranja", "azul"], str(gl.orden_esperado))
 time.sleep(0.45)
-gl.evento_tcs("naranja")
-prueba("esquina siguiente tras refractario", gl.esquinas == 2)
+par(gl, "naranja", "azul")
+prueba("segundo par cuenta", gl.esquinas == 2, str(gl.esquinas))
 prueba("vueltas", gl.vueltas(4) == 0)
 for _ in range(2):
     time.sleep(0.45)
-    gl.evento_tcs("naranja")
-prueba("4 esquinas = 1 vuelta", gl.vueltas(4) == 1, str(gl.esquinas))
+    par(gl, "naranja", "azul")
+prueba("4 pares = 1 vuelta", gl.vueltas(4) == 1, str(gl.esquinas))
+prueba("sin incoherencias en una vuelta limpia", gl.incoherencias == 0)
 
 gl2 = GestorLineas(lcfg)
 gl2.evento_tcs("azul")
@@ -212,6 +379,43 @@ gl3.evento_tcs("naranja")        # la linea llega justo despues del giro
 prueba("giro+linea de la misma esquina no duplica", gl3.esquinas == 1)
 
 prueba("sentido forzado gana", gl2.sentido_efectivo("horario") == HORARIO)
+
+print("== coherencia del par de lineas ==")
+# Las cuatro esquinas se cruzan siempre en el mismo orden. Un par al reves o
+# es basura o el carro se dio la vuelta; contarlo estropea el fin de carrera.
+gi = GestorLineas(lcfg)
+par(gi, "naranja", "azul")                    # referencia: naranja+azul
+time.sleep(0.45)
+par(gi, "azul", "naranja")                    # <-- al reves
+prueba("un par al reves NO cuenta esquina", gi.esquinas == 1, str(gi.esquinas))
+prueba("y queda registrado como incoherencia", gi.incoherencias == 1)
+prueba("el sentido no cambia por una lectura suelta", gi.sentido == HORARIO)
+time.sleep(0.45)
+par(gi, "azul", "naranja")                    # <-- otra vez: ya no es ruido
+prueba("dos pares al reves seguidos SI cuentan (vuelta de regreso)",
+       gi.esquinas == 2, str(gi.esquinas))
+prueba("y el sentido se invierte", gi.sentido == ANTIHORARIO,
+       str(gi.sentido))
+prueba("la nueva referencia es el orden invertido",
+       gi.orden_esperado == ["azul", "naranja"], str(gi.orden_esperado))
+time.sleep(0.45)
+par(gi, "azul", "naranja")
+prueba("ya en el sentido nuevo, los pares cuentan normal",
+       gi.esquinas == 3 and gi.incoherencias == 2, str(gi.esquinas))
+
+# Una linea perdida no debe emparejarse con la esquina siguiente
+gp = GestorLineas(lcfg)
+par(gp, "naranja", "azul")
+time.sleep(0.45)
+gp.evento_tcs("naranja")          # se pierde el azul de esta esquina
+time.sleep(0.45)                  # caduca la ventana del par
+gp.paso_zona()
+prueba("el par a medias caduca", gp.pares_incompletos == 1,
+       str(gp.pares_incompletos))
+par(gp, "naranja", "azul")        # esquina siguiente, entera
+prueba("la esquina siguiente cuenta bien y sin incoherencia",
+       gp.esquinas == 2 and gp.incoherencias == 0,
+       f"esq={gp.esquinas} incoh={gp.incoherencias}")
 
 print("== zona de esquina (anti-bucle) ==")
 zcfg = dict(lcfg, esquina_max_ms=400)
@@ -347,7 +551,8 @@ def curva_completa(activo_2t: bool, pasos: int = 400, k: float = 9.0):
     traza = []
     for _ in range(pasos):
         gl.paso_zona()
-        d = nav.paso(p_libre, yaw, 1, en_esquina=gl.en_esquina)
+        d = nav.paso(p_libre, yaw, 1, en_esquina=gl.en_esquina,
+                     esquina_confirmada=gl.en_esquina)
         traza.append((nav.estado, d.vel, d.direccion, yaw))
         yaw = ((yaw + k * (d.vel / 100.0) * (d.direccion / 100.0)) + 180) % 360 - 180
         if not gl.en_esquina and nav.estado == RECTO:
@@ -392,12 +597,77 @@ prueba("sin giroscopio cae al giro normal", n2t_sin.estado == GIRO,
 n2t_cerca, _h, _v = nav_esquina()
 n2t_cerca.g2t["activo"] = True
 for _ in range(2):
-    n2t_cerca.paso(p_libre, 0.0, 1, en_esquina=True)      # entrar en 2T
+    n2t_cerca.paso(p_libre, 0.0, 1, en_esquina=True,
+                   esquina_confirmada=True)              # entrar en 2T
 est_antes = n2t_cerca.estado
-d = n2t_cerca.paso(p_cerca, 1.0, 1, en_esquina=True)      # muro encima
+d = n2t_cerca.paso(p_cerca, 1.0, 1, en_esquina=True,
+                   esquina_confirmada=True)              # muro encima
 prueba("con muro delante el 2T corta a reversa, no lo secuestra el escape",
        est_antes == GIRO_2T and n2t_cerca.estado == GIRO_2T and d.estado != ESCAPE,
        f"{est_antes} -> {n2t_cerca.estado} ({d.motivo})")
+
+print("== la reversa del 2T solo dentro de una esquina ==")
+# El giro de dos tiempos es lo unico que retrocede. Retroceder en mitad de una
+# recta (porque la vision creyo ver una esquina donde no la hay) es meterse
+# contra lo que venga detras, asi que exige la prueba fisica: el par de lineas.
+
+def rodar(nav, pasos, confirmada, yaw0=0.0, k=9.0, perfil=None):
+    """Simula 'pasos' ticks. 'confirmada' puede ser un bool o una funcion del
+    numero de tick, para poder quitar la confirmacion a mitad."""
+    perfil = perfil if perfil is not None else p_libre
+    yaw = yaw0
+    traza = []
+    for i in range(pasos):
+        conf = confirmada(i) if callable(confirmada) else confirmada
+        d = nav.paso(perfil, yaw, 1, en_esquina=True, esquina_confirmada=conf)
+        traza.append((nav.estado, d.vel, d.direccion))
+        yaw = ((yaw + k * (d.vel / 100.0) * (d.direccion / 100.0)) + 180) % 360 - 180
+    return traza, yaw
+
+# --- sin confirmacion por lineas: NI UN SOLO frame de reversa -------------
+sin_conf, _h, _v = nav_esquina()
+sin_conf.g2t["activo"] = True
+traza_sc, yaw_sc = rodar(sin_conf, 120, confirmada=False)
+prueba("sin lineas NO entra en el giro de dos tiempos",
+       all(t[0] != GIRO_2T for t in traza_sc), str({t[0] for t in traza_sc}))
+prueba("sin lineas NO retrocede en ningun momento",
+       all(t[1] >= 0 for t in traza_sc),
+       str([t for t in traza_sc if t[1] < 0][:3]))
+prueba("hace el giro normal, hacia adelante", GIRO in [t[0] for t in traza_sc])
+prueba("y aun asi completa los 90 grados", 80 <= yaw_sc <= 105, f"{yaw_sc:.1f}")
+
+# --- con confirmacion: la maniobra se hace entera -------------------------
+con_conf, _h, _v = nav_esquina()
+con_conf.g2t["activo"] = True
+traza_cc, yaw_cc = rodar(con_conf, 400, confirmada=True)
+reversas = [t for t in traza_cc if t[0] == GIRO_2T and t[1] < 0]
+prueba("con lineas SI entra en el giro de dos tiempos",
+       any(t[0] == GIRO_2T for t in traza_cc))
+prueba("y retrocede (esa es la maniobra)", len(reversas) > 0, str(len(reversas)))
+prueba("toda la reversa ocurre en la maniobra, no suelta",
+       all(t[0] == GIRO_2T for t in traza_cc if t[1] < 0))
+
+# --- se pierde la confirmacion a mitad: termina hacia adelante ------------
+mitad, _h, _v = nav_esquina()
+mitad.g2t["activo"] = True
+# confirmada solo los primeros 6 ticks: justo despues caduca la zona
+traza_m, yaw_m = rodar(mitad, 200, confirmada=lambda i: i < 6)
+tras_perder = traza_m[6:]
+prueba("al caducar la zona deja de retroceder de inmediato",
+       all(t[1] >= 0 for t in tras_perder),
+       str([t for t in tras_perder if t[1] < 0][:3]))
+prueba("y pasa al giro normal para acabar",
+       any(t[0] == GIRO for t in tras_perder), str({t[0] for t in tras_perder}))
+prueba("terminando igualmente el giro de 90", 80 <= yaw_m <= 110, f"{yaw_m:.1f}")
+
+# --- el escape de seguridad NO queda capado -------------------------------
+# Es la ultima red contra un choque: tiene que poder retroceder este donde
+# este, tambien en mitad de una recta.
+esc_nav, _h, _v = nav_esquina()
+d_esc = esc_nav.paso(p_cerca, None, 1, en_esquina=False, esquina_confirmada=False)
+prueba("el ESCAPE sigue pudiendo retroceder fuera de una esquina",
+       d_esc.estado == ESCAPE and d_esc.vel < 0,
+       f"{d_esc.estado} vel={d_esc.vel}")
 
 # ===========================================================================
 print("== parametros ==")

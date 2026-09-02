@@ -55,15 +55,30 @@ class Segmento:
     n_puntos: int = 0
     col0: int = 0          # columnas de imagen que abarca (para dibujar)
     col1: int = 0
+    clase: str = "?"       # lateral_izq | lateral_der | frontal | otro
 
     @property
     def angulo(self) -> float:
-        """Angulo en grados respecto al eje de avance (0 = paralelo al carro)."""
+        """Angulo del tramo en el marco del CARRO, en grados.
+
+        Con x = lateral (+derecha) e y = hacia adelante:
+          ~ +90  pared lateral por la izquierda (se aleja segun avanzas)
+          ~ -90  pared lateral por la derecha
+          ~   0  pared de frente, cruzada (el fondo de la curva)
+        """
         return math.degrees(math.atan2(self.y1 - self.y0, self.x1 - self.x0))
 
     @property
     def largo(self) -> float:
         return math.hypot(self.x1 - self.x0, self.y1 - self.y0)
+
+    @property
+    def x_medio(self) -> float:
+        return (self.x0 + self.x1) / 2.0
+
+    @property
+    def y_medio(self) -> float:
+        return (self.y0 + self.y1) / 2.0
 
 
 @dataclass
@@ -103,6 +118,14 @@ class PerfilMuro:
     segmentos: List[Segmento] = field(default_factory=list)
     esquinas: List[Esquina] = field(default_factory=list)
 
+    # --- rectas ya identificadas (ver clasificar_recta) -------------------
+    lateral_izq_mm: Optional[float] = None   # distancia a la pared de la izq
+    lateral_der_mm: Optional[float] = None
+    frontal_mm: Optional[float] = None       # pared cruzada de frente
+    interna_mm: Optional[float] = None       # resueltas con el sentido de giro
+    externa_mm: Optional[float] = None
+    error_rumbo: Optional[float] = None      # desvio usado para clasificar
+
 
 def _media_movil(v: np.ndarray, k: int) -> np.ndarray:
     if k < 3:
@@ -116,10 +139,88 @@ def _media_movil(v: np.ndarray, k: int) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# QUE RECTA ES CADA PARED (y por que hace falta el giroscopio)
+#
+# En una esquina el carro ve DOS rectas a la vez: la del tramo que deja y la
+# del que entra, perpendiculares entre si. Si ademas viene esquivando un pilar
+# y llega torcido hacia la esquina interna, la pared de enfrente aparece en la
+# imagen con tanta inclinacion que se parece a una pared lateral, el carro la
+# toma como "su" carril y se desorienta.
+#
+# El angulo de un tramo en el marco del CARRO no basta, porque cambia con lo
+# torcido que vaya el carro. El del marco de la PISTA si es estable, y para
+# pasar de uno a otro solo hace falta cuanto se ha desviado del rumbo de la
+# recta, que es justo lo que da el giroscopio:
+#
+#       angulo_pista = angulo_carro - error_rumbo
+#
+# (error_rumbo > 0 = el carro apunta mas a la derecha que la recta).
+# Con eso, ~90 grados es una pared LATERAL (paralela a la recta) y ~0 es la
+# pared de FRENTE, aunque el carro vaya cruzado 40 grados. Y basta con ver UNA
+# pared para saber cual es: no hace falta ver las dos.
+def clasificar_recta(angulo_carro: float, x_medio: float,
+                     error_rumbo: Optional[float] = None,
+                     tolerancia_deg: float = 32.0) -> str:
+    """Devuelve 'lateral_izq', 'lateral_der', 'frontal' u 'otro'."""
+    ang = angulo_carro - (error_rumbo or 0.0)
+    # a [-90, 90): una pared no tiene sentido de avance, da igual el signo
+    ang = (ang + 90.0) % 180.0 - 90.0
+    if abs(ang) <= tolerancia_deg:
+        return "frontal"
+    if abs(abs(ang) - 90.0) <= tolerancia_deg:
+        return "lateral_izq" if x_medio < 0 else "lateral_der"
+    return "otro"
+
+
+def _clasificar_segmentos(p: "PerfilMuro", cfg: Dict[str, Any],
+                          error_rumbo: Optional[float],
+                          sentido: int) -> None:
+    """Etiqueta cada recta y resuelve cual es la interna y cual la externa.
+
+    De cada clase se queda con la MAS CERCANA, que es la que condiciona por
+    donde puede pasar el carro. Los tramos muy cortos se descartan: un trozo
+    de 5 cm no dice nada de la orientacion de una pared."""
+    tol = float(cfg.get("tol_recta_deg", 32.0))
+    largo_min = float(cfg.get("recta_largo_min_mm", 120.0))
+    p.error_rumbo = error_rumbo
+
+    for s in p.segmentos:
+        s.clase = ("otro" if s.largo < largo_min else
+                   clasificar_recta(s.angulo, s.x_medio, error_rumbo, tol))
+
+    def mas_cerca(clase: str, medida) -> Optional[float]:
+        vals = [medida(s) for s in p.segmentos if s.clase == clase]
+        return min(vals) if vals else None
+
+    # laterales: lo que importa es a que distancia estan de costado
+    p.lateral_izq_mm = mas_cerca("lateral_izq", lambda s: abs(s.x_medio))
+    p.lateral_der_mm = mas_cerca("lateral_der", lambda s: abs(s.x_medio))
+    # frontal: a que distancia esta la pared cruzada
+    p.frontal_mm = mas_cerca("frontal", lambda s: max(0.0, s.y_medio))
+
+    # Con el sentido de la ronda, lateral <-> interna/externa. En horario el
+    # centro de la pista queda a la derecha, asi que la pared interna es la
+    # derecha; en antihorario, al reves.
+    if sentido > 0:
+        p.interna_mm, p.externa_mm = p.lateral_der_mm, p.lateral_izq_mm
+    elif sentido < 0:
+        p.interna_mm, p.externa_mm = p.lateral_izq_mm, p.lateral_der_mm
+
+
+# ---------------------------------------------------------------------------
 def perfil(masks: Dict[str, np.ndarray], geo: Geometria,
-           cfg: Dict[str, Any]) -> PerfilMuro:
+           cfg: Dict[str, Any], error_rumbo: Optional[float] = None,
+           sentido: int = 0) -> PerfilMuro:
     """masks: mascaras binarias por color (necesita 'blanco'; usa tambien
-    'naranja', 'azul', 'magenta' como piso y 'negro' para el metodo viejo)."""
+    'naranja', 'azul', 'magenta' como piso y 'negro' para el metodo viejo).
+
+    error_rumbo: grados que el carro se desvia del rumbo de la recta actual
+                 (giroscopio). Sirve para saber que pared es cual aunque el
+                 carro venga cruzado; sin el, la clasificacion sigue pero es
+                 fiable solo cuando el carro va bastante derecho.
+    sentido:     +1 horario, -1 antihorario, 0 desconocido. Traduce
+                 izquierda/derecha a interna/externa.
+    """
     metodo = str(cfg.get("metodo", "piso"))
     blanco = masks.get("blanco")
     negro = masks.get("negro")
@@ -197,6 +298,7 @@ def perfil(masks: Dict[str, np.ndarray], geo: Geometria,
     # --- rectas y esquinas --------------------------------------------------
     try:
         p.segmentos, p.esquinas = _segmentos(p, geo, cfg, lat)
+        _clasificar_segmentos(p, cfg, error_rumbo, sentido)
     except Exception:
         pass  # el ajuste de rectas es informativo: nunca debe tumbar el lazo
     return p
