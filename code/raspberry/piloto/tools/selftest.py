@@ -410,6 +410,24 @@ try:
 except ValueError:
     prueba("opcion invalida lanza", True)
 
+# Valores "automaticos": el centinela vive fuera del rango util a proposito
+# (-1 no es una temperatura de color ni un indice de camara). Si validar lo
+# recortara contra el minimo, el boton AUTO de la web dejaria de funcionar.
+for grupo, clave in (("camara", "exposicion"), ("camara", "balance_blancos"),
+                     ("camara", "indice_trasera")):
+    e = params_mod.ESQUEMA[grupo][clave]
+    prueba(f"{clave} declara valor automatico", "auto" in e)
+    prueba(f"{clave}: el centinela pasa sin recortar",
+           params_mod.validar(grupo, clave, e["auto"]) == e["auto"],
+           str(params_mod.validar(grupo, clave, e["auto"])))
+    prueba(f"{clave}: al apagar AUTO cae en un valor valido",
+           params_mod.validar(grupo, clave, e["auto_off"]) == e["auto_off"],
+           str(e["auto_off"]))
+prueba("fuera de rango si se recorta",
+       params_mod.validar("camara", "balance_blancos", 10) == 2000.0)
+prueba("los valores por defecto sobreviven a normalizar",
+       params_mod.normalizar(params_mod.valores_por_defecto())["camara"]["exposicion"] == -1.0)
+
 with tempfile.TemporaryDirectory() as tmp:
     ruta = Path(tmp) / "params.json"
     datos = params_mod.cargar(ruta)

@@ -46,6 +46,14 @@
  #aviso{position:fixed;top:8px;left:50%;transform:translateX(-50%);background:#1a7f37;color:#fff;padding:8px 16px;border-radius:8px;display:none;z-index:20;font-size:.85em;max-width:90%}
  #aviso.mal{background:#c62828}
  .sel-fila{display:flex;gap:6px}.sel-fila select{flex:1}.sel-fila button{flex:0 0 30%}
+ /* slider + casilla del valor exacto (+ boton AUTO si el parametro lo tiene) */
+ .num{display:flex;gap:6px;align-items:center}
+ .num input[type=range]{flex:1;min-width:0}
+ .num input[type=number]{flex:0 0 76px;width:76px;text-align:center;padding:5px 2px}
+ .num button.auto{flex:0 0 auto;padding:6px 9px;font-size:.75em;font-weight:700;
+                  border-radius:7px;background:#1a7f37}
+ .num button.auto.off{background:#262b36;color:#9aa}
+ .num input:disabled{opacity:.35}
 </style>
 </head>
 <body>
@@ -242,7 +250,16 @@ function cmd(obj){
     return r;
   }).catch(()=>aviso("sin conexion", true));
 }
-function setp(grupo, clave, val){ tocando = Date.now(); return cmd({set:grupo+"."+clave, val:val}); }
+function setp(grupo, clave, val){
+  tocando = Date.now();
+  return cmd({set:grupo+"."+clave, val:val}).then(r=>{
+    // guardar lo que el robot ACEPTO (puede haberlo recortado): el boton AUTO
+    // y las casillas leen de aqui, y con valores viejos decidirian mal
+    if(r && r.ok && ("valor" in r) && valores && valores[grupo])
+      valores[grupo][clave] = r.valor;
+    return r;
+  });
+}
 function armar(){ cmd({armar: S && S.armado ? 0 : 1}); }
 function refrescarValores(){
   return fetch("/api/valores").then(r=>r.json()).then(v=>{ valores=v; return v; });
@@ -493,35 +510,102 @@ function pintarAjustes(){
     if(esquema[g] && esquema[g][k]) rap.appendChild(control(g, k, esquema[g][k], true));
   }
 }
+// Cada control numerico lleva SLIDER + CASILLA para escribir el valor exacto
+// (con un slider solo no se puede clavar un numero concreto), y los parametros
+// que tienen un valor "automatico" llevan ademas su boton: pedir AUTO moviendo
+// un slider hasta justo -1 dentro de un rango de -14 a 1000 es imposible.
+let _nCtl = 0;
 function control(grupo, clave, e, compacto){
   const w = document.createElement("div");
-  const id = "p_"+grupo+"_"+clave;
+  w.dataset.param = grupo+"."+clave;
+  w.dataset.compacto = compacto ? "1" : "";
+  const id = "c"+(++_nCtl);
   const val = valores[grupo] ? valores[grupo][clave] : e.def;
-  let html = '<div class="et"><span>'+clave+'</span><b id="'+id+'_v">'+val+'</b></div>';
+  const tieneAuto = ("auto" in e);
+  const enAuto = tieneAuto && (+val === +e.auto);
+  const arg = "'"+grupo+"','"+clave+"'";
+  let html = '<div class="et"><span>'+clave+'</span><b id="'+id+'_v">'+
+             (enAuto ? (e.auto_label || "AUTO") : val)+'</b></div>';
   if(!compacto) html += '<div class="desc">'+e.desc+'</div>';
+
   if(e.tipo==="bool"){
     html += '<input type="checkbox" id="'+id+'" '+(val?"checked":"")+
-      ' onchange="tocando=Date.now();setp(\''+grupo+'\',\''+clave+'\',this.checked?1:0)">';
+      ' onchange="tocando=Date.now();setp('+arg+',this.checked?1:0)">';
   }else if(e.opciones){
-    html += '<select id="'+id+'" onchange="tocando=Date.now();setp(\''+grupo+'\',\''+clave+'\',this.value)">'+
+    html += '<select id="'+id+'" onchange="tocando=Date.now();setp('+arg+',this.value)">'+
       e.opciones.map(o=>'<option '+(o===val?"selected":"")+'>'+o+'</option>').join("")+'</select>';
   }else if(e.tipo==="str"){
     html += '<input type="text" id="'+id+'" value="'+val+'" '+
-      'onchange="setp(\''+grupo+'\',\''+clave+'\',this.value)">';
+      'onchange="setp('+arg+',this.value)">';
   }else{
     const mn = ("min" in e)?e.min:0, mx = ("max" in e)?e.max:100;
     const paso = e.tipo==="int" ? 1 : Math.max(0.01, (mx-mn)/500);
-    html += '<input type="range" id="'+id+'" min="'+mn+'" max="'+mx+'" step="'+paso+'" value="'+val+'" '+
-      'oninput="tocando=Date.now();document.getElementById(\''+id+'_v\').textContent=this.value;'+
-      'lento(\''+grupo+'\',\''+clave+'\',this.value)">';
+    const vNum = enAuto ? mn : val;      // en AUTO el slider queda apagado
+    const off = enAuto ? " disabled" : "";
+    html += '<div class="num">';
+    if(tieneAuto){
+      html += '<button class="auto'+(enAuto?"":" off")+'" onclick="alternarAuto('+arg+')">'+
+              (e.auto_label || "AUTO")+'</button>';
+    }
+    html += '<input type="range" id="'+id+'" min="'+mn+'" max="'+mx+'" step="'+paso+'"'+off+
+      ' value="'+vNum+'" oninput="tocando=Date.now();'+
+      'document.getElementById(\'' + id + '_v\').textContent=this.value;'+
+      'document.getElementById(\'' + id + '_n\').value=this.value;'+
+      'lento('+arg+',this.value)">';
+    html += '<input type="number" id="'+id+'_n" min="'+mn+'" max="'+mx+'" step="'+paso+'"'+off+
+      ' value="'+vNum+'" onchange="exacto('+arg+',this.value)">';
+    html += '</div>';
   }
   w.innerHTML = html;
   return w;
 }
+
+// Casilla numerica: manda el valor escrito y refleja lo que el robot acepto
+// de vuelta (si estaba fuera de rango, el servidor lo recorta).
+function exacto(grupo, clave, val){
+  tocando = Date.now();
+  setp(grupo, clave, val).then(()=>repintarParam(grupo, clave));
+}
+
+// Boton AUTO: alterna entre el valor centinela y uno manual razonable.
+function alternarAuto(grupo, clave){
+  const e = esquema[grupo][clave];
+  const enAuto = (+valores[grupo][clave] === +e.auto);
+  const nuevo = enAuto ? (("auto_off" in e) ? e.auto_off : e.def) : e.auto;
+  setp(grupo, clave, nuevo).then(()=>{
+    repintarParam(grupo, clave);
+    aviso(clave+": "+(enAuto ? ("manual "+nuevo) : (e.auto_label || "AUTO")));
+  });
+}
+
+// Un mismo parametro puede estar dos veces en pantalla (ajustes rapidos y su
+// grupo): se repintan todas sus copias, no solo la primera.
+function repintarParam(grupo, clave){
+  document.querySelectorAll('[data-param="'+grupo+'.'+clave+'"]').forEach(v=>{
+    v.replaceWith(control(grupo, clave, esquema[grupo][clave],
+                          v.dataset.compacto === "1"));
+  });
+}
 const _lentos = {};
 function lento(grupo, clave, val){
   clearTimeout(_lentos[grupo+clave]);
-  _lentos[grupo+clave] = setTimeout(()=>setp(grupo, clave, val), 160);
+  _lentos[grupo+clave] = setTimeout(()=>setp(grupo, clave, val).then(r=>{
+    if(r && r.ok && ("valor" in r)) sincronizarParam(grupo, clave, r.valor);
+  }), 160);
+}
+
+// Pone al dia todas las copias del parametro sin tocar el mando que se esta
+// usando (un parametro puede salir en ajustes rapidos y en su grupo).
+function sincronizarParam(grupo, clave, valor){
+  const e = esquema[grupo][clave];
+  const enAuto = ("auto" in e) && (+valor === +e.auto);
+  document.querySelectorAll('[data-param="'+grupo+'.'+clave+'"]').forEach(w=>{
+    const et = w.querySelector("b");
+    if(et) et.textContent = enAuto ? (e.auto_label || "AUTO") : valor;
+    w.querySelectorAll("input[type=range],input[type=number]").forEach(i=>{
+      if(i !== document.activeElement) i.value = valor;
+    });
+  });
 }
 function guardarPerfilParams(){
   const n = $("nomPerfilParams").value.trim();

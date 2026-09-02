@@ -26,7 +26,17 @@ MAX_PERFILES = 5
 
 
 def _p(tipo: str, defecto, desc: str, minimo=None, maximo=None,
-       opciones: Optional[List[str]] = None, paso=None) -> Dict[str, Any]:
+       opciones: Optional[List[str]] = None, paso=None,
+       auto=None, auto_label: str = "AUTO", auto_off=None) -> Dict[str, Any]:
+    """Declara un parametro.
+
+    auto:       valor centinela que significa "deja que lo decida el sistema"
+                (por ejemplo -1 = exposicion automatica). La web le pone un
+                boton AUTO en vez de obligar a clavar ese numero con el slider,
+                que en un rango de -14 a 1000 es sencillamente imposible.
+    auto_off:   valor que se aplica al APAGAR el modo automatico, para que el
+                boton sirva en los dos sentidos y caiga en algo razonable.
+    """
     d: Dict[str, Any] = {"tipo": tipo, "def": defecto, "desc": desc}
     if minimo is not None:
         d["min"] = minimo
@@ -36,6 +46,10 @@ def _p(tipo: str, defecto, desc: str, minimo=None, maximo=None,
         d["opciones"] = opciones
     if paso is not None:
         d["paso"] = paso
+    if auto is not None:
+        d["auto"] = auto
+        d["auto_label"] = auto_label
+        d["auto_off"] = auto_off if auto_off is not None else defecto
     return d
 
 
@@ -58,9 +72,9 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "alto": _p("int", 480, "Alto de captura en pixeles.", 120, 1080),
         "fps": _p("int", 30, "FPS pedidos a la camara.", 5, 60),
         "voltear": _p("bool", False, "Girar la imagen 180 grados (camara montada al reves)."),
-        "exposicion": _p("float", -1.0, "Exposicion manual (-1 = automatica). CONGELALA antes de calibrar colores: en automatico el HSV cambia solo al girar hacia una pared clara.", -14.0, 1000.0),
-        "balance_blancos": _p("float", -1.0, "Temperatura del balance de blancos manual (-1 = automatico).", -1.0, 10000.0),
-        "indice_trasera": _p("int", -1, "Indice de la camara trasera para el estacionamiento (-1 = no hay). Reservado para el futuro; el codigo ya no se opone.", -1, 8),
+        "exposicion": _p("float", -1.0, "Exposicion de la camara. Pulsa AUTO para dejarsela a la camara; apagalo para fijarla a mano. CONGELALA antes de calibrar colores: en automatico el HSV cambia solo al girar hacia una pared clara. Ojo: en Windows/DSHOW los valores utiles son negativos (-14 a -1) y en Linux/V4L2 positivos (1 a 1000+), asi que prueba y mira la imagen.", -14.0, 1000.0, auto=-1.0, auto_label="AUTO", auto_off=-6.0),
+        "balance_blancos": _p("float", -1.0, "Temperatura del balance de blancos, en kelvin. Con AUTO lo decide la camara; fijalo a mano (unos 4000-5000 con luz de pabellon) para que el HSV no cambie solo.", 2000.0, 10000.0, auto=-1.0, auto_label="AUTO", auto_off=4500.0),
+        "indice_trasera": _p("int", -1, "Indice de la camara trasera para el estacionamiento. Con NINGUNA no se usa. Reservado para el futuro; el codigo ya no se opone.", 0, 8, auto=-1, auto_label="NINGUNA", auto_off=1),
     },
 
     "geometria": {
@@ -238,6 +252,11 @@ def validar(grupo: str, clave: str, valor: Any) -> Any:
         v = str(valor)
         if "opciones" in e and v not in e["opciones"]:
             raise ValueError(f"'{v}' no esta en {e['opciones']}")
+        return v
+    # El centinela de "automatico" vive FUERA del rango util a proposito
+    # (-1 no es una temperatura de color ni un indice de camara), asi que se
+    # deja pasar tal cual en vez de recortarlo contra el minimo.
+    if "auto" in e and v == type(v)(e["auto"]):
         return v
     if "min" in e:
         v = max(e["min"], v)
