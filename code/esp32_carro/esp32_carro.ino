@@ -327,6 +327,8 @@ void tareaSensores(void *) {
       lc.naranja_b_max = cfgTcsNueva.naranja_b_max;
       lc.azul_b_min = cfgTcsNueva.azul_b_min;
       lc.azul_r_max = cfgTcsNueva.azul_r_max;
+      lc.naranja_dif_min = cfgTcsNueva.naranja_dif_min;
+      lc.azul_dif_min = cfgTcsNueva.azul_dif_min;
       lc.muestras_min = cfgTcsNueva.muestras_min;
       lc.refractario_ms = (uint16_t)cfgTcsNueva.refractario_ds * 100;
       clasificador.configurar(lc);

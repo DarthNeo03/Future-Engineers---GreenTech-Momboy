@@ -49,6 +49,72 @@ from . import vision
 from .geometria import Geometria
 from .muro import PerfilMuro
 
+# ---------------------------------------------------------------------------
+# GEMELO EN PYTHON del clasificador que corre en el ESP32 (code/esp32_carro/
+# lineas.h). El que decide de verdad es el firmware; este sirve para poder
+# probar la regla sin carro y para enseñar en la web que diria con los
+# umbrales actuales, que es lo unico que hace calibrable el sensor.
+# Si tocas uno, toca el otro.
+#
+# Lo que manda es la DIFERENCIA entre los ratios, no su valor absoluto. Medido
+# en la pista del equipo sobre la linea azul (C=678 R=186 B=284): r=70, b=107.
+# El azul solo saca 22 puntos al blanco en su propio canal (107 contra ~85),
+# margen tan fino que un umbral absoluto de 110 no la veia; en la diferencia
+# saca 37 (b-r = +37 contra ~0 del blanco).
+def clase_tcs(c: int, r: int, g: int, b: int,
+              cfg: Optional[Dict[str, Any]] = None) -> str:
+    """Devuelve 'naranja', 'azul' o '-' para una lectura cruda del TCS34725."""
+    cfg = cfg or {}
+    if c is None or c <= 0 or c < int(cfg.get("c_min", 80)):
+        return "-"
+    rr = r * 255 // c
+    rb = b * 255 // c
+    dif = rb - rr                       # >0 azulado, <0 anaranjado
+    if (-dif >= int(cfg.get("naranja_dif_min", 30))
+            and rr >= int(cfg.get("naranja_r_min", 110))
+            and rb <= int(cfg.get("naranja_b_max", 90))):
+        return "naranja"
+    if (dif >= int(cfg.get("azul_dif_min", 18))
+            and rb >= int(cfg.get("azul_b_min", 95))
+            and rr <= int(cfg.get("azul_r_max", 95))):
+        return "azul"
+    return "-"
+
+
+def umbrales_desde_muestra(que: str, ratio_r: float, ratio_b: float,
+                           c_medio: float) -> Dict[str, int]:
+    """Umbrales a partir de una lectura tomada SOBRE la superficie indicada.
+
+    Se ajusta sobre todo la diferencia, que es el discriminador: se pone al
+    55 % de la medida, asi que hay que perder casi la mitad del contraste para
+    dejar de ver la linea. Los absolutos quedan holgados (reja, no criterio).
+
+    CUIDADO CON c_min, que costo caro: una linea de color absorbe mucha luz y
+    devuelve un canal claro MUCHO menor que el piso blanco. Medido en la pista
+    del equipo, la linea azul daba C=678 con un blanco de ~3400, o sea un 20 %.
+    Con un c_min sacado del 25 % del blanco (842) la linea azul se descartaba
+    antes de mirar siquiera su color, y el TCS no la vio nunca. Por eso el
+    suelo de luz se saca ahora del 8 % del blanco, y ademas muestrear una
+    linea BAJA el c_min si hiciera falta para que esa linea entre.
+    """
+    dif = ratio_b - ratio_r
+    if que == "naranja":
+        return {"naranja_dif_min": max(8, int(-dif * 0.55)),
+                "naranja_r_min": max(0, int(ratio_r * 0.80)),
+                "naranja_b_max": min(255, int(ratio_b * 1.5) + 20),
+                "c_min": max(1, int(c_medio * 0.70))}
+    if que == "azul":
+        return {"azul_dif_min": max(8, int(dif * 0.55)),
+                "azul_b_min": max(0, int(ratio_b * 0.80)),
+                "azul_r_max": min(255, int(ratio_r * 1.5) + 20),
+                "c_min": max(1, int(c_medio * 0.70))}
+    if que == "blanco":
+        # Solo el suelo de luz (por debajo es sombra o sensor tapado), y bien
+        # bajo: las lineas son mucho mas oscuras que el piso.
+        return {"c_min": max(1, int(c_medio * 0.08))}
+    raise ValueError("que debe ser blanco/naranja/azul")
+
+
 HORARIO = 1
 ANTIHORARIO = -1
 DESCONOCIDO = 0

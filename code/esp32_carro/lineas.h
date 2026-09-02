@@ -7,11 +7,22 @@
 // COMO CLASIFICA
 // El TCS34725 entrega C (canal claro) y R, G, B crudos. Los valores absolutos
 // cambian con la luz del pabellon, pero los RATIOS r = R*255/C y b = B*255/C
-// casi no. Sobre piso blanco r ~ b ~ 85 (un tercio cada canal). Sobre la linea
-// naranja el ratio rojo sube y el azul cae; sobre la azul, al reves:
+// casi no. Sobre piso blanco r ~ b ~ 85 (un tercio cada canal).
 //
-//     naranja: r >= naranja_r_min  &&  b <= naranja_b_max
-//     azul:    b >= azul_b_min     &&  r <= azul_r_max
+// Lo que MANDA es la DIFERENCIA entre los dos ratios, no su valor absoluto:
+//
+//     dif = b - r      ~0 en el blanco, muy positivo en azul, muy negativo
+//                      en naranja
+//
+// Medido en la pista del equipo sobre la linea azul: C=678 R=186 B=284, o sea
+// r=70 y b=107. El azul solo saca 22 puntos al blanco en su propio canal (107
+// contra ~85) -- margen tan fino que con un umbral absoluto de 110 la linea
+// azul NO se detectaba -- pero saca 37 en la diferencia (b-r = +37 contra ~0).
+// Por eso la diferencia es el criterio principal y los umbrales absolutos se
+// quedan como reja de seguridad, no como discriminador:
+//
+//     naranja: (r - b) >= naranja_dif_min  &&  r >= naranja_r_min  &&  b <= naranja_b_max
+//     azul:    (b - r) >= azul_dif_min     &&  b >= azul_b_min     &&  r <= azul_r_max
 //
 // y ademas C >= c_min (si hay muy poca luz es sombra o el sensor tapado).
 //
@@ -32,10 +43,12 @@ namespace lin {
 
 struct Config {
   uint16_t c_min          = 80;    // por debajo, sombra/borde: no clasificar
-  uint8_t  naranja_r_min  = 120;   // ratio rojo (0..255) minimo del naranja
-  uint8_t  naranja_b_max  = 60;    // ratio azul maximo del naranja
-  uint8_t  azul_b_min     = 110;   // ratio azul minimo del azul
-  uint8_t  azul_r_max     = 70;    // ratio rojo maximo del azul
+  uint8_t  naranja_dif_min = 30;   // (r-b) minimo del naranja  <- discriminador
+  uint8_t  azul_dif_min    = 18;   // (b-r) minimo del azul     <- discriminador
+  uint8_t  naranja_r_min  = 110;   // rejas de seguridad, no discriminadores:
+  uint8_t  naranja_b_max  = 90;    //   holgadas a proposito, para que sea la
+  uint8_t  azul_b_min     = 95;    //   diferencia la que decida
+  uint8_t  azul_r_max     = 95;
   uint8_t  muestras_min   = 1;     // lecturas seguidas para confirmar
   uint16_t refractario_ms = 300;   // sin repetir el mismo color
 };
@@ -65,10 +78,15 @@ class Clasificador {
   uint8_t clasificar(uint16_t c, uint16_t r, uint16_t g, uint16_t b) const {
     (void)g;
     if (c < cfg_.c_min || c == 0) return NADA;
-    const uint32_t rr = (uint32_t)r * 255u / c;
-    const uint32_t rb = (uint32_t)b * 255u / c;
-    if (rr >= cfg_.naranja_r_min && rb <= cfg_.naranja_b_max) return NARANJA;
-    if (rb >= cfg_.azul_b_min && rr <= cfg_.azul_r_max) return AZUL;
+    const int32_t rr = (int32_t)((uint32_t)r * 255u / c);
+    const int32_t rb = (int32_t)((uint32_t)b * 255u / c);
+    const int32_t dif = rb - rr;        // >0 azulado, <0 anaranjado
+    if (-dif >= (int32_t)cfg_.naranja_dif_min &&
+        rr >= (int32_t)cfg_.naranja_r_min &&
+        rb <= (int32_t)cfg_.naranja_b_max) return NARANJA;
+    if (dif >= (int32_t)cfg_.azul_dif_min &&
+        rb >= (int32_t)cfg_.azul_b_min &&
+        rr <= (int32_t)cfg_.azul_r_max) return AZUL;
     return NADA;
   }
 

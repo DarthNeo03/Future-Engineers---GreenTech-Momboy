@@ -73,7 +73,7 @@ prueba("sensores: clase linea", s2.clase_linea == P.LINEA_AZUL)
 prueba("sensores: yaw en grados", abs(s2.yaw + 123.4) < 1e-6)
 
 cfg = P.empaquetar_cfg_tcs(80, 120, 60, 110, 70, 1, 3, 246, 2)
-prueba("cfg_tcs: 15 bytes", len(cfg) == 15, f"{len(cfg)}")
+prueba("cfg_tcs: 17 bytes (12 de payload)", len(cfg) == 17, f"{len(cfg)}")
 
 lector = P.Lector()
 basura = b"\x00\xa5" + tr + b"\xff\xa5\x5a" + m.a_bytes()
@@ -668,6 +668,116 @@ d_esc = esc_nav.paso(p_cerca, None, 1, en_esquina=False, esquina_confirmada=Fals
 prueba("el ESCAPE sigue pudiendo retroceder fuera de una esquina",
        d_esc.estado == ESCAPE and d_esc.vel < 0,
        f"{d_esc.estado} vel={d_esc.vel}")
+
+# ===========================================================================
+print("== clasificador del TCS (gemelo del firmware) ==")
+from src.lineas import clase_tcs, umbrales_desde_muestra   # noqa: E402
+
+# Lectura REAL tomada por el equipo con el sensor sobre la linea azul.
+AZUL_REAL = (678, 186, 231, 284)          # C, R, G, B  -> ratios r=70 b=107
+prueba("la linea azul real se clasifica como azul",
+       clase_tcs(*AZUL_REAL) == "azul", clase_tcs(*AZUL_REAL))
+# Con los umbrales viejos (absolutos) fallaba por 3 unidades: 107 < 110.
+viejos = {"azul_b_min": 110, "azul_r_max": 70, "azul_dif_min": 0,
+          "naranja_dif_min": 0, "naranja_r_min": 120, "naranja_b_max": 60}
+prueba("(control) con los umbrales absolutos viejos NO se veia",
+       clase_tcs(*AZUL_REAL, viejos) == "-", clase_tcs(*AZUL_REAL, viejos))
+
+prueba("el piso blanco no se clasifica", clase_tcs(900, 300, 300, 300) == "-")
+prueba("una naranja tipica se clasifica",
+       clase_tcs(700, 380, 180, 140) == "naranja",
+       clase_tcs(700, 380, 180, 140))
+prueba("sin luz (canal claro bajo) no se clasifica",
+       clase_tcs(10, 3, 3, 4) == "-")
+prueba("c=0 no revienta", clase_tcs(0, 0, 0, 0) == "-")
+
+# La diferencia no depende de la luz: al doblar la iluminacion, misma clase.
+doble = tuple(v * 2 for v in AZUL_REAL)
+prueba("con el doble de luz sigue siendo azul", clase_tcs(*doble) == "azul")
+
+# Muestrear sobre la linea deja umbrales que aciertan esa lectura y siguen
+# descartando el blanco.
+u = umbrales_desde_muestra("azul", 70.0, 107.0, 678.0)
+cfg_u = dict(u); cfg_u["c_min"] = 80
+prueba("muestrear azul deja umbrales que la reconocen",
+       clase_tcs(*AZUL_REAL, cfg_u) == "azul", str(u))
+prueba("y que siguen sin coger el blanco",
+       clase_tcs(900, 300, 300, 300, cfg_u) == "-")
+
+# El fallo de verdad por el que el TCS no veia la linea azul en pista: el
+# perfil guardado tenia c_min=842 (sacado del 25 % de un blanco muy brillante)
+# y la linea azul devuelve C=678, porque el color absorbe luz. Se descartaba
+# antes de mirar el color siquiera.
+PERFIL_EN_PISTA = {"c_min": 842, "naranja_r_min": 130, "naranja_b_max": 85,
+                   "azul_b_min": 98, "azul_r_max": 133,
+                   "naranja_dif_min": 30, "azul_dif_min": 18}
+prueba("(control) con c_min demasiado alto la linea azul se descarta",
+       clase_tcs(*AZUL_REAL, PERFIL_EN_PISTA) == "-")
+arreglado = dict(PERFIL_EN_PISTA)
+arreglado.update(umbrales_desde_muestra("azul", 70.0, 107.0, 678.0))
+prueba("muestrear la linea BAJA el c_min y la recupera",
+       clase_tcs(*AZUL_REAL, arreglado) == "azul",
+       f"c_min={arreglado['c_min']}")
+prueba("y el c_min queda por debajo del claro de la linea",
+       arreglado["c_min"] < 678, str(arreglado["c_min"]))
+blanco_fix = dict(PERFIL_EN_PISTA)
+blanco_fix.update(umbrales_desde_muestra("blanco", 85.0, 85.0, 3368.0))
+prueba("muestrear el blanco tambien deja sitio a las lineas",
+       clase_tcs(*AZUL_REAL, blanco_fix) == "azul",
+       f"c_min={blanco_fix['c_min']}")
+prueba("y el blanco brillante sigue sin clasificarse",
+       clase_tcs(3368, 1120, 1120, 1128, blanco_fix) == "-")
+
+# ===========================================================================
+print("== pilares mas alla de la linea del piso ==")
+from src.obstaculos import Esquivador                       # noqa: E402
+from src.vision import Deteccion                            # noqa: E402
+
+vo = params_mod.valores_por_defecto()
+vo["obstaculos"]["activo"] = True
+geo_o = Geometria(vo["geometria"], 640, 480)
+
+def pilar(dist_mm, lat_mm=0.0, color="rojo"):
+    """Deteccion sintetica de un pilar cuya base cae a esa distancia."""
+    u, v = geo_o.suelo_a_pixel(lat_mm, dist_mm + vo["geometria"]["morro_mm"])
+    d = Deteccion(color=color, x=u - 15, y=v - 60, w=30, h=60,
+                  area=1800, llenado=0.9, aspecto=2.0, cx=float(u), cy=float(v - 30))
+    return d
+
+esq = Esquivador(vo["obstaculos"])
+cerca = {"rojo": [pilar(600.0, 120.0)]}       # pilar de ESTA recta
+lejos = {"rojo": [pilar(1400.0, 120.0)]}      # pilar detras de la linea
+
+# sin lineas a la vista, todo cuenta (comportamiento de siempre)
+_d, peso = esq.paso(lejos, None, geo_o, None, False)
+prueba("sin lineas a la vista, el pilar lejano cuenta", peso > 0, str(peso))
+
+# con la linea a 1100 mm, el pilar de 1400 queda detras: se descarta
+_d, peso = esq.paso(lejos, None, geo_o, {"naranja": 1100.0}, False)
+prueba("con la linea delante, el pilar de detras NO cuenta", peso == 0.0,
+       f"peso={peso} info={esq.info}")
+prueba("y queda anotado en la telemetria", esq.info.get("tras_linea") == 1,
+       str(esq.info))
+
+# el pilar de esta recta sigue contando igual
+_d, peso = esq.paso(cerca, None, geo_o, {"naranja": 1100.0}, False)
+prueba("el pilar de esta recta sigue contando", peso > 0, str(peso))
+
+# justo antes de la linea, dentro del margen: cuenta
+_d, peso = esq.paso({"rojo": [pilar(1130.0, 120.0)]}, None, geo_o,
+                    {"naranja": 1100.0}, False)
+prueba("un pilar justo antes de la linea (margen) cuenta", peso > 0, str(peso))
+
+# YA EN LA ESQUINA: el limite se levanta y el pilar del tramo nuevo cuenta
+_d, peso = esq.paso(lejos, None, geo_o, {"naranja": 1100.0}, True)
+prueba("una vez en la esquina, el pilar de la seccion nueva SI cuenta",
+       peso > 0, f"peso={peso} info={esq.info}")
+
+# se puede apagar
+vo["obstaculos"]["limitar_por_lineas"] = False
+_d, peso = esq.paso(lejos, None, geo_o, {"naranja": 1100.0}, False)
+prueba("el filtro se puede apagar", peso > 0, str(peso))
+vo["obstaculos"]["limitar_por_lineas"] = True
 
 # ===========================================================================
 print("== parametros ==")
