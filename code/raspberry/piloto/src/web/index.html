@@ -103,7 +103,9 @@
     interno parece camino libre y el carro da vueltas dentro de la esquina.<br>
     <b>Giro 2 tiempos</b>: avanza en diagonal y retrocede con la direccion invertida para clavar
     los 90 en el sitio. Termina alineado con el tramo nuevo, asi ve todos los obstaculos.
-    Mas lento; necesita giroscopio.</p>
+    Mas lento; necesita giroscopio. <b>Solo se ejecuta en esquinas confirmadas por el par de
+    lineas del piso</b>: es lo unico que retrocede y nunca debe hacerlo en mitad de una recta.
+    Sin lineas se hace el giro normal, hacia adelante.</p>
   </div>
   <div class="caja" id="rapidos"><h3>Ajustes rapidos</h3></div>
   <div class="caja"><h3>Telemetria</h3><table id="tTele"></table></div>
@@ -650,6 +652,10 @@ function refrescar(){
     fila(tc, "esquinas / vueltas", ca.esquinas + "/" + ca.meta_esquinas + " — vuelta " + ca.vueltas);
     fila(tc, "tiempo", ca.transcurrido_s + " s");
     fila(tc, "lineas", ca.lineas.ultimo + (ca.lineas.orden ? " (orden "+ca.lineas.orden+")" : ""));
+    fila(tc, "orden esperado", ca.lineas.orden_esperado || "(aun sin fijar)");
+    if(ca.lineas.incoherencias || ca.lineas.pares_incompletos)
+      fila(tc, "pares raros", ca.lineas.incoherencias + " al reves, " +
+           ca.lineas.pares_incompletos + " a medias", "avi");
     fila(tc, "zona", ca.lineas.zona + " (" + ca.lineas.zona_s + "s) " + ca.lineas.zona_motivo,
          ca.lineas.zona==="esquina" ? "avi" : "ok");
     if(valores){
@@ -668,6 +674,16 @@ function refrescar(){
       fila(t, "pasillo", s.perfil.pasillo_mm + " mm");
       fila(t, "libre izq/der", s.perfil.izq + " / " + s.perfil.der);
       fila(t, "cobertura izq/der", s.perfil.cob_izq + " / " + s.perfil.cob_der);
+      const mm = v => (v===null||v===undefined) ? "-" : (v+" mm");
+      fila(t, "recta interna / externa",
+           mm(s.perfil.interna_mm) + "  /  " + mm(s.perfil.externa_mm),
+           s.perfil.interna_mm!==null ? "ok" : "");
+      fila(t, "pared de frente", mm(s.perfil.frontal_mm),
+           s.perfil.frontal_mm!==null ? "avi" : "");
+      fila(t, "desvio del rumbo",
+           s.perfil.desvio_recta===null||s.perfil.desvio_recta===undefined
+             ? "sin giroscopio" : (s.perfil.desvio_recta + "&deg;"),
+           s.perfil.desvio_recta===null||s.perfil.desvio_recta===undefined ? "avi" : "ok");
     }
     if(m.yaw!==undefined) fila(t, "yaw / rumbo", m.yaw + " / " + (m.rumbo_obj!==undefined?m.rumbo_obj:"-"));
     if(s.obstaculo && s.obstaculo.color)

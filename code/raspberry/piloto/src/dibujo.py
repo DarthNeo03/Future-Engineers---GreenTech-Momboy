@@ -62,13 +62,25 @@ def anotar(frame: np.ndarray,
                 cv2.line(frame, prev, pt, (0, 255, 255), 2)
             prev = pt
 
-        # --- rectas ajustadas y esquinas -----------------------------------
+        # --- rectas ajustadas, con la clase que se les ha reconocido -------
+        # verde = pared lateral (la de tu carril), rojo = pared de frente (el
+        # fondo de la curva), gris = tramo sin orientacion clara.
+        COLOR_CLASE = {"lateral_izq": (80, 230, 80), "lateral_der": (80, 230, 80),
+                       "frontal": (60, 60, 235), "otro": (130, 130, 130)}
         for s in perfil.segmentos:
             c0 = min(max(s.col0, 0), W - 1)
             c1 = min(max(s.col1, 0), W - 1)
             p0 = (c0, int(perfil.y_contacto[c0]) or y_h)
             p1 = (c1, int(perfil.y_contacto[c1]) or y_h)
-            cv2.line(frame, p0, p1, (60, 220, 60), 1, cv2.LINE_AA)
+            col = COLOR_CLASE.get(s.clase, (60, 220, 60))
+            grosor = 2 if s.clase != "otro" else 1
+            cv2.line(frame, p0, p1, col, grosor, cv2.LINE_AA)
+            if s.clase in ("lateral_izq", "lateral_der", "frontal"):
+                etq = {"lateral_izq": "lat izq", "lateral_der": "lat der",
+                       "frontal": "FRENTE"}[s.clase]
+                cv2.putText(frame, etq, ((p0[0] + p1[0]) // 2 - 16,
+                                         (p0[1] + p1[1]) // 2 - 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.34, col, 1, cv2.LINE_AA)
         morro = float(geo.cfg.get("morro_mm", 60.0))
         for e in perfil.esquinas:
             try:
@@ -152,6 +164,17 @@ def anotar(frame: np.ndarray,
         cv2.putText(frame, txt, (6, y), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
                     col, 1, cv2.LINE_AA)
         y += 15
+
+    if perfil is not None and (perfil.interna_mm is not None or
+                               perfil.frontal_mm is not None):
+        def _mm(v):
+            return "-" if v is None else f"{v:.0f}"
+        txt = (f"int {_mm(perfil.interna_mm)} | ext {_mm(perfil.externa_mm)}"
+               f" | frente {_mm(perfil.frontal_mm)}")
+        if perfil.error_rumbo is not None:
+            txt += f" | desvio {perfil.error_rumbo:+.0f}"
+        cv2.putText(frame, txt, (6, H - 108), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.38, (150, 230, 150), 1, cv2.LINE_AA)
 
     if hud.get("yaw") is not None:
         cv2.putText(frame, f"yaw {hud['yaw']:+6.1f}", (W - 105, 14),

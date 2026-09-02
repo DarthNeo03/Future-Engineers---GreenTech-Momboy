@@ -152,16 +152,32 @@ class Navegador:
             self.estado = estado
             self.t_estado = time.time()
 
+    def error_de_rumbo(self, yaw: Optional[float]) -> Optional[float]:
+        """Grados que el carro se desvia del rumbo de la recta actual
+        (positivo = apunta mas a la derecha que la recta). Es lo que permite
+        saber que pared es cual aunque el carro venga cruzado esquivando."""
+        if yaw is None or self.rumbo_objetivo is None:
+            return None
+        return _norm_ang(yaw - self.rumbo_objetivo)
+
     # ------------------------------------------------------------------
     def paso(self, p: PerfilMuro, yaw: Optional[float], sentido: int,
              linea_reciente: bool = False,
              bias_obstaculo: Tuple[float, float] = (0.0, 0.0),
-             en_esquina: bool = False) -> Decision:
+             en_esquina: bool = False,
+             esquina_confirmada: bool = False) -> Decision:
         """sentido: +1 horario, -1 antihorario, 0 desconocido.
         bias_obstaculo: (direccion_deseada_pct, peso 0..1) del esquive.
-        en_esquina: el carro esta DENTRO de la curva segun las lineas del
-                    piso. Con bloqueo_esquina, mientras dure eso el giro no
-                    se abandona por lo que vea la camara (anti-bucle)."""
+        en_esquina: el carro esta en una curva, por lineas del piso O porque
+                    la vision decidio girar. Con bloqueo_esquina, mientras
+                    dure eso el giro no se abandona (anti-bucle).
+        esquina_confirmada: el carro esta en la curva segun las LINEAS DEL
+                    PISO, que es la unica prueba fisica de que hay curva.
+                    Es el permiso para el giro de dos tiempos: esa maniobra
+                    retrocede, y retroceder en mitad de una recta (porque la
+                    vision creyo ver una esquina donde no la hay) es meterse
+                    contra lo que venga detras. Sin esta confirmacion se hace
+                    el giro normal, que solo va hacia adelante."""
         ahora = time.time()
         cfg, lim, esc = self.cfg, self.lim, self.esc
         vel_crucero = float(lim.get("vel_crucero", 55))
@@ -237,7 +253,11 @@ class Navegador:
         # =================== PRE_GIRO =====================================
         if self.estado == PRE_GIRO:
             if (ahora - self.t_estado) * 1000 >= float(cfg.get("retardo_giro_ms", 220)):
-                if bool(self.g2t.get("activo", False)) and usar_yaw:
+                # El giro de dos tiempos SOLO se permite en una esquina
+                # confirmada por el par de lineas del piso: es la unica
+                # maniobra que retrocede, y nunca debe retroceder en recta.
+                if (bool(self.g2t.get("activo", False)) and usar_yaw
+                        and esquina_confirmada):
                     self._iniciar_2t(yaw)
                 else:
                     self._cambiar(GIRO)
@@ -259,7 +279,7 @@ class Navegador:
 
         # =================== GIRO_2T (dos tiempos) ========================
         if self.estado == GIRO_2T:
-            d = self._paso_2t(p, yaw, sentido, ahora)
+            d = self._paso_2t(p, yaw, sentido, ahora, esquina_confirmada)
             if d is not None:
                 return d
             # _paso_2t devuelve None cuando la maniobra termino: cae a RECTO
@@ -312,7 +332,12 @@ class Navegador:
         elif en_esquina and self._esquina_atendida:
             pass                     # curva ya girada: a esperar la salida
         elif recto_estable:
-            if pasillo < float(cfg.get("girar_bajo_mm", 650.0)):
+            frontal = p.frontal_mm if bool(cfg.get("usar_rectas", True)) else None
+            if frontal is not None and frontal < float(cfg.get("girar_bajo_mm", 650.0)):
+                # pared cruzada delante: esto es una esquina identificada, no
+                # una pared lateral que parece cercana por ir torcido
+                disparo = f"pared de frente a {frontal:.0f}mm"
+            elif pasillo < float(cfg.get("girar_bajo_mm", 650.0)):
                 disparo = f"pasillo {pasillo:.0f}mm"
             elif aviso_interna is not None:
                 lado_aviso = 1 if aviso_interna == "der" else -1
@@ -388,7 +413,8 @@ class Navegador:
         self._2t_yaw_prev = yaw
 
     def _paso_2t(self, p: PerfilMuro, yaw: Optional[float], sentido: int,
-                 ahora: float) -> Optional[Decision]:
+                 ahora: float, esquina_confirmada: bool = True
+                 ) -> Optional[Decision]:
         """Un tick del giro en dos tiempos. Devuelve None si ya termino.
 
         Avance con el volante hacia el lado del giro y reversa con el volante
@@ -414,6 +440,15 @@ class Navegador:
         vencido = (ahora - self._2t_t_inicio) * 1000 > float(g.get("max_ms", 7000))
         if falta <= float(cfg.get("giro_tolerancia_deg", 8.0)) or vencido:
             self._terminar_giro(yaw, reanclar=True)
+            return None
+
+        if not esquina_confirmada:
+            # Se perdio la prueba de que esto es una curva (caduco la zona de
+            # lineas). No se retrocede fuera de una esquina: se pasa al giro
+            # normal y se completan hacia adelante los grados que falten.
+            self._cambiar(GIRO)
+            if yaw is not None:
+                self.rumbo_objetivo = _norm_ang(yaw + lado * max(0.0, falta))
             return None
 
         t_fase = (ahora - self._2t_t_fase) * 1000
@@ -476,17 +511,28 @@ class Navegador:
     def _dir_pared(self, p: PerfilMuro, sentido: int,
                    ahora: float) -> Tuple[float, str]:
         """Sigue el muro INTERNO (horario: derecha; antihorario: izquierda)
-        a distancia fija. Si el sentido no se conoce aun, cae al centrado."""
+        a distancia fija. Si el sentido no se conoce aun, cae al centrado.
+
+        Prefiere la pared que se ha IDENTIFICADO como lateral interna (ver
+        muro.clasificar_recta): la media de la banda lateral mezcla lo que
+        haya en ese lado de la imagen, y en una curva eso incluye la pared de
+        enfrente, que no es la que hay que seguir.
+        """
         if sentido == 0:
             return self._dir_centrado(p, ahora)
         lado_int = sentido               # +1 = interno a la derecha
-        d_actual = (p.der if lado_int > 0 else p.izq) * p.alcance_mm
+        if bool(self.cfg.get("usar_rectas", True)) and p.interna_mm is not None:
+            d_actual = p.interna_mm
+            fuente = "recta"
+        else:
+            d_actual = (p.der if lado_int > 0 else p.izq) * p.alcance_mm
+            fuente = "banda"
         objetivo = float(self.cfg.get("pared_objetivo_mm", 320.0))
         err = d_actual - objetivo        # >0 = estoy lejos del muro interno
         salida = self.pd_pared.paso(err, float(self.cfg.get("kp_pared", 0.22)),
                                     float(self.cfg.get("kd_pared", 0.05)), ahora)
         # interno a la derecha y lejos -> acercarse girando a la derecha
-        return lado_int * salida, f"pared int d={d_actual:.0f} err={err:+.0f}"
+        return lado_int * salida, f"pared int({fuente}) d={d_actual:.0f} err={err:+.0f}"
 
     # ------------------------------------------------------------------
     def _salida(self, vel: float, direccion: float, p: PerfilMuro,
@@ -512,6 +558,10 @@ class Navegador:
             "cob_der": round(p.cobertura_der, 2),
             "cierre_mms": round(self._vel_cierre, 0),
             "sentido": sentido,
+            "interna_mm": None if p.interna_mm is None else round(p.interna_mm),
+            "externa_mm": None if p.externa_mm is None else round(p.externa_mm),
+            "frontal_mm": None if p.frontal_mm is None else round(p.frontal_mm),
+            "desvio_recta": None if p.error_rumbo is None else round(p.error_rumbo, 1),
         }
         if yaw is not None:
             m["yaw"] = round(yaw, 1)
