@@ -15,9 +15,14 @@
 //   - Serial  (USB / UART0)
 //   - Serial2 (GPIO16 = RX2, GPIO17 = TX2)  <- a GPIO14/15 de la Pi, cruzados
 //
+// PATAS INT (opcionales; sin ellas todo sigue funcionando por sondeo)
+//   TCS34725 INT -> GPIO 19   borde de linea por hardware, enganchado
+//   MPU6050  INT -> GPIO 18   data ready: dt exacto para integrar el yaw
+//
 // TAREAS FreeRTOS
 //   nucleo 0: tareaRx (prio 5)        lee UARTs, valida CRC, publica el mando
-//             tareaSensores (3)       MPU6050 (yaw) + TCS34725 (lineas) por I2C
+//             tareaSensores (3)       MPU6050 (yaw) + TCS34725 (lineas) por I2C,
+//                                     despertada por las INT (latido de 5 ms)
 //             tareaTelemetria (2)     estado a 20 Hz + sensores a 40 Hz
 //   nucleo 1: tareaControl (4)        tick de 10 ms: rampas y escritura al HW
 //             tareaVigilante (6)      si el control o la Pi se callan, corta
@@ -47,6 +52,14 @@ const int PIN_SERVO = 32;
 const int PIN_SDA = 21;
 const int PIN_SCL = 22;
 const uint32_t I2C_HZ = 400000;
+
+// Patas INT de los sensores. Las dos son OPCIONALES: si no estan cableadas,
+// el firmware lo detecta solo y sigue por sondeo (mas lento y con mas jitter,
+// pero funciona). Ver sensores_i2c.h para que aporta cada una.
+//   TCS34725 INT -> GPIO 19   open-drain, activo BAJO  (pull-up interno)
+//   MPU6050  INT -> GPIO 18   push-pull,  activo ALTO
+const int PIN_INT_TCS = 19;
+const int PIN_INT_MPU = 18;
 
 // UART hacia la Raspberry
 const int PIN_RX2 = 16;   // <- TX de la Pi (GPIO14)
@@ -101,6 +114,35 @@ portMUX_TYPE muxSensores = portMUX_INITIALIZER_UNLOCKED;
 volatile uint8_t calPendiente = 0;       // proto::CAL_* pedido por la Pi
 volatile bool cfgTcsPendiente = false;
 proto::CfgTcs cfgTcsNueva;
+// Umbral de la INT del TCS, en % del nivel de claro del piso (que el firmware
+// aprende solo). Al ser relativo, no se estropea si cambia la integracion.
+uint8_t pctUmbralInt = 55;
+
+// --- interrupciones de los sensores -----------------------------------
+// Los ISR no tocan el I2C (Wire no es seguro dentro de una interrupcion):
+// solo apuntan CUANDO paso y despiertan a tareaSensores, que es la que lee.
+TaskHandle_t hSensores = NULL;
+static const uint32_t AVISO_MPU = (1u << 0);
+static const uint32_t AVISO_TCS = (1u << 1);
+volatile uint32_t usIntMpu = 0;          // micros() del ultimo DATA READY
+volatile uint32_t usIntTcs = 0;          // micros() del ultimo borde de linea
+volatile uint32_t nIntMpu = 0, nIntTcs = 0;
+
+void IRAM_ATTR isrMpu() {
+  usIntMpu = micros();
+  nIntMpu++;
+  BaseType_t despertar = pdFALSE;
+  if (hSensores) xTaskNotifyFromISR(hSensores, AVISO_MPU, eSetBits, &despertar);
+  if (despertar) portYIELD_FROM_ISR();
+}
+
+void IRAM_ATTR isrTcs() {
+  usIntTcs = micros();
+  nIntTcs++;
+  BaseType_t despertar = pdFALSE;
+  if (hSensores) xTaskNotifyFromISR(hSensores, AVISO_TCS, eSetBits, &despertar);
+  if (despertar) portYIELD_FROM_ISR();
+}
 
 HardwareSerial *enlaces[2] = { &Serial, &Serial2 };
 proto::Lector lectores[2];
@@ -278,21 +320,35 @@ void tareaVigilante(void *) {
 }
 
 // ======================= TAREA: SENSORES (I2C) =======================
-// Nucleo 0, prioridad baja: leer el MPU a ~200 Hz e integrar el yaw, leer el
-// TCS a su ritmo de integracion y clasificar la linea. Publica una copia
-// para telemetria. Si un sensor no esta, se reintenta cada 3 s sin bloquear.
+// Nucleo 0, prioridad baja. La tarea NO va a reloj fijo: espera un aviso de
+// las interrupciones de los sensores, con un latido de 5 ms como respaldo.
+//   - aviso del MPU  = muestra nueva: se integra el yaw con el dt REAL entre
+//     flancos (microsegundos), sin el jitter del planificador;
+//   - aviso del TCS  = el suelo se oscurecio: borde de linea. Se lee el color
+//     en ese mismo instante, asi que un cruce rapido no se pierde entre dos
+//     sondeos.
+// Si alguna pata INT no esta cableada se detecta solo y esa parte sigue por
+// sondeo, sin que haya que tocar nada.
 void tareaSensores(void *) {
   vTaskDelay(pdMS_TO_TICKS(300));   // dejar despertar a los chips (leccion vieja)
   Wire.begin(PIN_SDA, PIN_SCL, I2C_HZ);
   Wire.setTimeOut(5);               // un sensor colgado no congela la tarea
 
+  pinMode(PIN_INT_TCS, INPUT_PULLUP);   // open-drain: necesita pull-up
+  pinMode(PIN_INT_MPU, INPUT);          // push-pull activo alto
+  attachInterrupt(digitalPinToInterrupt(PIN_INT_TCS), isrTcs, FALLING);
+  attachInterrupt(digitalPinToInterrupt(PIN_INT_MPU), isrMpu, RISING);
+
   uint32_t msSondeo = millis() - REINTENTO_I2C_MS;   // sondear ya mismo
-  uint32_t msTcs = 0;
-  TickType_t ultimo = xTaskGetTickCount();
-  uint32_t msPrev = millis();
+  uint32_t msTcs = 0, msFondo = 0, msChequeoInt = 0;
+  uint32_t usPrevMpu = micros();
+  uint32_t nIntMpuPrev = 0;
+  float cFondo = 0.0f;              // nivel de claro del piso, aprendido
 
   for (;;) {
-    vTaskDelayUntil(&ultimo, pdMS_TO_TICKS(5));   // 200 Hz
+    uint32_t avisos = 0;
+    // Despierta con el aviso de un sensor o, como muy tarde, en 5 ms.
+    xTaskNotifyWait(0, 0xFFFFFFFFu, &avisos, pdMS_TO_TICKS(5));
     const uint32_t ahora = millis();
 
     // --- redeteccion de sensores ausentes -----------------------------
@@ -300,7 +356,15 @@ void tareaSensores(void *) {
         (ahora - msSondeo >= REINTENTO_I2C_MS || calPendiente == proto::CAL_REDETECTAR)) {
       msSondeo = ahora;
       if (!mpu.presente && mpu.detectar()) enviarLog("MPU6050 OK");
-      if (!tcs.presente && tcs.detectar()) enviarLog("TCS34725 OK");
+      if (!tcs.presente && tcs.detectar()) {
+        enviarLog("TCS34725 OK");
+        // autotest de la pata INT y umbral provisional; el definitivo sale
+        // del nivel de piso en cuanto haya lecturas
+        if (tcs.probarInterrupcion(PIN_INT_TCS)) enviarLog("TCS INT OK");
+        else                                    enviarLog("TCS sin INT");
+        tcs.configurarInterrupcion(tcs.umbral_int ? tcs.umbral_int : 1000);
+        cFondo = 0.0f;
+      }
       if (calPendiente == proto::CAL_REDETECTAR) calPendiente = 0;
     }
 
@@ -332,20 +396,74 @@ void tareaSensores(void *) {
       lc.muestras_min = cfgTcsNueva.muestras_min;
       lc.refractario_ms = (uint16_t)cfgTcsNueva.refractario_ds * 100;
       clasificador.configurar(lc);
-      if (tcs.presente) tcs.configurar(cfgTcsNueva.atime, cfgTcsNueva.gain);
+      if (tcs.presente) {
+        tcs.configurar(cfgTcsNueva.atime, cfgTcsNueva.gain);
+        cFondo = 0.0f;              // cambio el tiempo de integracion: el
+        msFondo = 0;                // nivel de piso de antes ya no vale
+      }
+      pctUmbralInt = cfgTcsNueva.int_umbral_pct;
       enviarLog("CFG TCS OK");
     }
 
     // --- giroscopio ----------------------------------------------------
-    const uint32_t dt = ahora - msPrev;
-    msPrev = ahora;
-    if (mpu.presente) mpu.paso(dt ? dt : 5);
+    // Con la pata INT se lee UNA vez por muestra, y el dt es el que hay entre
+    // flancos: exactamente lo que el sensor tardo, no lo que tardo la tarea.
+    if (mpu.presente) {
+      bool leer_mpu = false;
+      uint32_t us_ahora = 0;
+      if (avisos & AVISO_MPU) {
+        leer_mpu = true;
+        us_ahora = usIntMpu;
+        mpu.int_ok = true;
+      } else if (!mpu.int_ok) {
+        leer_mpu = true;                 // sin INT cableada: sondeo de siempre
+        us_ahora = micros();
+      }
+      if (leer_mpu) {
+        uint32_t dt_us = us_ahora - usPrevMpu;
+        usPrevMpu = us_ahora;
+        mpu.paso_us(dt_us ? dt_us : (1000000u / sens::Mpu6050::HZ_MUESTREO));
+      }
+    }
+    // Si la pata deja de dar flancos (cable suelto), volver al sondeo.
+    if (ahora - msChequeoInt >= 250) {
+      msChequeoInt = ahora;
+      if (mpu.presente && mpu.int_ok && nIntMpu == nIntMpuPrev) {
+        mpu.int_ok = false;
+        usPrevMpu = micros();
+        enviarLog("MPU INT perdida");
+      }
+      nIntMpuPrev = nIntMpu;
+    }
 
     // --- color ---------------------------------------------------------
-    if (tcs.presente && (ahora - msTcs) >= tcs.periodoMs()) {
-      msTcs = ahora;
-      if (tcs.leerColor()) {
-        clasificador.paso(tcs.c, tcs.r, tcs.g, tcs.b, ahora);
+    // Dos motivos para leer: el borde de linea que avisa la INT (inmediato,
+    // es el que importa cruzando rapido) y el ritmo normal de integracion,
+    // que es lo que permite saber cuando se SALE de la linea.
+    if (tcs.presente) {
+      const bool borde = (avisos & AVISO_TCS) != 0;
+      if (borde || (ahora - msTcs) >= tcs.periodoMs()) {
+        msTcs = ahora;
+        if (tcs.leerColor()) {
+          clasificador.paso(tcs.c, tcs.r, tcs.g, tcs.b, ahora);
+          // Nivel de claro del PISO: solo se aprende cuando no hay linea.
+          if (clasificador.clase() == lin::NADA && tcs.c > 0) {
+            cFondo = (cFondo <= 0.0f) ? tcs.c : (cFondo * 15.0f + tcs.c) / 16.0f;
+          }
+        }
+        if (borde) tcs.limpiarInterrupcion();
+      }
+      // El umbral de la INT va en % del piso aprendido, asi que sigue siendo
+      // correcto aunque se cambie el tiempo de integracion o la ganancia.
+      if (cFondo > 0.0f && (ahora - msFondo) >= 2000) {
+        msFondo = ahora;
+        uint16_t nuevo = (uint16_t)(cFondo * pctUmbralInt / 100.0f);
+        if (nuevo < 1) nuevo = 1;
+        // reescribir solo si se movio de verdad: son escrituras I2C
+        uint16_t viejo = tcs.umbral_int;
+        if (nuevo > viejo + viejo / 8 || nuevo + nuevo / 8 < viejo) {
+          tcs.configurarInterrupcion(nuevo);
+        }
       }
     }
 
@@ -358,6 +476,8 @@ void tareaSensores(void *) {
     if (mpu.presente) s.estado |= proto::S_MPU_OK;
     if (tcs.presente) s.estado |= proto::S_TCS_OK;
     if (mpu.calibrando) s.estado |= proto::S_CALIBRANDO;
+    if (mpu.int_ok) s.estado |= proto::S_MPU_INT;
+    if (tcs.int_ok) s.estado |= proto::S_TCS_INT;
     if (clasificador.sobreLinea()) s.estado |= proto::S_SOBRE_LINEA;
     s.estado |= (uint8_t)(clasificador.clase() << 6);
     s.cnt_lineas = clasificador.contadores();
@@ -444,7 +564,8 @@ void setup() {
 
   xTaskCreatePinnedToCore(tareaRx,          "Rx",       4096, NULL, 5, NULL, 0);
   xTaskCreatePinnedToCore(tareaTelemetria,  "Tele",     3072, NULL, 2, NULL, 0);
-  xTaskCreatePinnedToCore(tareaSensores,    "Sensores", 4096, NULL, 3, NULL, 0);
+  // El handle hace falta para que los ISR de los sensores puedan despertarla.
+  xTaskCreatePinnedToCore(tareaSensores,    "Sensores", 4096, NULL, 3, &hSensores, 0);
   xTaskCreatePinnedToCore(tareaControl,     "Control",  4096, NULL, 4, NULL, 1);
   xTaskCreatePinnedToCore(tareaVigilante,   "Vigilante",2048, NULL, 6, NULL, 1);
 

@@ -65,6 +65,8 @@ S_MPU_OK = 0x01        # el MPU6050 responde
 S_TCS_OK = 0x02        # el TCS34725 responde
 S_CALIBRANDO = 0x04    # giroscopio calibrando: yaw congelado, NO MOVER
 S_SOBRE_LINEA = 0x08   # ahora mismo el TCS ve una linea (la de 'clase')
+S_MPU_INT = 0x10       # la pata INT del MPU esta dando flancos (dt exacto)
+S_TCS_INT = 0x20       # la pata INT del TCS esta cableada (borde por hardware)
 
 # clase de linea (2 bits altos del byte de estado de sensores)
 LINEA_NADA = 0
@@ -240,6 +242,14 @@ class Sensores:
         return bool(self.estado & S_SOBRE_LINEA)
 
     @property
+    def mpu_int(self) -> bool:
+        return bool(self.estado & S_MPU_INT)
+
+    @property
+    def tcs_int(self) -> bool:
+        return bool(self.estado & S_TCS_INT)
+
+    @property
     def clase_linea(self) -> int:
         return (self.estado >> 6) & 0x03
 
@@ -283,7 +293,8 @@ def empaquetar_cfg_tcs(c_min: int,
                        muestras_min: int, refractario_ds: int,
                        atime: int, gain: int,
                        naranja_dif_min: int = 30,
-                       azul_dif_min: int = 18) -> bytes:
+                       azul_dif_min: int = 18,
+                       int_umbral_pct: int = 55) -> bytes:
     """Umbrales del clasificador de lineas del ESP32.
 
     El clasificador trabaja con RATIOS normalizados r*255/c y b*255/c, que casi
@@ -298,12 +309,13 @@ def empaquetar_cfg_tcs(c_min: int,
     atime/gain: registros crudos del TCS34725 (0xF6 = 24 ms; gain 2 = x16).
     """
     return empaquetar(TIPO_CFG_TCS, struct.pack(
-        "<HBBBBBBBBBB", _lim(c_min, 0, 65535),
+        "<HBBBBBBBBBBB", _lim(c_min, 0, 65535),
         _lim(naranja_r_min, 0, 255), _lim(naranja_b_max, 0, 255),
         _lim(azul_b_min, 0, 255), _lim(azul_r_max, 0, 255),
         _lim(muestras_min, 1, 10), _lim(refractario_ds, 1, 255),
         _lim(atime, 0, 255), _lim(gain, 0, 3),
-        _lim(naranja_dif_min, 0, 255), _lim(azul_dif_min, 0, 255)))
+        _lim(naranja_dif_min, 0, 255), _lim(azul_dif_min, 0, 255),
+        _lim(int_umbral_pct, 5, 95)))
 
 
 def empaquetar_cal(cmd: int) -> bytes:
