@@ -21,7 +21,7 @@ MPU6050 y el TCS34725 por I2C y manda yaw + cruces de linea a la Pi).
 ```bash
 python3 -m venv .venv && source .venv/bin/activate    # en Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python tools/selftest.py            # 154 pruebas, sin hardware
+python tools/selftest.py            # 162 pruebas, sin hardware
 python main.py                      # camara + ESP32 + web
 python main.py --simulado           # sin ESP32 (pruebas en el PC)
 python main.py --imagen foto.jpg    # sin camara, sobre una foto
@@ -224,6 +224,44 @@ antes de ella siga contando. **En cuanto el carro entra en la zona de esquina
 el filtro se levanta** y esos pilares pasan a contar, que es cuando de verdad
 hay que esquivarlos. Si no se ve ninguna linea, no se filtra nada.
 
+## Las patas INT del TCS y del MPU (cruzar las lineas rapido)
+
+Las dos son **opcionales**: si no estan cableadas el firmware lo detecta solo
+y sigue por sondeo. Lo dice la pestaña Calibrar, sensor por sensor.
+
+```
+TCS34725  INT -> GPIO 19      open-drain, activo BAJO (usa el pull-up interno)
+MPU6050   INT -> GPIO 18      push-pull,  activo ALTO
+```
+
+No hacen lo mismo, y conviene tenerlo claro:
+
+| | que es | que aporta |
+|---|---|---|
+| MPU6050 INT | *data ready*: un pulso por muestra (200 Hz) | el yaw se integra con el **dt real entre flancos**, en microsegundos, en vez de con el reloj de la tarea. Ese jitter del planificador se integraba directamente en el rumbo. |
+| TCS34725 INT | *umbral* del canal claro (AILT/PERS) | un flanco **enganchado** en el instante en que el suelo se oscurece: el borde de la linea. Aunque la tarea llegue tarde, el cruce no se pierde y se sabe cuando fue. |
+
+**El INT del TCS no hace que el sensor integre mas rapido.** Eso lo fija
+`tcs.atime`: a 24 ms (246) una linea de 2 cm cruzada a 0.5 m/s deja 1 o 2
+lecturas; a 2.4 ms (255) deja unas 16. Si quieres mas muestras por linea, baja
+`atime` — y entonces **repite la calibracion del TCS**, porque entran menos
+cuentas y todos los valores absolutos cambian (quiza tambien haya que subir
+`gain`). Lo unico que no se estropea es el umbral de la interrupcion, porque
+va en **porcentaje del nivel de piso** (`tcs.int_umbral_pct`), que el ESP32
+aprende solo mientras rueda.
+
+Detalles de la implementacion, por si hay que tocarla:
+
+- Los ISR no tocan el I2C (Wire no es seguro dentro de una interrupcion):
+  apuntan `micros()` y despiertan a `tareaSensores` con un aviso; la tarea es
+  la que lee.
+- La tarea ya no va a reloj fijo: espera el aviso con un **latido de 5 ms** de
+  respaldo, asi que sin patas cableadas se comporta como antes.
+- El TCS se autotestea al detectarlo: se le pone una ventana imposible, con lo
+  que la pata TIENE que activarse; si no baja, se marca como no cableada.
+- Si los flancos del MPU dejan de llegar (cable suelto), a los 250 ms vuelve
+  al sondeo y lo avisa por el log.
+
 ## El sensor de color y la trampa del c_min
 
 Sintoma real en pista: el TCS contaba naranjas y **nunca una azul**, asi que
@@ -326,7 +364,7 @@ piloto/
 │   ├── dibujo.py           overlay del video
 │   ├── servidor.py         http.server + MJPEG
 │   └── web/index.html      la interfaz
-└── tools/selftest.py       154 pruebas sin hardware
+└── tools/selftest.py       162 pruebas sin hardware
 ```
 
 ## Notas practicas (heredadas a golpes)

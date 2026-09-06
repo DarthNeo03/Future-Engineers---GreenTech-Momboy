@@ -130,7 +130,8 @@ class Enlace:
                 int(tcs.get("muestras_min", 1)), int(tcs.get("refractario_ds", 3)),
                 int(tcs.get("atime", 246)), int(tcs.get("gain", 2)),
                 int(tcs.get("naranja_dif_min", 30)),
-                int(tcs.get("azul_dif_min", 18))))
+                int(tcs.get("azul_dif_min", 18)),
+                int(tcs.get("int_umbral_pct", 55))))
 
     def enviar_cal(self, cmd: int) -> None:
         with self._lock:
@@ -376,6 +377,7 @@ class Enlace:
             },
             "sensores": {
                 "mpu_ok": s.mpu_ok, "tcs_ok": s.tcs_ok,
+                "mpu_int": s.mpu_int, "tcs_int": s.tcs_int,
                 "calibrando": s.calibrando,
                 "yaw": round(s.yaw, 1),
                 "gz": round(s.gz_deci / 10.0, 1),
