@@ -176,7 +176,8 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "azul_r_max": _p("int", 95, "Reja de seguridad del azul (ratio rojo maximo).", 0, 255),
         "muestras_min": _p("int", 1, "Lecturas seguidas iguales antes de confirmar el cruce.", 1, 5),
         "refractario_ds": _p("int", 3, "Decimas de segundo sin admitir otro cruce del MISMO color (que una linea no cuente doble).", 1, 30),
-        "atime": _p("int", 246, "Registro ATIME del TCS: 255=2.4ms, 246=24ms, 235=50ms de integracion. Menos tiempo = mas rapido pero mas ruido.", 0, 255),
+        "atime": _p("int", 246, "Registro ATIME del TCS: 255=2.4ms, 246=24ms, 235=50ms de integracion. Es lo que fija CUANTAS muestras se toman por linea: a 24 ms una linea de 2 cm cruzada a 0.5 m/s solo da 1 o 2 lecturas, y a 2.4 ms da unas 16. OJO: al bajarlo entra menos luz y TODOS los valores absolutos cambian, asi que hay que repetir la calibracion del TCS (y quiza subir la ganancia).", 0, 255),
+        "int_umbral_pct": _p("int", 55, "Pata INT del TCS: salta cuando el claro cae por debajo de este % del nivel del PISO, que el ESP32 aprende solo. Al ser relativo no se estropea si cambias la integracion o la ganancia. Bajalo si la interrupcion salta con sombras; subelo si no engancha las lineas.", 5, 95),
         "gain": _p("int", 2, "Ganancia del TCS: 0=x1, 1=x4, 2=x16, 3=x60.", 0, 3),
     },
 

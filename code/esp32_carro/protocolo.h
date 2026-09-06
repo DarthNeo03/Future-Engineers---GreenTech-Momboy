@@ -52,6 +52,9 @@ static const uint8_t S_MPU_OK      = 0x01;
 static const uint8_t S_TCS_OK      = 0x02;
 static const uint8_t S_CALIBRANDO  = 0x04;   // yaw congelado, NO MOVER
 static const uint8_t S_SOBRE_LINEA = 0x08;
+static const uint8_t S_MPU_INT     = 0x10;   // pata INT del MPU dando flancos
+static const uint8_t S_TCS_INT     = 0x20;   // pata INT del TCS cableada
+// (los bits 0x40 y 0x80 llevan la clase de linea)
 
 // Clase de linea (2 bits altos del byte de estado de sensores)
 static const uint8_t LINEA_NADA    = 0;
@@ -181,6 +184,7 @@ struct CfgTcs {
   uint8_t  muestras_min, refractario_ds;
   uint8_t  atime, gain;
   uint8_t  naranja_dif_min, azul_dif_min;   // discriminadores (ver lineas.h)
+  uint8_t  int_umbral_pct;   // umbral de la INT, en % del claro del piso
 };
 
 inline bool decodificarCfgTcs(const uint8_t *p, uint8_t n, CfgTcs &c) {
@@ -203,6 +207,8 @@ inline bool decodificarCfgTcs(const uint8_t *p, uint8_t n, CfgTcs &c) {
     c.naranja_dif_min = 30;
     c.azul_dif_min    = 18;
   }
+  // Byte 12: umbral de la interrupcion, de la version 3 del mensaje.
+  c.int_umbral_pct = (n >= 13 && p[12] >= 5 && p[12] <= 95) ? p[12] : 55;
   return true;
 }
 
