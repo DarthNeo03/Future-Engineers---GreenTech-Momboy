@@ -73,7 +73,7 @@ prueba("sensores: clase linea", s2.clase_linea == P.LINEA_AZUL)
 prueba("sensores: yaw en grados", abs(s2.yaw + 123.4) < 1e-6)
 
 cfg = P.empaquetar_cfg_tcs(80, 120, 60, 110, 70, 1, 3, 246, 2)
-prueba("cfg_tcs: 17 bytes (12 de payload)", len(cfg) == 17, f"{len(cfg)}")
+prueba("cfg_tcs: 18 bytes (13 de payload)", len(cfg) == 18, f"{len(cfg)}")
 
 lector = P.Lector()
 basura = b"\x00\xa5" + tr + b"\xff\xa5\x5a" + m.a_bytes()
@@ -90,6 +90,34 @@ prueba("lector: trama truncada no se traga la siguiente",
 
 # contadores mod 16: perder tramas no pierde cruces
 prueba("contador de lineas envuelve", ((3 - 14) & 0x0F) == 5)
+
+print("== patas INT de los sensores ==")
+# El estado de los sensores lleva dos bits nuevos para saber, desde la web, si
+# cada pata INT esta cableada y funcionando. Los bits 0x40/0x80 siguen siendo
+# la clase de linea: no se pueden pisar.
+prueba("los bits INT no chocan con la clase de linea",
+       (P.S_MPU_INT | P.S_TCS_INT) & 0xC0 == 0,
+       hex(P.S_MPU_INT | P.S_TCS_INT))
+s_int = P.Sensores(estado=P.S_MPU_OK | P.S_TCS_OK | P.S_MPU_INT | P.S_TCS_INT
+                   | (P.LINEA_AZUL << 6))
+prueba("se leen las dos patas", s_int.mpu_int and s_int.tcs_int)
+prueba("y la clase de linea sigue intacta", s_int.clase_linea == P.LINEA_AZUL)
+s_sin = P.Sensores(estado=P.S_MPU_OK | P.S_TCS_OK)
+prueba("sin patas cableadas los bits estan a cero",
+       not s_sin.mpu_int and not s_sin.tcs_int)
+prueba("y eso no impide que los sensores esten OK",
+       s_sin.mpu_ok and s_sin.tcs_ok)
+
+# El umbral de la INT viaja en la trama de configuracion del TCS.
+cfg13 = P.empaquetar_cfg_tcs(80, 110, 90, 95, 95, 1, 3, 246, 2, 30, 18, 40)
+prueba("cfg_tcs con umbral de INT: 18 bytes", len(cfg13) == 18, str(len(cfg13)))
+prueba("el umbral va en el ultimo byte del payload", cfg13[4 + 12] == 40,
+       str(cfg13[4 + 12]))
+# el firmware lo recorta a 5..95 y usa 55 si viene fuera; aqui se recorta ya
+cfg_alto = P.empaquetar_cfg_tcs(80, 110, 90, 95, 95, 1, 3, 246, 2, 30, 18, 200)
+prueba("un umbral absurdo se recorta antes de salir", cfg_alto[4 + 12] == 95,
+       str(cfg_alto[4 + 12]))
+
 
 # ===========================================================================
 print("== geometria ==")
