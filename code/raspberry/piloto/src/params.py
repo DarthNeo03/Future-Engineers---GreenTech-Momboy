@@ -186,6 +186,28 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "max_ms": _p("int", 7000, "Tiempo total maximo de la maniobra antes de rendirse y seguir de frente. Mantenlo POR DEBAJO de lineas.esquina_max_ms: si la zona de esquina caduca antes, la maniobra deja de tener permiso para retroceder y termina el giro hacia adelante.", 1000, 20000),
     },
 
+    ### MODO DE ESQUINA POR COLOR
+    ### Nacio de dos fallos vistos en pista con el giro normal: (1) al llegar
+    ### a la curva el giro de 90 iba forzado y se comia los pilares de la
+    ### salida, y (2) tras cruzar la naranja el carro giraba, luego veia la
+    ### azul y giraba OTRA vez. Aqui el TCS solo hace dos cosas: la primera
+    ### linea fija el sentido y cada linea de ESE color dispara un giro hacia
+    ### adentro; el otro color no existe. Y el giro se suelta al ver un pilar.
+    ### Mientras este encendido manda por encima del par de lineas y del 2T.
+    "esquina_color": {
+        "activo": _p("bool", False, "MODO DE ESQUINA POR COLOR. El TCS se usa SOLO para dos cosas: (1) la PRIMERA linea que cruza fija el sentido (naranja = horario, azul = antihorario) y (2) cada linea de ESE MISMO color dispara un giro hacia ADENTRO de la pista (horario = derecha) y cuenta una esquina. Las lineas del otro color se ignoran del todo: ni giran ni cuentan, asi que la azul que llega tarde ya no puede disparar un segundo giro. El giro es INTERRUMPIBLE: en cuanto se ve un pilar (cerca o lejos) se suelta el volante y manda el esquive, que sigue igual que siempre; el giro normal iba forzado y por eso se comia los pilares de la salida de la curva. Mientras esta encendido sustituye al par de lineas y al giro de dos tiempos."),
+        "dir_pct": _p("float", 75.0, "Direccion hacia adentro durante el giro, en %. Con giroscopio se va soltando segun se acerca al rumbo de la recta nueva (mismo control que el giro normal), asi que esto es el tope, no un valor fijo.", 20.0, 100.0),
+        "vel_max_pct": _p("int", 40, "Velocidad del giro con el pasillo despejado, en % de vmax.", 5, 100),
+        "vel_min_pct": _p("int", 22, "Velocidad del giro con el muro encima (pasillo en navegacion.parar_bajo_mm). Entre este y vel_max_pct se interpola con el pasillo: eso es la velocidad VARIABLE del giro. Mas pasillo, mas rapido; el muro se acerca, mas lento.", 5, 100),
+        "max_ms": _p("int", 3500, "Tope de tiempo del giro (sumando las reanudaciones tras un pilar). Al vencer se da por hecho y se sigue de frente, como el giro normal.", 500, 12000),
+        "ceder_al_pilar": _p("bool", True, "Soltar el giro EN EL ACTO en cuanto haya un pilar en juego: visto por la camara (a la distancia que sea, dentro de obstaculos.activar_desde_mm) o en el punto ciego mientras se le adelanta. El esquive toma el mando de inmediato. Apagado: el giro va comprometido como el normal."),
+        "reanudar": _p("bool", True, "Cuando el pilar deja de mandar (ya se paso o se perdio de vista) y aun faltan grados para encarar la recta nueva, RETOMAR el giro hacia adentro. Apagado: tras soltar solo el giroscopio (navegacion.yaw_kp / yaw_max) va acercando el rumbo, y si la recta abre sola no se vuelve a girar."),
+        "reanudar_tras_ms": _p("int", 400, "Cuanto tiene que llevar el pilar fuera de juego antes de retomar el giro. Sin esta espera el carro alterna cada frame entre 'girar adentro' y 'esquivar' cuando el pilar entra y sale del cuadro por el propio giro.", 0, 3000),
+        "refractario_ms": _p("int", 2000, "Tras contar una linea del color del sentido, otra del MISMO color dentro de este tiempo es la misma linea (rebote, o el carro que la vuelve a pisar al maniobrar) y no cuenta ni gira. Tiene que ser mas corto que el tiempo entre dos esquinas: a media velocidad, con secciones de 600 mm, van unos 3 s.", 300, 8000),
+        "vision_dispara": _p("bool", True, "Dejar que la vision (pasillo cerrandose, pared de frente, muro interno que desaparece) tambien dispare este giro cuando el TCS no vio la linea. El giro sigue siendo interrumpible por pilar. Apagado: solo giran las lineas del piso; la vision se limita a frenar y escapar."),
+        "contar_giro_sin_linea": _p("bool", False, "Contar tambien la esquina cuando el giro nacio de la vision sin haber pisado la linea del color. Apagado: en este modo solo cuentan las lineas, que es la regla; si el TCS se pierde una, esa esquina no suma."),
+    },
+
     "escape": {
         "escape_min_ms": _p("int", 750, "Compromiso minimo de la marcha atras. Retrocesos cortos frente a un muro no ganan espacio: ir y venir cada 500 ms es como se choca.", 200, 3000),
         "escape_k_ms_por_mm": _p("float", 3.0, "ms extra de reversa por cada mm que falte de espacio (escala el compromiso segun el deficit).", 0.0, 20.0),

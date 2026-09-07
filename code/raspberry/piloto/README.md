@@ -21,7 +21,7 @@ MPU6050 y el TCS34725 por I2C y manda yaw + cruces de linea a la Pi).
 ```bash
 python3 -m venv .venv && source .venv/bin/activate    # en Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python tools/selftest.py            # 216 pruebas, sin hardware
+python tools/selftest.py            # 268 pruebas, sin hardware
 python main.py                      # camara + ESP32 + web
 python main.py --simulado           # sin ESP32 (pruebas en el PC)
 python main.py --imagen foto.jpg    # sin camara, sobre una foto
@@ -62,7 +62,9 @@ carrera (cronometro + conteo).
    entero se comprueba ademas el ORDEN, que en las cuatro esquinas es el mismo
    (horario: naranja y luego azul): un par al reves o es basura o el carro se
    dio la vuelta, asi que uno suelto no cuenta y dos seguidos invierten el
-   sentido. 4 esquinas = vuelta.
+   sentido. 4 esquinas = vuelta. Alternativa: **modo de esquina por color**
+   (`esquina_color.activo`): solo cuenta el color del sentido, el otro se
+   ignora, y el giro se suelta al ver un pilar. Ver su seccion mas abajo.
 5. **Parada final**: tras la esquina 12 avanza `carrera.parada_ms` para meter
    el carro ENTERO en la seccion de meta y se detiene solo (bono del
    reglamento). Tope de 3 minutos.
@@ -239,6 +241,62 @@ cuenta UNA sola vez, la den por buena las lineas o el giro.
 
 Probado: con cuatro esquinas seguidas perdiendo SIEMPRE la azul, la cuenta
 sigue dando 4.
+
+## Modo de esquina por color (`esquina_color.activo`)
+
+Dos cosas seguian pasando en pista con el giro normal: (1) al llegar a la
+curva el giro de 90 iba **forzado** y se llevaba por delante los pilares de la
+salida, y (2) el carro cruzaba la naranja, giraba, luego veia la azul y
+**volvia a girar**. Este modo lo resuelve simplificando, no añadiendo: el TCS
+solo hace DOS cosas.
+
+```
+1a linea de la ronda   -> fija el sentido: naranja = horario, azul = antihorario
+cada linea de ESE color -> cuenta una esquina y dispara el giro hacia ADENTRO
+                          (horario = derecha)
+la del otro color       -> NO EXISTE: ni gira, ni cuenta, ni es "linea reciente"
+la misma otra vez       -> rebote (esquina_color.refractario_ms), no cuenta
+```
+
+El giro (`GIRO_COLOR`) va hacia adentro con **velocidad variable**: `vel_max_pct`
+con el pasillo despejado y `vel_min_pct` con el muro encima, interpolado con
+el pasillo. Con giroscopio se termina al clavar los 90 (misma ley que el giro
+normal, topada en `dir_pct`); sin el, cuando el pasillo abre; y siempre hay
+`max_ms`. Solo va hacia adelante: el ESCAPE sigue por encima.
+
+**Se suelta en el acto al ver un pilar** (`ceder_al_pilar`): en cuanto hay un
+pilar en juego -visto por la camara a la distancia que sea, o en el punto ciego
+mientras se le adelanta- el navegador pasa a RECTO y el esquive tiene el
+volante, sin tocar nada del esquive. Mientras tanto el rumbo de referencia ya
+apunta a la recta NUEVA, asi que el giroscopio sigue tirando hacia adentro
+(acotado por `yaw_max` y cediendo al pilar). Cuando el pilar lleva
+`reanudar_tras_ms` fuera de juego, se **retoma** el giro por los grados que
+falten (`reanudar`); si esquivando ya quedo encarado, la esquina se da por
+hecha. Si un escape interrumpe el giro, al volver tambien se retoma.
+
+Con el modo encendido no se usan ni el par de lineas ni el giro de dos
+tiempos. La esquina se cuenta al **pisar** la linea (antes de girar), asi que
+la carrera espera a salir de la zona de esquina antes de arrancar la parada
+en meta. El giro de 90 completado ya no cuenta esquina (salvo
+`contar_giro_sin_linea`): si el TCS se pierde una linea, esa esquina no suma;
+mejor perder una que sumar una. La vision (pasillo cerrandose, pared de
+frente) sigue pudiendo disparar este mismo giro por si el TCS falla
+(`vision_dispara`); tambien se le puede quitar el voto.
+
+Ojo: si el TCS se pierde la primera naranja y ve la azul, el sentido sale al
+reves toda la ronda. Es el precio de usar solo el TCS; con
+`carrera.sentido` forzado desde la web no pasa, y ahi cuenta el color de ese
+sentido aunque la primera linea vista fuera la otra.
+
+En banco: pestaña Carrera, boton **Esquina por color**, luego *Probar esquina
+(linea naranja)* -> debe girar a la derecha; *Simular linea azul* -> debe salir
+"ignorada: cuentan las naranja" en la fila *lineas*. El video marca la zona
+como "giro por color, cuenta naranja; cede al pilar".
+
+Medido en el selftest (modelo Ackermann): pilar visible entre los ticks 6 y
+40 de la curva -> suelta en el tick 6, retoma en el 40, 90 grados clavados en
+46 ticks, una sola esquina contada; con el pasillo en 450 mm la velocidad del
+giro baja de 40 a 26.
 
 ## Tres lineas de calibracion
 
@@ -502,6 +560,9 @@ distancias fisicas y valen igual en pista ancha (1000 mm) o angosta (600 mm).
 | `navegacion.bloqueo_esquina` | Anti-bucle en las curvas. Dejalo encendido. |
 | `giro2t.activo` | Giro de 90 en dos tiempos: mas lento, ve todos los obstaculos. |
 | `giro2t.frac_avance` | Cuanto del giro se hace hacia adelante antes de retroceder. |
+| `esquina_color.activo` | Modo de esquina por color: un solo color cuenta y el giro cede al pilar. |
+| `esquina_color.dir_pct` / `vel_max_pct` / `vel_min_pct` | Cuanto dobla hacia adentro y a que velocidad (variable con el pasillo). |
+| `esquina_color.refractario_ms` | Ventana en la que la misma linea pisada otra vez no cuenta. |
 
 ## Estructura
 
@@ -515,8 +576,8 @@ piloto/
 │   ├── vision.py           mascaras HSV y deteccion de objetos (del reconizer)
 │   ├── color_config.py     perfiles de color (mismo formato que el reconizer)
 │   ├── params.py           esquema autodocumentado de parametros + perfiles
-│   ├── lineas.py           sentido / esquinas / vueltas + zona (dentro de la curva)
-│   ├── navegacion.py       RECTO / PRE_GIRO / GIRO / GIRO_2T / ESCAPE
+│   ├── lineas.py           sentido / esquinas / vueltas + zona; modo par o por color
+│   ├── navegacion.py       RECTO / PRE_GIRO / GIRO / GIRO_2T / GIRO_COLOR / ESCAPE
 │   ├── carrera.py          director de la ronda (3 vueltas y parada en meta)
 │   ├── obstaculos.py       esquive rojo/verde con compromiso de paso
 │   ├── protocolo.py        trama binaria v2 (gemela de protocolo.h)
@@ -525,7 +586,7 @@ piloto/
 │   ├── dibujo.py           overlay del video
 │   ├── servidor.py         http.server + MJPEG
 │   └── web/index.html      la interfaz
-└── tools/selftest.py       216 pruebas sin hardware
+└── tools/selftest.py       268 pruebas sin hardware
 ```
 
 ## Notas practicas (heredadas a golpes)

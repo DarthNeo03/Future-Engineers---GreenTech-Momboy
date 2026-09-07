@@ -27,6 +27,12 @@ Maquina de estados:
                frente a un muro es exactamente como se choca; el compromiso
                es la cura. La direccion va HACIA el muro para que el morro
                se separe, como al salir de un estacionamiento.
+  * GIRO_COLOR (esquina_color.activo) giro hacia ADENTRO de la pista con
+               velocidad variable segun el pasillo, que se SUELTA en el acto
+               si aparece un pilar (manda el esquive, en RECTO) y se retoma
+               cuando el pilar deja de mandar. Sustituye a GIRO y GIRO_2T
+               mientras el modo esta encendido. Solo va hacia adelante; el
+               ESCAPE sigue por encima.
 
 EL BUCLE DE LAS ESQUINAS, Y POR QUE HACE FALTA `en_esquina`
 Cuando el muro interno se termina queda un hueco de piso blanco muy grande.
@@ -61,6 +67,7 @@ PRE_GIRO = "pre_giro"
 GIRO = "giro"
 GIRO_2T = "giro_2t"
 ESCAPE = "escape"
+GIRO_COLOR = "giro_color"
 
 
 @dataclass
@@ -102,12 +109,14 @@ class Navegador:
     def __init__(self, cfg_nav: Dict[str, Any], cfg_lim: Dict[str, Any],
                  cfg_esc: Dict[str, Any], cfg_2t: Optional[Dict[str, Any]] = None,
                  al_completar_giro: Optional[Callable[[int], None]] = None,
-                 cfg_obst: Optional[Dict[str, Any]] = None):
+                 cfg_obst: Optional[Dict[str, Any]] = None,
+                 cfg_color: Optional[Dict[str, Any]] = None):
         self.cfg = cfg_nav
         self.lim = cfg_lim
         self.esc = cfg_esc
         self.g2t = cfg_2t if cfg_2t is not None else {}
         self.obst = cfg_obst if cfg_obst is not None else {}
+        self.gc = cfg_color if cfg_color is not None else {}
         self.al_completar_giro = al_completar_giro or (lambda lado: None)
 
         self.pd = _PD()
@@ -147,6 +156,15 @@ class Navegador:
         self._2t_acum = 0.0           # grados girados ACUMULADOS (con signo)
         self._2t_yaw_prev: Optional[float] = None
 
+        # --- giro por color ---
+        ### pendiente = el giro se solto por un pilar (o lo corto un escape)
+        ### y aun no se ha dado por terminado; se retoma cuando el pilar
+        ### lleva reanudar_tras_ms fuera de juego
+        self._color_pendiente = False
+        self._color_apuntado = False  # ya se avanzo el rumbo +-90 para esta esquina
+        self._color_t_inicio = 0.0    # para el max_ms total (con reanudaciones)
+        self._t_pilar_fuera = 0.0     # desde cuando no hay pilar en juego
+
     # ------------------------------------------------------------------
     def reiniciar(self):
         self.pd.reiniciar()
@@ -160,6 +178,21 @@ class Navegador:
         self._2t_yaw_prev = None
         self._esquina_atendida = False
         self.rumbo_recta = None
+        self._color_pendiente = False
+        self._color_apuntado = False
+        self._t_pilar_fuera = 0.0
+
+    @property
+    def modo_color(self) -> bool:
+        return bool(self.gc.get("activo", False))
+
+    def rearmar_esquina(self) -> None:
+        """(modo color) Acaba de pisarse una linea buena. Si el carro esta en
+        recta y sin giro a medias, la esquina se atiende aunque la zona de la
+        anterior siguiera abierta. Si esta girando o con el giro suelto por
+        un pilar, ese giro YA es el de esta esquina: no se apila otro."""
+        if self.estado == RECTO and not self._color_pendiente:
+            self._esquina_atendida = False
 
     def _cambiar(self, estado: str):
         if estado != self.estado:
@@ -179,8 +212,12 @@ class Navegador:
              linea_reciente: bool = False,
              bias_obstaculo: Tuple[float, float] = (0.0, 0.0),
              en_esquina: bool = False,
-             esquina_confirmada: bool = False) -> Decision:
+             esquina_confirmada: bool = False,
+             pilar_en_juego: bool = False) -> Decision:
         """sentido: +1 horario, -1 antihorario, 0 desconocido.
+        pilar_en_juego: (modo color) hay un pilar visto ahora mismo o en el
+                    punto ciego adelantandolo. Es lo que SUELTA el giro por
+                    color; fuera de ese modo no se usa.
         bias_obstaculo: (direccion_deseada_pct, peso 0..1) del esquive.
         en_esquina: el carro esta en una curva, por lineas del piso O porque
                     la vision decidio girar. Con bloqueo_esquina, mientras
@@ -229,6 +266,10 @@ class Navegador:
         # dos estarian dando ordenes de reversa distintas.
         parar_bajo = float(cfg.get("parar_bajo_mm", 300.0))
         if self.estado not in (ESCAPE, GIRO_2T) and pasillo < parar_bajo:
+            if self.estado == GIRO_COLOR:
+                ### el giro por color solo va hacia adelante: si el muro se
+                ### le echa encima manda el escape, y al volver se retoma
+                self._color_pendiente = True
             self._cambiar(ESCAPE)
             deficit = parar_bajo - pasillo
             comp = float(esc.get("escape_min_ms", 750)) + \
@@ -277,11 +318,19 @@ class Navegador:
 
         # =================== PRE_GIRO =====================================
         if self.estado == PRE_GIRO:
-            if (ahora - self.t_estado) * 1000 >= float(cfg.get("retardo_giro_ms", 220)):
+            if (self.modo_color and pilar_en_juego
+                    and bool(self.gc.get("ceder_al_pilar", True))):
+                ### pilar a la vista ya en el pre-giro: ni empezar. Se suelta
+                ### y cae al bloque RECTO de este mismo tick, que es donde
+                ### el esquive tiene el mando.
+                self._soltar_color(yaw, usar_yaw)
+            elif (ahora - self.t_estado) * 1000 >= float(cfg.get("retardo_giro_ms", 220)):
+                if self.modo_color:
+                    self._iniciar_color(yaw, usar_yaw)
                 # El giro de dos tiempos SOLO se permite en una esquina
                 # confirmada por el par de lineas del piso: es la unica
                 # maniobra que retrocede, y nunca debe retroceder en recta.
-                if (bool(self.g2t.get("activo", False)) and usar_yaw
+                elif (bool(self.g2t.get("activo", False)) and usar_yaw
                         and esquina_confirmada):
                     self._apuntar_a_la_recta_siguiente(yaw, usar_yaw)
                     self._iniciar_2t(yaw)
@@ -298,6 +347,14 @@ class Navegador:
                     d = -self.lado_giro * apertura
                 return self._salida(vel_giro, d, p, yaw, sentido,
                                     f"pre-giro {'der' if self.lado_giro > 0 else 'izq'}")
+
+        # =================== GIRO_COLOR (hacia adentro, cede al pilar) ====
+        if self.estado == GIRO_COLOR:
+            d = self._paso_color(p, yaw, usar_yaw, sentido, ahora, pilar_en_juego)
+            if d is not None:
+                return d
+            # None: termino, o se solto por un pilar. En los dos casos el
+            # estado ya es RECTO y se sigue abajo en este mismo tick.
 
         # =================== GIRO_2T (dos tiempos) ========================
         if self.estado == GIRO_2T:
@@ -355,8 +412,19 @@ class Navegador:
                                     f"RESCATE de rumbo: {desvio:+.0f} grados "
                                     f"fuera de la recta")
 
+        # --- giro por color suelto: retomarlo cuando el pilar ya no manda --
+        if self.modo_color and self._color_pendiente:
+            d = self._reanudar_color(p, yaw, usar_yaw, sentido, ahora,
+                                     en_esquina, pilar_en_juego)
+            if d is not None:
+                return d
+
         recto_estable = (ahora - self.t_estado) * 1000 >= float(
             cfg.get("min_recto_ms", 700))
+        ### en modo color la vision puede quedarse sin voto para DISPARAR
+        ### (esquina_color.vision_dispara); frenar y escapar siguen igual
+        vision_dispara = (not self.modo_color
+                          or bool(self.gc.get("vision_dispara", True)))
 
         disparo = ""
         # Las lineas del piso marcan fisicamente donde esta la curva: si el
@@ -368,7 +436,7 @@ class Navegador:
             disparo = "linea del piso: dentro de la esquina"
         elif en_esquina and self._esquina_atendida:
             pass                     # curva ya girada: a esperar la salida
-        elif recto_estable:
+        elif recto_estable and vision_dispara:
             frontal = p.frontal_mm if bool(cfg.get("usar_rectas", True)) else None
             if frontal is not None and frontal < float(cfg.get("girar_bajo_mm", 650.0)):
                 # pared cruzada delante: esto es una esquina identificada, no
@@ -415,6 +483,8 @@ class Navegador:
         if peso > 0.0:
             direccion = (1.0 - peso) * direccion + peso * bias_dir
             motivo += f" esq({bias_dir:+.0f}x{peso:.2f})"
+        if self._color_pendiente:
+            motivo += " [giro color suelto]"
 
         # --- rumbo por giroscopio -----------------------------------------
         # OJO CON EL SIGNO DE SUMA: la correccion de rumbo se añade DESPUES de
@@ -537,6 +607,126 @@ class Navegador:
         return self._salida(-vel_rev, -lado * float(g.get("dir_reversa", 100.0)),
                             p, yaw, sentido,
                             f"2T reversa {girado:.0f}/{objetivo:.0f} deg")
+
+    # ---------------- giro por color (hacia adentro, cede al pilar) ------
+    def _iniciar_color(self, yaw: Optional[float], usar_yaw: bool,
+                       reanudar: bool = False) -> None:
+        """Arranca (o retoma) el giro hacia adentro. El rumbo de la recta
+        nueva se avanza UNA sola vez por esquina, aunque el giro se suelte
+        y se retome varias veces: si se avanzara en cada reanudacion el
+        carro acabaria apuntando 180 o 270 grados."""
+        self._cambiar(GIRO_COLOR)
+        if not reanudar:
+            self._color_t_inicio = time.time()
+            self._color_apuntado = False
+        if not self._color_apuntado:
+            self._apuntar_a_la_recta_siguiente(yaw, usar_yaw)
+            self._color_apuntado = True
+        self._color_pendiente = False
+        self._t_pilar_fuera = 0.0
+
+    def _soltar_color(self, yaw: Optional[float], usar_yaw: bool) -> None:
+        """Hay un pilar: el volante es del esquive desde YA. Se pasa a RECTO
+        con el giro marcado como pendiente. El rumbo de referencia se deja
+        apuntando a la recta NUEVA aunque se suelte desde el pre-giro: en
+        recta el giroscopio sigue tirando hacia adentro (acotado por yaw_max
+        y cediendo al pilar), que es hacia donde hay que ir. Probe a dejar
+        el rumbo viejo y el carro se iba derecho al muro de enfrente."""
+        if not self._color_apuntado:
+            self._color_t_inicio = time.time()
+            self._apuntar_a_la_recta_siguiente(yaw, usar_yaw)
+            self._color_apuntado = True
+        self._cambiar(RECTO)
+        self.pd.reiniciar()
+        self._color_pendiente = True
+        self._t_pilar_fuera = 0.0
+
+    def _paso_color(self, p: PerfilMuro, yaw: Optional[float], usar_yaw: bool,
+                    sentido: int, ahora: float,
+                    pilar_en_juego: bool) -> Optional[Decision]:
+        """Un tick del giro por color. Devuelve None si termino o se solto
+        (en ambos casos el estado ya es RECTO)."""
+        g, cfg = self.gc, self.cfg
+        lado = self.lado_giro or 1
+        pasillo = p.pasillo_mm
+
+        if pilar_en_juego and bool(g.get("ceder_al_pilar", True)):
+            self._soltar_color(yaw, usar_yaw)
+            return None
+
+        vencido = (ahora - self._color_t_inicio) * 1000 > float(g.get("max_ms", 3500))
+        tope = min(float(g.get("dir_pct", 75.0)), float(self.lim.get("dir_max", 100)))
+        if usar_yaw and self.rumbo_objetivo is not None:
+            err = _norm_ang(self.rumbo_objetivo - yaw)
+            if abs(err) < float(cfg.get("giro_tolerancia_deg", 8.0)) or vencido:
+                if vencido:
+                    self.rumbo_objetivo = yaw
+                self._terminar_giro()
+                return None
+            ### misma ley que el giro normal (P sobre el error de rumbo),
+            ### pero topada en dir_pct: asi va soltando volante al final
+            d = _lim(err * float(cfg.get("yaw_kp", 1.6)) * 3.0, -tope, tope)
+            txt = f"giro color yaw err={err:+.0f}"
+        else:
+            # Sin giroscopio: el pasillo abre cuando el giro encaro la recta.
+            # Con anti-bucle se exige ademas un tiempo minimo (el hueco del
+            # muro interno abre el pasillo antes de tiempo).
+            abrio = pasillo > float(cfg.get("salir_giro_mm", 950.0))
+            if bool(cfg.get("bloqueo_esquina", True)):
+                abrio = abrio and (ahora - self._color_t_inicio) * 1000 > \
+                    float(g.get("max_ms", 3500)) * 0.4
+            if abrio or vencido:
+                self._terminar_giro()
+                return None
+            d = lado * tope
+            txt = f"giro color vision pasillo={pasillo:.0f}"
+
+        # --- velocidad VARIABLE: con el pasillo ---------------------------
+        # despejado = vel_max; el muro encima (parar_bajo) = vel_min
+        parar_bajo = float(cfg.get("parar_bajo_mm", 300.0))
+        frenar = float(cfg.get("frenar_bajo_mm", 1000.0))
+        t = (pasillo - parar_bajo) / max(1.0, frenar - parar_bajo)
+        v_min = float(g.get("vel_min_pct", 22))
+        v_max = float(g.get("vel_max_pct", 40))
+        vel = v_min + (v_max - v_min) * _lim(t, 0.0, 1.0)
+        if bool(g.get("ceder_al_pilar", True)):
+            txt += " [cede al pilar]"
+        return self._salida(vel, d, p, yaw, sentido, txt)
+
+    def _reanudar_color(self, p: PerfilMuro, yaw: Optional[float],
+                        usar_yaw: bool, sentido: int, ahora: float,
+                        en_esquina: bool,
+                        pilar_en_juego: bool) -> Optional[Decision]:
+        """En RECTO con un giro por color suelto. Decide si retomarlo, darlo
+        por hecho (el esquive ya encaro la recta) o seguir esperando.
+        Devuelve la Decision del giro retomado, o None para seguir en recto."""
+        g, cfg = self.gc, self.cfg
+        if not en_esquina:
+            ### la zona caduco: lo que falte de rumbo lo pone el yaw en recta
+            self._color_pendiente = False
+            return None
+        if pilar_en_juego:
+            self._t_pilar_fuera = 0.0
+            return None
+        if self._t_pilar_fuera == 0.0:
+            self._t_pilar_fuera = ahora
+        if (ahora - self._t_pilar_fuera) * 1000 < float(g.get("reanudar_tras_ms", 400)):
+            return None
+
+        if usar_yaw and self.rumbo_objetivo is not None:
+            err = _norm_ang(self.rumbo_objetivo - yaw)
+            hecho = abs(err) < float(cfg.get("giro_tolerancia_deg", 8.0))
+        else:
+            hecho = p.pasillo_mm > float(cfg.get("salir_giro_mm", 950.0))
+        if hecho:
+            # esquivando ya quedo encarado: la esquina esta hecha
+            self._color_pendiente = False
+            self._terminar_giro()
+            return None
+        if not bool(g.get("reanudar", True)):
+            return None
+        self._iniciar_color(yaw, usar_yaw, reanudar=True)
+        return self._paso_color(p, yaw, usar_yaw, sentido, ahora, pilar_en_juego)
 
     # ------------------------------------------------------------------
     def _apuntar_a_la_recta_siguiente(self, yaw: Optional[float],

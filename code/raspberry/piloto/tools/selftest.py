@@ -751,6 +751,257 @@ prueba("el ESCAPE sigue pudiendo retroceder fuera de una esquina",
        f"{d_esc.estado} vel={d_esc.vel}")
 
 # ===========================================================================
+print("== esquina por color: conteo ==")
+### El modo nuevo. El TCS fija el sentido con la PRIMERA linea, desde ahi
+### solo cuenta ese color, y el giro hacia adentro se suelta al ver un pilar.
+import dataclasses                                   # noqa: E402
+from src.navegacion import GIRO_COLOR                # noqa: E402
+from src.carrera import Carrera, PARANDO, TERMINADO, CORRIENDO  # noqa: E402
+
+ccfg = dict(params_mod.valores_por_defecto()["esquina_color"],
+            activo=True, refractario_ms=300, reanudar_tras_ms=0)
+
+gc = GestorLineas(dict(lcfg, esquina_max_ms=60000), cfg_color=ccfg)
+prueba("color: sin lineas no hay color objetivo", gc.color_objetivo() == "")
+ok_n = gc.evento_tcs("naranja")
+prueba("color: la primera naranja fija horario y cuenta 1",
+       ok_n and gc.sentido == HORARIO and gc.esquinas == 1,
+       f"{gc.sentido} {gc.esquinas}")
+prueba("color: y entra en la zona de esquina", gc.en_esquina)
+prueba("color: deja UN disparo para el navegador",
+       gc.tomar_disparo() and not gc.tomar_disparo())
+ok_a = gc.evento_tcs("azul")
+prueba("color: la azul se ignora del todo (ni cuenta ni es 'reciente')",
+       not ok_a and gc.esquinas == 1 and gc.ignoradas == 1, gc.ultimo_evento)
+prueba("color: la azul no deja disparo", not gc.tomar_disparo())
+gc.evento_tcs("naranja")                    # dentro del refractario
+prueba("color: la misma naranja pisada otra vez no cuenta",
+       gc.esquinas == 1 and gc.rebotes == 1, gc.ultimo_evento)
+time.sleep(0.35)
+gc.evento_tcs("naranja")
+prueba("color: pasado el refractario, la naranja siguiente cuenta",
+       gc.esquinas == 2, str(gc.esquinas))
+gc.giro_completado(1)
+prueba("color: el giro completado NO suma esquina", gc.esquinas == 2,
+       str(gc.esquinas))
+prueba("color: pero si saca de la zona", not gc.en_esquina, gc.zona)
+gc.evento_tcs("azul")
+gc.evento_tcs("azul")
+prueba("color: mas azules, mismo marcador",
+       gc.esquinas == 2 and gc.ignoradas == 3, str(gc.ignoradas))
+
+ga = GestorLineas(lcfg, cfg_color=ccfg)
+ga.evento_tcs("azul")
+prueba("color: primera azul => antihorario y cuenta las azules",
+       ga.sentido == ANTIHORARIO and ga.esquinas == 1
+       and ga.color_objetivo() == "azul", ga.color_objetivo())
+ga.evento_tcs("naranja")
+prueba("color: en antihorario la naranja se ignora", ga.esquinas == 1)
+
+# sentido forzado desde la web: manda sobre lo que diga la primera linea
+gf2 = GestorLineas(lcfg, cfg_color=ccfg)
+gf2.sentido_forzado = "horario"
+gf2.evento_tcs("azul")
+prueba("color: forzado horario, la azul no cuenta ni siendo la primera",
+       gf2.esquinas == 0 and gf2.color_objetivo() == "naranja",
+       gf2.ultimo_evento)
+gf2.evento_tcs("naranja")
+prueba("color: ...y la naranja si", gf2.esquinas == 1)
+
+gg = GestorLineas(lcfg, cfg_color=dict(ccfg, contar_giro_sin_linea=True))
+gg.giro_completado(1)
+prueba("color: con contar_giro_sin_linea el giro suelto cuenta",
+       gg.esquinas == 1, str(gg.esquinas))
+
+gpar = GestorLineas(lcfg)
+prueba("modo par: evento_tcs sigue devolviendo True (linea reciente)",
+       gpar.evento_tcs("azul") is True and gpar.evento_tcs("azul") is True)
+
+print("== esquina por color: el giro hacia adentro ==")
+
+def nav_color(**cambios):
+    """Gestor + navegador en modo color, cableados como en robot.py."""
+    v = params_mod.valores_por_defecto()
+    v["navegacion"].update(min_recto_ms=0, retardo_giro_ms=0)
+    v["esquina_color"].update(dict(activo=True, reanudar_tras_ms=0), **cambios)
+    gl = GestorLineas(dict(lcfg, esquina_max_ms=60000),
+                      cfg_color=v["esquina_color"])
+    n = Navegador(v["navegacion"], v["limites"], v["escape"], v["giro2t"],
+                  al_completar_giro=gl.giro_completado,
+                  cfg_color=v["esquina_color"])
+    return n, gl, v
+
+def curva_color(nav, gl, pilar=False, pasos=400, k=9.0, perfil=None):
+    """Esquina entera en modo color. 'pilar' es un bool o una funcion del
+    tick que dice si hay pilar en juego. Mismo modelo Ackermann que
+    curva_completa. Traza: (estado, vel, dir, yaw, pilar)."""
+    perfil = perfil if perfil is not None else p_libre
+    yaw = 0.0
+    traza = []
+    for i in range(pasos):
+        gl.paso_zona()
+        if gl.tomar_disparo():
+            nav.rearmar_esquina()
+        pe = bool(pilar(i)) if callable(pilar) else bool(pilar)
+        d = nav.paso(perfil, yaw, gl.sentido_efectivo(),
+                     en_esquina=gl.en_esquina, esquina_confirmada=gl.en_esquina,
+                     pilar_en_juego=pe)
+        traza.append((nav.estado, d.vel, d.direccion, yaw, pe, d.motivo))
+        yaw = ((yaw + k * (d.vel / 100.0) * (d.direccion / 100.0)) + 180) % 360 - 180
+        if not gl.en_esquina and nav.estado == RECTO and not nav._color_pendiente:
+            break
+    return traza, yaw
+
+# --- sin pilares: cruzar la naranja, girar a la derecha, salir ------------
+n1, g1, _ = nav_color()
+g1.evento_tcs("naranja")
+tr1, yaw1 = curva_color(n1, g1)
+est1 = [t[0] for t in tr1]
+prueba("color: la naranja dispara el giro por color", GIRO_COLOR in est1,
+       str(set(est1)))
+prueba("color: horario => gira a la DERECHA",
+       all(t[2] > 0 for t in tr1 if t[0] == GIRO_COLOR),
+       str([t[2] for t in tr1 if t[0] == GIRO_COLOR][:5]))
+prueba("color: completa los 90 y vuelve a recto",
+       80 <= yaw1 <= 105 and n1.estado == RECTO, f"{yaw1:.1f} {n1.estado}")
+prueba("color: al terminar sale de la zona", not g1.en_esquina, g1.zona)
+prueba("color: la esquina se conto UNA vez", g1.esquinas == 1, str(g1.esquinas))
+prueba("color: nunca retrocede", all(t[1] >= 0 for t in tr1))
+prueba("color: no usa el giro normal ni el 2T",
+       GIRO not in est1 and GIRO_2T not in est1, str(set(est1)))
+
+# aunque el 2T este encendido, en modo color no se usa
+n2t, g2tc, _ = nav_color()
+n2t.g2t["activo"] = True
+g2tc.evento_tcs("naranja")
+tr2t, _y = curva_color(n2t, g2tc)
+prueba("color: con giro2t.activo encendido sigue mandando el giro por color",
+       GIRO_2T not in [t[0] for t in tr2t] and all(t[1] >= 0 for t in tr2t))
+
+# antihorario: primera azul => giro a la izquierda
+n3, g3, _ = nav_color()
+g3.evento_tcs("azul")
+tr3, yaw3 = curva_color(n3, g3)
+prueba("color: antihorario => gira a la IZQUIERDA",
+       all(t[2] < 0 for t in tr3 if t[0] == GIRO_COLOR) and -105 <= yaw3 <= -80,
+       f"{yaw3:.1f}")
+
+# --- velocidad variable con el pasillo ------------------------------------
+n4, g4, _ = nav_color()
+g4.evento_tcs("naranja")
+for _ in range(2):
+    n4.paso(p_libre, 0.0, 1, en_esquina=True)      # entrar en GIRO_COLOR
+p_450 = dataclasses.replace(p_libre, pasillo_mm=450.0)
+d_libre = n4.paso(p_libre, 0.0, 1, en_esquina=True)
+d_450 = n4.paso(p_450, 0.0, 1, en_esquina=True)
+prueba("color: en el giro (estado correcto)", n4.estado == GIRO_COLOR, n4.estado)
+prueba("color: velocidad variable: con el pasillo cerrandose va mas despacio",
+       0 < d_450.vel < d_libre.vel, f"{d_450.vel} < {d_libre.vel}")
+
+# --- el pilar SUELTA el giro en el acto y luego se retoma ------------------
+n5, g5, _ = nav_color()
+g5.evento_tcs("naranja")
+tr5, yaw5 = curva_color(n5, g5, pilar=lambda i: 6 <= i < 40)
+est5 = [t[0] for t in tr5]
+prueba("color: empieza girando", GIRO_COLOR in est5[:6], str(est5[:6]))
+prueba("color: el pilar suelta el giro EN EL MISMO tick",
+       tr5[6][0] == RECTO, f"tick 6 -> {tr5[6][0]}")
+prueba("color: mientras hay pilar nunca esta girando por color",
+       all(t[0] != GIRO_COLOR for t in tr5 if t[4]),
+       str([t[0] for t in tr5 if t[4]][:5]))
+prueba("color: el motivo avisa de que el giro quedo suelto",
+       all("suelto" in t[5] for t in tr5 if t[0] == RECTO and t[4]),
+       str([t[5] for t in tr5 if t[0] == RECTO and t[4]][:2]))
+tras = [t[0] for t in tr5[40:]]
+prueba("color: sin pilar RETOMA el giro hacia adentro", GIRO_COLOR in tras,
+       str(set(tras)))
+prueba("color: y aun asi completa los 90", 80 <= yaw5 <= 105, f"{yaw5:.1f}")
+prueba("color: una esquina, una cuenta, aunque se soltara",
+       g5.esquinas == 1 and not g5.en_esquina, f"{g5.esquinas} {g5.zona}")
+prueba("color: con pilar tampoco retrocede", all(t[1] >= 0 for t in tr5))
+prueba("color: el rumbo objetivo se avanzo UNA sola vez (no 180)",
+       n5.rumbo_recta is not None and 80 <= _norm(n5.rumbo_recta) <= 100,
+       str(n5.rumbo_recta))
+
+# reanudar apagado: tras el pilar no vuelve a GIRO_COLOR; el yaw en recta
+# acaba encarando la recta y la zona se cierra sola
+n6, g6, _ = nav_color(reanudar=False)
+g6.evento_tcs("naranja")
+tr6, yaw6 = curva_color(n6, g6, pilar=lambda i: 6 <= i < 40, pasos=600)
+prueba("color: reanudar=False no vuelve al giro por color",
+       GIRO_COLOR not in [t[0] for t in tr6[6:]], str(set(t[0] for t in tr6[6:])))
+prueba("color: reanudar=False: el giroscopio en recta termina de encarar",
+       80 <= yaw6 <= 105 and not g6.en_esquina and g6.esquinas == 1,
+       f"{yaw6:.1f} {g6.zona}")
+
+# ceder_al_pilar apagado: el giro va comprometido como el normal
+n7, g7, _ = nav_color(ceder_al_pilar=False)
+g7.evento_tcs("naranja")
+tr7, yaw7 = curva_color(n7, g7, pilar=True)
+prueba("color: ceder_al_pilar=False ignora al pilar y gira igual",
+       GIRO_COLOR in [t[0] for t in tr7] and 80 <= yaw7 <= 105, f"{yaw7:.1f}")
+
+# pilar ya en el pre-giro: ni empieza
+n8, g8, v8 = nav_color()
+v8["navegacion"]["retardo_giro_ms"] = 500
+g8.evento_tcs("naranja")
+n8.rearmar_esquina()
+n8.paso(p_libre, 0.0, 1, en_esquina=True)                  # -> PRE_GIRO
+prueba("color: entra en pre-giro", n8.estado == PRE_GIRO, n8.estado)
+d8 = n8.paso(p_libre, 0.0, 1, en_esquina=True, pilar_en_juego=True)
+prueba("color: un pilar en el pre-giro lo suelta en el acto",
+       n8.estado == RECTO and d8.estado == RECTO and n8._color_pendiente,
+       f"{n8.estado} {d8.motivo}")
+
+# el escape sigue por encima del giro por color, y al volver se retoma
+n9, g9, _ = nav_color()
+g9.evento_tcs("naranja")
+for _ in range(2):
+    n9.paso(p_libre, 0.0, 1, en_esquina=True)
+prueba("color: (preparacion) esta girando", n9.estado == GIRO_COLOR, n9.estado)
+d9 = n9.paso(p_cerca, 0.0, 1, en_esquina=True)
+prueba("color: con el muro encima manda el ESCAPE (retrocede)",
+       d9.estado == ESCAPE and d9.vel < 0, f"{d9.estado} {d9.vel}")
+prueba("color: y el giro queda pendiente para retomarlo",
+       n9._color_pendiente)
+
+# la azul tardia, ya con el giro hecho, no dispara nada
+n10, g10, _ = nav_color()
+g10.evento_tcs("naranja")
+curva_color(n10, g10)
+est_antes = n10.estado
+g10.evento_tcs("azul")
+prueba("color: la azul tardia no deja disparo ni abre zona",
+       not g10.tomar_disparo() and not g10.en_esquina and g10.esquinas == 1)
+for _ in range(5):
+    n10.paso(p_libre, 90.0, 1, en_esquina=g10.en_esquina)
+prueba("color: ...y el carro sigue recto", n10.estado == RECTO == est_antes,
+       n10.estado)
+
+# vision_dispara apagado: el pasillo cerrandose ya no dispara giros
+n11, g11, _ = nav_color(vision_dispara=False)
+d11 = n11.paso(p_mitad, None, 0)
+prueba("color: vision_dispara=False: el pasillo no dispara la esquina",
+       n11.estado == RECTO and d11.estado == RECTO, n11.estado)
+
+print("== esquina por color: parada en meta ==")
+# La esquina se cuenta al PISAR la linea, antes de girar: la carrera tiene
+# que esperar a que el giro termine antes de arrancar la parada final.
+gcar = GestorLineas(dict(lcfg, esquina_max_ms=60000), cfg_color=ccfg)
+car = Carrera({"vueltas": 1, "esquinas_por_vuelta": 1, "parada_ms": 0,
+               "sentido": "auto", "autostop": True, "tiempo_max_s": 180}, gcar)
+car.arrancar()
+gcar.evento_tcs("naranja")
+prueba("meta: la linea ya suma la ultima esquina", gcar.esquinas == 1)
+prueba("meta: pero con el giro a medias NO se para",
+       car.paso() is False and car.estado == CORRIENDO, car.estado)
+gcar.giro_completado(1)
+prueba("meta: al salir de la esquina arranca la parada",
+       car.paso() is True and car.estado == TERMINADO, car.estado)
+prueba("meta: el sentido forzado llega al gestor de lineas",
+       gcar.sentido_forzado == "auto")
+
+# ===========================================================================
 print("== clasificador del TCS (gemelo del firmware) ==")
 from src.lineas import clase_tcs, umbrales_desde_muestra   # noqa: E402
 
