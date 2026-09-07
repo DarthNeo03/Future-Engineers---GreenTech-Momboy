@@ -108,13 +108,18 @@ class _Handler(BaseHTTPRequestHandler):
                 self._stream(args)
             elif ruta == "/api/estado":
                 est = r.estado()
+                est["categorias"] = params_mod.CATEGORIAS
                 est["perfiles_color"] = {
                     "activo": r.datos_colores.get("activo"),
-                    "lista": cc.listar(r.datos_colores),
+                    "lista": [{"nombre": p["nombre"],
+                               "categoria": p.get("categoria", "open")}
+                              for p in r.datos_colores["perfiles"]],
                 }
                 est["perfiles_params"] = {
                     "activo": r.datos_params.get("activo"),
-                    "lista": [p["nombre"] for p in r.datos_params["perfiles"]],
+                    "lista": [{"nombre": p["nombre"],
+                               "categoria": p.get("categoria", "open")}
+                              for p in r.datos_params["perfiles"]],
                 }
                 self._json(est)
             elif ruta == "/api/esquema":
@@ -170,11 +175,13 @@ class Servidor:
                     respuesta["valor"] = r.fijar_param(grupo, clave,
                                                        args.get("val", ""))
                 elif k == "perfil_params_guardar":
-                    r.guardar_perfil_params(v)
+                    r.guardar_perfil_params(v, args.get("categoria", ""))
+                elif k == "categoria":
+                    r.categoria = params_mod.categoria_valida(v)
                 elif k == "perfil_params_cargar":
                     r.cargar_perfil_params(v)
                 elif k == "perfil_color_guardar":
-                    r.guardar_perfil_colores(v)
+                    r.guardar_perfil_colores(v, args.get("categoria", ""))
                 elif k == "perfil_color_cargar":
                     r.cargar_perfil_colores(v)
                 elif k == "color_set":
@@ -213,7 +220,8 @@ class Servidor:
                     r.lineas.evento_tcs(color)
                     r.t_linea_reciente = time.time()
                     r.log(f"[prueba] cruce de linea {color} inyectado")
-                elif k in ("val", "color", "x", "y", "dist", "lat", "acumular"):
+                elif k in ("val", "color", "x", "y", "dist", "lat", "acumular",
+                           "categoria"):
                     pass          # argumentos de otras ordenes
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}

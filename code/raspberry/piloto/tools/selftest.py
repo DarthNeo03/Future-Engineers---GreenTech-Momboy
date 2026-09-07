@@ -37,6 +37,10 @@ FALLOS = []
 TOTAL = 0
 
 
+def _norm(a):
+    return (a + 180.0) % 360.0 - 180.0
+
+
 def prueba(nombre: str, cond: bool, extra: str = ""):
     global TOTAL
     TOTAL += 1
@@ -432,18 +436,67 @@ prueba("ya en el sentido nuevo, los pares cuentan normal",
        gi.esquinas == 3 and gi.incoherencias == 2, str(gi.esquinas))
 
 # Una linea perdida no debe emparejarse con la esquina siguiente
-gp = GestorLineas(lcfg)
+gp = GestorLineas(dict(lcfg, cierre_max_ms=400))
 par(gp, "naranja", "azul")
 time.sleep(0.45)
 gp.evento_tcs("naranja")          # se pierde el azul de esta esquina
-time.sleep(0.45)                  # caduca la ventana del par
+time.sleep(0.45)                  # caduca la espera de la segunda linea
 gp.paso_zona()
-prueba("el par a medias caduca", gp.pares_incompletos == 1,
+prueba("la esquina sin su segunda linea caduca", gp.pares_incompletos == 1,
        str(gp.pares_incompletos))
 par(gp, "naranja", "azul")        # esquina siguiente, entera
+# La del medio no cuenta porque no completo par NI hubo giro; en pista el
+# giro siempre ocurre y la cuenta. Lo que importa aqui es que la naranja de
+# la esquina siguiente NO se empareja con la azul huerfana de la anterior.
 prueba("la esquina siguiente cuenta bien y sin incoherencia",
        gp.esquinas == 2 and gp.incoherencias == 0,
        f"esq={gp.esquinas} incoh={gp.incoherencias}")
+
+print("== el giro fantasma de la azul que llega tarde ==")
+# El fallo en pista: naranja abre la esquina y dispara el giro; la azul se
+# detecta mal y llega cuando el giro ya termino. Antes se tomaba por la
+# primera linea de una esquina NUEVA: otro giro de 90, encima entre pilares,
+# y al emparejarse desfasada acababa invirtiendo el sentido de la ronda.
+gf = GestorLineas(dict(lcfg, refractario_esquina_ms=200, cierre_max_ms=6000))
+gf.evento_tcs("naranja")
+prueba("la naranja abre la esquina y entra en la zona", gf.en_esquina)
+prueba("todavia no cuenta (falta la segunda linea)", gf.esquinas == 0,
+       str(gf.esquinas))
+gf.giro_completado(1)             # el giro de 90 se hace y termina
+prueba("el giro da la esquina por contada", gf.esquinas == 1, str(gf.esquinas))
+prueba("y saca de la zona de esquina", not gf.en_esquina)
+prueba("pero SIGUE esperando la segunda linea", gf._esquina_abierta)
+
+time.sleep(0.25)                  # pasa el refractario: antes bastaba para
+gf.evento_tcs("azul")             # que la azul abriera OTRA esquina
+prueba("la azul tardia CIERRA la esquina, no abre otra",
+       not gf._esquina_abierta and not gf.en_esquina,
+       f"abierta={gf._esquina_abierta} zona={gf.zona}")
+prueba("y no dispara un giro de mas: sigue habiendo UNA esquina",
+       gf.esquinas == 1, str(gf.esquinas))
+prueba("el sentido no se invierte", gf.sentido == HORARIO, str(gf.sentido))
+prueba("ni se apunta una incoherencia", gf.incoherencias == 0,
+       str(gf.incoherencias))
+
+# La misma linea repetida (rebote en el borde) tampoco abre nada
+gr = GestorLineas(dict(lcfg, refractario_esquina_ms=200))
+gr.evento_tcs("naranja")
+gr.evento_tcs("naranja")
+prueba("la misma linea repetida se ignora",
+       gr.esquinas == 0 and gr._color_apertura == "naranja",
+       gr.ultimo_evento)
+
+# Cuatro esquinas seguidas perdiendo SIEMPRE la azul: la cuenta sigue bien
+gs = GestorLineas(dict(lcfg, refractario_esquina_ms=200, cierre_max_ms=300))
+for i in range(4):
+    gs.evento_tcs("naranja")
+    gs.giro_completado(1)
+    time.sleep(0.35)              # caduca la espera y pasa el refractario
+    gs.paso_zona()
+prueba("sin ver NUNCA la azul, 4 esquinas siguen siendo 4",
+       gs.esquinas == 4, str(gs.esquinas))
+prueba("y se contabilizan como pares incompletos",
+       gs.pares_incompletos == 4, str(gs.pares_incompletos))
 
 print("== zona de esquina (anti-bucle) ==")
 zcfg = dict(lcfg, esquina_max_ms=400)
@@ -776,28 +829,33 @@ esq = Esquivador(vo["obstaculos"])
 cerca = {"rojo": [pilar(600.0, 120.0)]}       # pilar de ESTA recta
 lejos = {"rojo": [pilar(1400.0, 120.0)]}      # pilar detras de la linea
 
+def esquivar(dets, lineas=None, en_esq=False, sentido=0, vel=500.0):
+    """Cada caso arranca limpio: el compromiso de adelantamiento es estado
+    que sobrevive entre llamadas, y aqui se mide una situacion aislada."""
+    esq.reiniciar()
+    return esq.paso(dets, None, geo_o, lineas, en_esq, sentido, vel)
+
 # sin lineas a la vista, todo cuenta (comportamiento de siempre)
-_d, peso = esq.paso(lejos, None, geo_o, None, False)
+_d, peso = esquivar(lejos)
 prueba("sin lineas a la vista, el pilar lejano cuenta", peso > 0, str(peso))
 
 # con la linea a 1100 mm, el pilar de 1400 queda detras: se descarta
-_d, peso = esq.paso(lejos, None, geo_o, {"naranja": 1100.0}, False)
+_d, peso = esquivar(lejos, {"naranja": 1100.0})
 prueba("con la linea delante, el pilar de detras NO cuenta", peso == 0.0,
        f"peso={peso} info={esq.info}")
 prueba("y queda anotado en la telemetria", esq.info.get("tras_linea") == 1,
        str(esq.info))
 
 # el pilar de esta recta sigue contando igual
-_d, peso = esq.paso(cerca, None, geo_o, {"naranja": 1100.0}, False)
+_d, peso = esquivar(cerca, {"naranja": 1100.0})
 prueba("el pilar de esta recta sigue contando", peso > 0, str(peso))
 
 # justo antes de la linea, dentro del margen: cuenta
-_d, peso = esq.paso({"rojo": [pilar(1130.0, 120.0)]}, None, geo_o,
-                    {"naranja": 1100.0}, False)
+_d, peso = esquivar({"rojo": [pilar(1130.0, 120.0)]}, {"naranja": 1100.0})
 prueba("un pilar justo antes de la linea (margen) cuenta", peso > 0, str(peso))
 
 # YA EN LA ESQUINA: el limite se levanta y el pilar del tramo nuevo cuenta
-_d, peso = esq.paso(lejos, None, geo_o, {"naranja": 1100.0}, True)
+_d, peso = esquivar(lejos, {"naranja": 1100.0}, en_esq=True)
 prueba("una vez en la esquina, el pilar de la seccion nueva SI cuenta",
        peso > 0, f"peso={peso} info={esq.info}")
 
@@ -806,6 +864,339 @@ vo["obstaculos"]["limitar_por_lineas"] = False
 _d, peso = esq.paso(lejos, None, geo_o, {"naranja": 1100.0}, False)
 prueba("el filtro se puede apagar", peso > 0, str(peso))
 vo["obstaculos"]["limitar_por_lineas"] = True
+
+print("== como se pasa un pilar ==")
+# --- el lado de paso NO depende del sentido -------------------------------
+# Reglamento 9.19: rojo por la derecha, verde por la izquierda, y son la
+# derecha y la izquierda DEL VEHICULO. El mismo pilar fisico se pasa por un
+# lado distinto en cada sentido, y eso sale solo de trabajar en el marco del
+# carro: no hay que invertir nada.
+for sen, nombre in ((1, "horario"), (-1, "antihorario")):
+    d_rojo, _ = esquivar({"rojo": [pilar(800.0, 0.0)]}, sentido=sen)
+    d_verde, _ = esquivar({"verde": [pilar(800.0, 0.0)]}, sentido=sen)
+    prueba(f"{nombre}: el rojo se pasa por su derecha (el carro va a la derecha)",
+           d_rojo > 0, f"dir={d_rojo:.0f}")
+    prueba(f"{nombre}: el verde se pasa por su izquierda",
+           d_verde < 0, f"dir={d_verde:.0f}")
+
+# el interruptor existe por si en su pista se interpreta al reves
+vo["obstaculos"]["invertir_en_antihorario"] = True
+d_inv, _ = esquivar({"rojo": [pilar(800.0, 0.0)]}, sentido=-1)
+prueba("con el interruptor, en antihorario se invierte", d_inv < 0,
+       f"dir={d_inv:.0f}")
+d_hor, _ = esquivar({"rojo": [pilar(800.0, 0.0)]}, sentido=1)
+prueba("y en horario no cambia nada", d_hor > 0, f"dir={d_hor:.0f}")
+vo["obstaculos"]["invertir_en_antihorario"] = False
+
+# --- ya no se va al tope de direccion -------------------------------------
+# Con los valores que el equipo tenia en pista (k_dir 2.83, margen 261) el
+# esquive pedia 96 % de volante a 600 mm y 100 % a 400.
+vo["obstaculos"].update(k_dir=2.8324, margen_mm=261.0, semi_pilar_mm=40.7,
+                        activar_desde_mm=4000.0, mandar_desde_mm=506.6)
+picos = []
+for dist in (2000.0, 1500.0, 1000.0, 800.0, 600.0, 400.0, 250.0):
+    d, _pe = esquivar({"rojo": [pilar(dist, 0.0)]})
+    picos.append(abs(d))
+prueba("con los valores reales del equipo ya no pide el volante a tope",
+       max(picos) <= vo["obstaculos"]["dir_max_pct"] + 0.5,
+       f"maximo pedido {max(picos):.0f}% (tope {vo['obstaculos']['dir_max_pct']})")
+prueba("y de cerca no pide mas que de lejos por el angulo",
+       picos[-1] <= max(picos) + 0.5, str([round(x) for x in picos]))
+
+# la rampa impide el volantazo en un solo frame
+esq.reiniciar()
+d1, _ = esq.paso({"rojo": [pilar(500.0, -300.0)]}, None, geo_o, None, False, 1, 500.0)
+prueba("el primer frame no da un volantazo", abs(d1) < 30, f"{d1:.0f}%")
+
+# --- compromiso: no volverse hacia el pilar mientras se le adelanta -------
+vo["obstaculos"].update(k_dir=1.4, margen_mm=70.0, semi_pilar_mm=25.0,
+                        activar_desde_mm=1600.0, mandar_desde_mm=700.0)
+esq.reiniciar()
+# se ve el pilar ya encima (dentro de mandar_desde_mm)
+esq.paso({"rojo": [pilar(300.0, -150.0)]}, None, geo_o, None, False, 1, 500.0)
+prueba("con el pilar encima se arma el compromiso",
+       esq.info.get("compromiso_s", 0) > 0, str(esq.info))
+# ahora desaparece de la vista (esta demasiado cerca para la camara)
+d_c, peso_c = esq.paso({}, None, geo_o, None, False, 1, 500.0)
+prueba("aunque ya no se vea, el esquive sigue mandando", peso_c > 0,
+       f"peso={peso_c}")
+prueba("y lo que pide es ir RECTO, no volver hacia el pilar",
+       abs(d_c) < 20, f"dir={d_c:.0f}")
+prueba("la telemetria dice que esta adelantando",
+       "adelantando_s" in esq.info, str(esq.info))
+
+# sin pilar y sin compromiso, no manda nada
+esq.reiniciar()
+_d, peso0 = esq.paso({}, None, geo_o, None, False, 1, 500.0)
+prueba("sin pilar ni compromiso, el esquive no manda", peso0 == 0.0)
+
+# --- hueco mas estrecho que el carro: al centro, no a un lado al azar -----
+class PerfilEstrecho:
+    """Pasillo con las dos paredes a +-x_mm: si no cabe el carro, el punto de
+    paso no puede elegirse 'a un lado', hay que ir por el centro."""
+    hay_muro = True
+    ancho = 640
+
+    def __init__(self, geo, x_mm, dist_mm=500.0):
+        fila = geo.distancia_a_fila(dist_mm)
+        self.valido = np.zeros(640, bool)
+        self.dist_mm = np.full(640, 9999.0, np.float32)
+        self.y_contacto = np.zeros(640, np.int32)
+        for signo in (-1, 1):
+            u, v = geo.suelo_a_pixel(signo * x_mm, dist_mm)
+            for c in range(max(0, u - 40), min(640, u + 40)):
+                self.valido[c] = True
+                self.dist_mm[c] = dist_mm
+                self.y_contacto[c] = v
+
+esq.reiniciar()
+estrecho = PerfilEstrecho(geo_o, 130.0)      # 260 mm de hueco, el carro mide 200
+d_e, _pe = esq.paso({"rojo": [pilar(600.0, 0.0)]}, estrecho, geo_o,
+                    None, False, 1, 500.0)
+prueba("con el hueco mas estrecho que el carro, lo detecta",
+       "hueco_estrecho_mm" in esq.info, str(esq.info))
+prueba("y apunta al centro del hueco, no a un lado",
+       abs(esq.info.get("objetivo_mm", 999)) < 60,
+       str(esq.info.get("objetivo_mm")))
+
+# ===========================================================================
+print("== el carro nunca circula en sentido contrario ==")
+# Tras varios escapes el carro podia quedar mirando hacia atras y adoptar ese
+# rumbo como bueno. El reglamento termina la ronda por circular al reves.
+vg = params_mod.valores_por_defecto()
+vg["navegacion"].update(min_recto_ms=0, retardo_giro_ms=0)
+esquinas_contadas = []
+nav_g = Navegador(vg["navegacion"], vg["limites"], vg["escape"], vg["giro2t"],
+                  al_completar_giro=lambda lado: esquinas_contadas.append(lado),
+                  cfg_obst=vg["obstaculos"])
+nav_g.paso(p_libre, 0.0, 1)                  # ancla el rumbo de la recta en 0
+prueba("el rumbo de la recta se ancla al arrancar", nav_g.rumbo_recta == 0.0,
+       str(nav_g.rumbo_recta))
+d_mal = nav_g.paso(p_libre, 175.0, 1)        # el carro quedo mirando atras
+prueba("mirando hacia atras, dispara un rescate de rumbo",
+       "RESCATE de rumbo" in d_mal.motivo, d_mal.motivo)
+prueba("y gira hacia el lado que lo devuelve a la recta",
+       nav_g.rumbo_objetivo == 0.0, str(nav_g.rumbo_objetivo))
+# el rescate NO es una esquina: no puede sumar vuelta
+for _ in range(30):
+    nav_g.paso(p_libre, 2.0, 1)              # ya alineado: el giro termina
+prueba("un rescate de rumbo NO cuenta como esquina",
+       len(esquinas_contadas) == 0, str(esquinas_contadas))
+
+# el escape ya no se queda con el rumbo en el que acabo la maniobra
+nav_e = Navegador(vg["navegacion"], vg["limites"], vg["escape"], vg["giro2t"],
+                  cfg_obst=vg["obstaculos"])
+nav_e.paso(p_libre, 0.0, 1)
+recta = nav_e.rumbo_recta
+nav_e.paso(p_cerca, 40.0, 1)                 # muro encima -> ESCAPE
+prueba("el escape no toca el rumbo de la recta", nav_e.rumbo_recta == recta,
+       f"{nav_e.rumbo_recta} vs {recta}")
+
+# una curva de verdad SI avanza el rumbo de la recta 90 grados
+nav_c = Navegador(vg["navegacion"], vg["limites"], vg["escape"], vg["giro2t"],
+                  cfg_obst=vg["obstaculos"])
+nav_c.paso(p_libre, 0.0, 1, en_esquina=True)      # entra en PRE_GIRO
+nav_c.paso(p_libre, 0.0, 1, en_esquina=True)      # PRE_GIRO -> GIRO
+prueba("una curva avanza el rumbo de la recta 90 grados",
+       abs(_norm(nav_c.rumbo_recta - 90.0)) < 1e-6, str(nav_c.rumbo_recta))
+
+# --- el muro puede vetar al pilar ----------------------------------------
+vv = params_mod.valores_por_defecto()
+vv["navegacion"].update(min_recto_ms=0)
+vv["obstaculos"]["peso_max"] = 1.0
+nav_v = Navegador(vv["navegacion"], vv["limites"], vv["escape"], vv["giro2t"],
+                  cfg_obst=vv["obstaculos"])
+d_lejos = nav_v.paso(p_libre, None, 1, bias_obstaculo=(50.0, 1.0))
+prueba("con el frente despejado el pilar manda",
+       abs(d_lejos.direccion - 50) < 15, f"dir={d_lejos.direccion}")
+p_medio = muro.perfil(escena(285), geo, mcfg)     # muro cerca, sin ser escape
+nav_v2 = Navegador(vv["navegacion"], vv["limites"], vv["escape"], vv["giro2t"],
+                   cfg_obst=vv["obstaculos"])
+d_cerca = nav_v2.paso(p_medio, None, 1, bias_obstaculo=(50.0, 1.0))
+prueba("con el muro encima el pilar CEDE el mando",
+       abs(d_cerca.direccion) < abs(d_lejos.direccion),
+       f"lejos={d_lejos.direccion} cerca={d_cerca.direccion} "
+       f"pasillo={p_medio.pasillo_mm:.0f}")
+
+
+
+
+# ===========================================================================
+print("== el lado de paso no se puede invertir ==")
+from src.obstaculos import Esquivador                       # noqa: E402
+from src.vision import Deteccion                            # noqa: E402
+
+
+class _PerfilPared:
+    """Perfil con dos paredes rectas, para probar el recorte sin renderizar."""
+    def __init__(self, x_izq, x_der, ancho=640):
+        self.ancho = ancho
+        self.hay_muro = True
+        self.valido = np.ones(ancho, bool)
+        self.dist_mm = np.full(ancho, 600.0, np.float32)
+        self.y_contacto = np.full(ancho, 300, np.int32)
+        self._xi, self._xd = x_izq, x_der
+
+    def lateral_de(self, c):
+        return self._xi if c < self.ancho / 2 else self._xd
+
+
+class _GeoPared(Geometria):
+    def __init__(self, base, perfil):
+        super().__init__(base.cfg, base.W, base.H)
+        self._p = perfil
+
+    def lateral_mm(self, u, v):
+        try:
+            return self._p.lateral_de(int(u))
+        except Exception:
+            return super().lateral_mm(u, v)
+
+
+vg = params_mod.valores_por_defecto()
+vg["obstaculos"]["margen_mm"] = 261.0        # el valor que usa el equipo
+geo_o = Geometria(vg["geometria"], 640, 480)
+pf = _PerfilPared(-500.0, 420.0)
+gf = _GeoPared(geo_o, pf)
+esq = Esquivador(vg["obstaculos"])
+semi = vg["geometria"]["ancho_carro_mm"] / 2.0
+semi_p = vg["obstaculos"]["semi_pilar_mm"]
+minimo = semi + semi_p + 15.0
+pedido = semi + vg["obstaculos"]["margen_mm"] + semi_p
+
+invertidos = 0
+for lat in (0.0, 150.0, 250.0, 300.0, 350.0, 400.0):
+    esq.info = {}
+    obj = esq._recortar(lat + pedido, 600.0, pf, gf, semi, lat, +1, minimo)
+    if obj <= lat:
+        invertidos += 1
+prueba("un pilar ROJO nunca acaba pasandose por la izquierda",
+       invertidos == 0, f"{invertidos} casos invertidos")
+
+invertidos = 0
+for lat in (0.0, -150.0, -250.0, -300.0, -400.0):
+    esq.info = {}
+    obj = esq._recortar(lat - pedido, 600.0, pf, gf, semi, lat, -1, minimo)
+    if obj >= lat:
+        invertidos += 1
+prueba("un pilar VERDE nunca acaba pasandose por la derecha",
+       invertidos == 0, f"{invertidos} casos invertidos")
+
+esq.info = {}
+esq._recortar(350.0 + pedido, 600.0, pf, gf, semi, 350.0, +1, minimo)
+prueba("y cuando no cabe, lo dice en vez de callarselo",
+       "sin_sitio" in esq.info, str(esq.info))
+
+# El lado sale del COLOR, no del sentido de la ronda.
+def lado_elegido(color, sentido):
+    v2 = params_mod.valores_por_defecto()
+    v2["obstaculos"].update(activo=True, limitar_por_lineas=False)
+    e = Esquivador(v2["obstaculos"])
+    u, vv = geo_o.suelo_a_pixel(0.0, 800.0 + v2["geometria"]["morro_mm"])
+    d = Deteccion(color=color, x=u - 18, y=vv - 70, w=36, h=70, area=2400,
+                  llenado=0.9, aspecto=2.0, cx=float(u), cy=float(vv - 35))
+    e.paso({color: [d]}, None, geo_o, None, False, sentido, 500.0)
+    return e.info.get("lado")
+
+prueba("rojo por la DERECHA en horario y en antihorario",
+       lado_elegido("rojo", 1) == "derecha" and lado_elegido("rojo", -1) == "derecha",
+       f"{lado_elegido('rojo', 1)} / {lado_elegido('rojo', -1)}")
+prueba("verde por la IZQUIERDA en horario y en antihorario",
+       lado_elegido("verde", 1) == "izquierda" and lado_elegido("verde", -1) == "izquierda",
+       f"{lado_elegido('verde', 1)} / {lado_elegido('verde', -1)}")
+
+# ===========================================================================
+print("== la correccion de rumbo cede mientras se esquiva ==")
+libre_o = {"blanco": np.full((480, 640), 255, np.uint8),
+           "negro": np.zeros((480, 640), np.uint8)}
+p_libre_o = muro.perfil(libre_o, geo_o, params_mod.valores_por_defecto()["muro"])
+
+
+def dir_con_yaw(yaw, cede):
+    vv = params_mod.valores_por_defecto()
+    vv["navegacion"]["yaw_cede_al_esquivar"] = cede
+    n = Navegador(vv["navegacion"], vv["limites"], vv["escape"], vv["giro2t"],
+                  vv["obstaculos"])
+    n.rumbo_objetivo = 0.0
+    return n.paso(p_libre_o, yaw, 1, bias_obstaculo=(55.0, 1.0)).direccion
+
+
+prueba("(control) sin ceder, el yaw SUMA y satura el volante",
+       dir_con_yaw(-20.0, False) >= 85, str(dir_con_yaw(-20.0, False)))
+prueba("(control) sin ceder, hacia el otro lado RESTA y se queda corto",
+       dir_con_yaw(20.0, False) <= 30, str(dir_con_yaw(20.0, False)))
+prueba("cediendo, el esquive se respeta venga como venga el rumbo",
+       dir_con_yaw(-20.0, True) == 55 and dir_con_yaw(20.0, True) == 55
+       and dir_con_yaw(0.0, True) == 55,
+       f"{dir_con_yaw(-20.0, True)} / {dir_con_yaw(20.0, True)}")
+
+# ===========================================================================
+print("== modo borde y memoria del ultimo pilar ==")
+vb = params_mod.valores_por_defecto()
+vb["obstaculos"].update(activo=True, modo="borde", limitar_por_lineas=False)
+eb = Esquivador(vb["obstaculos"])
+
+
+def _pil(dist_mm, lat_mm, color="rojo"):
+    u, vv = geo_o.suelo_a_pixel(lat_mm, dist_mm + vb["geometria"]["morro_mm"])
+    return Deteccion(color=color, x=u - 18, y=vv - 70, w=36, h=70, area=2400,
+                     llenado=0.9, aspecto=2.0, cx=float(u), cy=float(vv - 35))
+
+
+def estable(dets, ticks=60):
+    d = 0.0
+    for _ in range(ticks):
+        eb._t_prev = time.time() - 0.033      # 30 fps de verdad, no el bucle
+        d, _p = eb.paso(dets, None, geo_o, None, False, 0, 500.0)
+    return d
+
+
+eb.reiniciar()
+d_izq = estable({"rojo": [_pil(900.0, -200.0)]})
+eb.reiniciar()
+d_der = estable({"rojo": [_pil(900.0, 250.0)]})
+prueba("modo borde: el rojo se empuja al canto izquierdo (gira a la derecha)",
+       d_izq > 0 and d_der > d_izq, f"{d_izq:.0f} / {d_der:.0f}")
+eb.reiniciar()
+v_izq = estable({"verde": [_pil(900.0, -250.0)]})
+prueba("y el verde al reves, simetrico", v_izq < 0, f"{v_izq:.0f}")
+
+eb.reiniciar()
+lejos = estable({"rojo": [_pil(900.0, 0.0)]})
+eb.reiniciar()
+cerca = estable({"rojo": [_pil(300.0, 0.0)]})
+prueba("al tenerlo encima mete el giro grande",
+       cerca > lejos and eb.info.get("giro_final") is True,
+       f"lejos {lejos:.0f} / cerca {cerca:.0f}")
+
+# memoria + busqueda
+eb.reiniciar()
+eb._t_prev = time.time() - 0.033
+eb.paso({"rojo": [_pil(1200.0, 150.0)]}, None, geo_o, None, False, 0, 500.0)
+prueba("recuerda el ultimo pilar", eb.memoria_viva(time.time())
+       and eb.memoria()["lado"] == "derecha", str(eb.memoria()))
+d_busca = 0.0
+for _ in range(30):
+    eb._t_prev = time.time() - 0.033
+    d_busca, peso_b = eb.paso({}, None, geo_o, None, False, 0, 500.0)
+prueba("si se pierde LEJOS, lo busca para volver a encuadrarlo",
+       eb.info.get("buscando") is True and d_busca < 0,
+       f"dir {d_busca:.0f} info {eb.info}")
+
+vb["obstaculos"]["recordar_lado"] = False
+prueba("la memoria se puede apagar", not eb.memoria_viva(time.time()))
+vb["obstaculos"]["recordar_lado"] = True
+
+# perdido de CERCA: manda el compromiso de adelantamiento, no la busqueda
+eb.reiniciar()
+for _ in range(20):
+    eb._t_prev = time.time() - 0.033
+    eb.paso({"rojo": [_pil(400.0, 100.0)]}, None, geo_o, None, False, 0, 500.0)
+eb._t_prev = time.time() - 0.033
+d_cerca, _pc = eb.paso({}, None, geo_o, None, False, 0, 500.0)
+prueba("si se pierde CERCA no lo busca: adelanta comprometido",
+       eb.info.get("buscando") is None and "adelantando_s" in eb.info,
+       str(eb.info))
 
 # ===========================================================================
 print("== parametros ==")
@@ -846,9 +1237,21 @@ with tempfile.TemporaryDirectory() as tmp:
     perfil = params_mod.obtener(datos2, "prueba")
     prueba("perfil guardado y releido",
            perfil["valores"]["limites"]["vmax"] == 99)
-    for i in range(7):
-        params_mod.guardar_perfil(datos2, f"p{i}", vals)
-    prueba("solo quedan 5 perfiles", len(datos2["perfiles"]) == 5)
+    for i in range(25):
+        params_mod.guardar_perfil(datos2, f"p{i}", vals, "obstaculos")
+    prueba("cada linea guarda hasta 20",
+           len(params_mod.listar(datos2, "obstaculos")) == 20,
+           str(len(params_mod.listar(datos2, "obstaculos"))))
+    prueba("y no toca los de las otras lineas",
+           len(params_mod.listar(datos2, "open")) >= 1,
+           str(params_mod.listar(datos2, "open")))
+    params_mod.guardar_perfil(datos2, "solo_estacionar", vals, "estacionar")
+    prueba("las tres lineas conviven",
+           set(params_mod.CATEGORIAS) == {"open", "obstaculos", "estacionar"}
+           and params_mod.listar(datos2, "estacionar") == ["solo_estacionar"],
+           str(params_mod.listar(datos2, "estacionar")))
+    prueba("una categoria inventada cae en open",
+           params_mod.categoria_valida("loquesea") == "open")
 
 # ===========================================================================
 print()

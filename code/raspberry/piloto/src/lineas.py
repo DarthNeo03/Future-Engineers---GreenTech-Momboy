@@ -14,9 +14,27 @@ Fuentes, de mas a menos fiable:
   3. Giros de 90 grados completados por la navegacion (respaldo: una esquina
      sin lineas vistas igual cuenta).
 
+UNA ESQUINA ABIERTA SE QUEDA CON SU SEGUNDA LINEA (el giro fantasma)
+La azul se detecta bastante peor que la naranja: es mas oscura, el sensor
+integra durante milisegundos y a la velocidad de paso a veces cae entre dos
+muestras. Cuando llegaba tarde -ya con el giro hecho- el codigo viejo la
+tomaba por la PRIMERA linea de una esquina nueva y disparaba OTRO giro de 90,
+que ademas se comia los pilares; y al emparejarse desfasada aparecian pares
+"al reves" que acababan invirtiendo el sentido de la ronda.
+
+Ahora una esquina se ABRE con su primera linea y se queda esperando a la otra:
+
+    naranja -> abre la esquina  (entra en la zona, dispara el giro)
+    azul    -> la CIERRA, tarde o temprano; nunca abre otra
+    misma linea otra vez -> rebote, se ignora
+
+La espera dura cierre_max_ms (toda la curva), muchisimo mas que la zona de
+esquina, que se cierra en cuanto termina el giro. Si la azul no llega nunca,
+la esquina la da por contada el giro de 90 y se sigue esperando por si acaso,
+para que al aparecer cierre esta en vez de abrir una nueva.
+
 Reglas de conteo (lecciones del programa viejo):
-  * Las DOS lineas de una esquina llegan en una ventana corta: todo lo que
-    caiga dentro de ventana_par_ms es LA MISMA esquina.
+  * Una esquina se cuenta UNA sola vez, la den por buena las lineas o el giro.
   * Despues de contar una esquina hay un refractario de verdad
     (refractario_esquina_ms) durante el cual no se admite otra, venga del
     sensor que venga.
@@ -149,6 +167,13 @@ class GestorLineas:
         self.incoherencias = 0
         self.pares_incompletos = 0
         self._pares_invertidos = 0
+        # Esquina ABIERTA: se cruzo su primera linea y todavia se espera la
+        # segunda. Vive mucho mas que la zona de esquina, a proposito.
+        self._esquina_abierta = False
+        self._color_apertura = ""
+        self._t_apertura = 0.0
+        self._contada = False
+        self.motivo_cierre = ""
 
     # -- entrada 1: eventos del TCS (ya convertidos por el enlace) ---------
     def evento_tcs(self, color: str) -> None:
@@ -210,14 +235,20 @@ class GestorLineas:
             # girar a la derecha en las esquinas = sentido horario
             self.sentido = HORARIO if lado > 0 else ANTIHORARIO
         self.salir_de_esquina("giro de 90 completado")
+        if self._esquina_abierta:
+            # La curva la abrio una linea: se da por contada aunque la segunda
+            # no haya llegado (la azul se pierde a menudo). Se SIGUE esperando
+            # esa segunda linea, para que cuando llegue cierre esta esquina en
+            # vez de abrir otra y disparar un giro de mas.
+            self._contar_esquina(ahora, "esquina por giro (falta la 2a linea)")
+            return
         # si la esquina ya se conto por lineas hace poco, no contar doble
         if (ahora - self._t_esquina) * 1000 < float(
                 self.cfg.get("refractario_esquina_ms", 3000)):
             return
-        self.esquinas += 1
-        self._t_esquina = ahora
+        self._contada = False
+        self._contar_esquina(ahora, "esquina por giro (sin lineas)")
         self._colores_esquina = []
-        self.ultimo_evento = "esquina por giro"
 
     # -- zona: dentro de la curva o en recta -------------------------------
     @property
@@ -247,11 +278,14 @@ class GestorLineas:
         incoherencia inventada). Esa esquina la contara el giro de 90.
         """
         ahora = time.time()
-        if self._colores_esquina and len(self._colores_esquina) == 1:
-            ventana = float(self.cfg.get("ventana_par_ms", 2500)) / 1000.0
-            if ahora - self._t_evento > ventana:
+        # La segunda linea del par tiene TODA la curva para aparecer: la azul
+        # se detecta peor que la naranja y suele llegar cuando el giro ya va
+        # por la mitad. Solo se deja de esperar al cabo de cierre_max_ms.
+        if self._esquina_abierta:
+            limite = float(self.cfg.get("cierre_max_ms", 6000)) / 1000.0
+            if ahora - self._t_apertura > limite:
                 self.pares_incompletos += 1
-                self._colores_esquina = []
+                self._cerrar_esquina("sin la segunda linea")
         if self.zona == ZONA_ESQUINA:
             limite = float(self.cfg.get("esquina_max_ms", 6000)) / 1000.0
             if ahora - self._t_zona > limite:
@@ -268,35 +302,55 @@ class GestorLineas:
         return ANTIHORARIO if naranja_horario else HORARIO
 
     def _evento(self, color: str, fuente: str) -> None:
+        """Una linea cruzada. UNA ESQUINA ABIERTA SE QUEDA CON SU SEGUNDA
+        LINEA: mientras haya esquina abierta, la linea del otro color la
+        CIERRA, nunca abre otra. Es lo que impide el giro fantasma cuando la
+        azul llega tarde (ver el encabezado del modulo)."""
         ahora = time.time()
         self.ultimo_evento = f"{color} ({fuente})"
-        ventana = float(self.cfg.get("ventana_par_ms", 2500)) / 1000.0
-        refract = float(self.cfg.get("refractario_esquina_ms", 3000)) / 1000.0
 
-        if self._colores_esquina and ahora - self._t_evento <= ventana:
-            self._t_evento = ahora
-            if color not in self._colores_esquina:
-                # PAR COMPLETO: las dos lineas de la esquina, en el orden en
-                # que se cruzaron. Aqui es donde se decide si cuenta.
-                self._colores_esquina.append(color)
+        if self._esquina_abierta:
+            if color != self._color_apertura:
+                # segunda linea del par: cierra la esquina que ya estaba
+                self._colores_esquina = [self._color_apertura, color]
                 self.orden_observado = list(self._colores_esquina)
                 self._cerrar_par(list(self._colores_esquina))
+                self._cerrar_esquina("par completo")
+            else:
+                # misma linea otra vez (rebote en el borde): no es nada nuevo
+                self.ultimo_evento = f"{color} repetida, ignorada"
+            self._t_evento = ahora
             return
 
+        refract = float(self.cfg.get("refractario_esquina_ms", 3000)) / 1000.0
         if ahora - self._t_esquina < refract:
-            # zona muerta: probablemente rebote de la misma esquina
+            # zona muerta: rebote de la esquina que se acaba de contar
             self._t_evento = ahora
+            self.ultimo_evento = f"{color} en refractario, ignorada"
             return
 
         # Primera linea de una esquina nueva. El carro ENTRA en la curva ya
         # mismo (eso es lo que corta el bucle), pero el CONTADOR todavia no
-        # se toca: se espera a ver la segunda linea del par.
+        # se toca: se espera a ver la segunda linea del par (o a que el giro
+        # de 90 la de por hecha, si la segunda no llega nunca).
         self._t_evento = ahora
+        self._esquina_abierta = True
+        self._color_apertura = color
+        self._t_apertura = ahora
+        self._contada = False
         self._colores_esquina = [color]
         self.orden_observado = [color]
         if self.sentido == DESCONOCIDO:
             self.sentido = self._sentido_de(color)
         self.entrar_en_esquina(f"linea {color} ({fuente})")
+
+    def _cerrar_esquina(self, motivo: str) -> None:
+        """Deja de esperar la segunda linea. La ZONA de esquina (el anti-bucle)
+        va por su cuenta: se sale de ella al completar el giro, que pasa mucho
+        antes."""
+        self._esquina_abierta = False
+        self._color_apertura = ""
+        self.motivo_cierre = motivo
 
     def _cerrar_par(self, orden: List[str]) -> None:
         """Decide si un par de lineas completo cuenta como esquina.
@@ -338,6 +392,12 @@ class GestorLineas:
                                   f"(esperaba {'+'.join(self.orden_esperado)}), no cuenta")
 
     def _contar_esquina(self, ahora: float, motivo: str) -> None:
+        """Una esquina se cuenta UNA vez, la den por buena las lineas o el
+        giro de 90. El que llegue segundo solo cierra el papeleo."""
+        if self._contada:
+            self.ultimo_evento = motivo + " (ya contada)"
+            return
+        self._contada = True
         self.esquinas += 1
         self._t_esquina = ahora
         self.ultimo_evento = motivo
@@ -371,6 +431,7 @@ class GestorLineas:
             "zona_motivo": self.motivo_zona,
             "zona_s": round(self.tiempo_en_zona(), 1),
             "orden_esperado": "+".join(self.orden_esperado or []),
+            "esperando": self._color_apertura if self._esquina_abierta else "",
             "incoherencias": self.incoherencias,
             "pares_incompletos": self.pares_incompletos,
         }

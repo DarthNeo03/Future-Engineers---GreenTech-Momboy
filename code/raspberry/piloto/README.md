@@ -21,7 +21,7 @@ MPU6050 y el TCS34725 por I2C y manda yaw + cruces de linea a la Pi).
 ```bash
 python3 -m venv .venv && source .venv/bin/activate    # en Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python tools/selftest.py            # 162 pruebas, sin hardware
+python tools/selftest.py            # 216 pruebas, sin hardware
 python main.py                      # camara + ESP32 + web
 python main.py --simulado           # sin ESP32 (pruebas en el PC)
 python main.py --imagen foto.jpg    # sin camara, sobre una foto
@@ -56,13 +56,13 @@ carrera (cronometro + conteo).
    abierto** tipo camion si hay sitio) -> GIRO de 90 por giroscopio -> RECTO.
    Disparadores: **linea del piso cruzada** (el mas fiable), pasillo
    cerrandose, o muro interno que desaparece. Ver "El bucle de las esquinas".
-4. **Conteo**: solo suma cuando se cruza el PAR COMPLETO de lineas y **en el
-   orden correcto**. Las cuatro esquinas de una vuelta se cruzan siempre igual
-   (horario: naranja y luego azul), asi que el orden es una comprobacion de
-   coherencia gratis: un par al reves o es basura o el carro se dio la vuelta.
-   Uno suelto se descarta sin contar; dos seguidos invierten el sentido. Si se
-   pierde una linea, el par caduca y esa esquina la cuenta el giro de 90.
-   4 esquinas = vuelta.
+4. **Conteo**: una esquina se ABRE con su primera linea y se queda esperando
+   a la otra, que la CIERRA (nunca abre otra: ver "El giro fantasma"). Cuenta
+   una sola vez, la den por buena las lineas o el giro de 90. Si se ve el par
+   entero se comprueba ademas el ORDEN, que en las cuatro esquinas es el mismo
+   (horario: naranja y luego azul): un par al reves o es basura o el carro se
+   dio la vuelta, asi que uno suelto no cuenta y dos seguidos invierten el
+   sentido. 4 esquinas = vuelta.
 5. **Parada final**: tras la esquina 12 avanza `carrera.parada_ms` para meter
    el carro ENTERO en la seccion de meta y se detiene solo (bono del
    reglamento). Tope de 3 minutos.
@@ -210,6 +210,82 @@ el limite hacia atras. El escape de seguridad no interrumpe la maniobra (ella
 lleva su propia reversa); corta sola en `min_pasillo_mm`, que va por encima
 de `parar_bajo_mm`.
 
+## El giro fantasma de la azul que llega tarde
+
+Sintoma: al cruzar la naranja el carro giraba bien, pero rato despues -ya con
+el giro hecho- aparecia la azul y disparaba OTRO giro de 90, a veces hacia el
+lado contrario y encima entre pilares.
+
+Causa: el codigo trataba cada linea por separado. Si la azul llegaba fuera de
+la ventana del par (se detecta bastante peor que la naranja: es mas oscura y a
+la velocidad de paso cae entre dos muestras del sensor), se tomaba por la
+PRIMERA linea de una esquina nueva. Y al emparejarse desfasada salian pares
+"al reves", que a los dos acababan invirtiendo el sentido de la ronda.
+
+Ahora una esquina se **abre** con su primera linea y se queda esperando a la
+otra:
+
+```
+naranja  -> ABRE la esquina (entra en la zona, dispara el giro de 90)
+azul     -> la CIERRA, tarde o temprano; nunca abre otra
+naranja otra vez -> rebote en el borde, se ignora
+```
+
+La espera dura `lineas.cierre_max_ms` (6 s, toda la curva), muchisimo mas que
+la zona de esquina, que se cierra en cuanto termina el giro. **Si la azul no
+llega nunca**, la esquina la da por contada el giro de 90 y se sigue esperando
+por si aparece, para que cierre esta en vez de abrir una nueva. Una esquina se
+cuenta UNA sola vez, la den por buena las lineas o el giro.
+
+Probado: con cuatro esquinas seguidas perdiendo SIEMPRE la azul, la cuenta
+sigue dando 4.
+
+## Tres lineas de calibracion
+
+Los perfiles (de parametros y de color) van etiquetados en tres listas:
+**Open Challenge**, **Esquivar obstaculos** y **Obstaculos + estacionar**.
+Cada linea guarda hasta **20** perfiles y se eligen por separado, asi que
+afinar el reto de obstaculos no toca la calibracion buena del Open. El
+selector esta arriba de cada lista de perfiles; lo que guardes va a la linea
+que tengas puesta. Los perfiles que ya existian quedaron en "Open Challenge".
+
+## El esquive: tres cosas que estaban mal
+
+**1. El lado de paso se invertia** (se veia sobre todo en antihorario, pero no
+era el sentido). El recorte del punto de paso contra el muro podia dejarlo al
+OTRO lado del pilar. Con `margen_mm=261` el despeje pedido son 386 mm, que casi
+nunca caben: con el pilar a 300 mm hacia la pared, el objetivo de 686 mm se
+recortaba a 260 y el carro se iba a pasar un pilar ROJO por su izquierda.
+Pasar por el lado incorrecto **termina la ronda** (regla 9.25.5). Ahora el lado
+es intocable: si el hueco no da para el despeje comodo se aprieta hasta el
+minimo fisico (medio carro + medio pilar), pero nunca se cruza; y si ni eso
+cabe se avisa en pantalla (`no cabe por la derecha`) y manda la seguridad del
+muro. El lado sale del COLOR, no del sentido, en horario y en antihorario.
+
+**2. El volantazo.** La correccion de rumbo por giroscopio se sumaba DESPUES
+del esquive. Mientras esquivas a proposito te sales del rumbo de la recta, asi
+que esa correccion o **suma** (con el esquive topado en 55 % y `yaw_max` en
+45 %, el volante llegaba al 100 % y la rueda trasera se llevaba el pilar) o
+**resta** (y entonces no esquiva bastante). Con `navegacion.yaw_cede_al_esquivar`
+el mantenimiento de rumbo cede en la misma proporcion en que manda el pilar:
+medido, el volante pasa de +87 / +23 segun como estuviera cruzado, a +55 en
+los dos casos.
+
+**3. Modo de esquive por BORDE** (`obstaculos.modo = borde`). En vez de apuntar
+a un hueco en milimetros, se vigila el canto del pilar que da al centro y se le
+mantiene sobre una columna objetivo cerca del borde de la imagen
+(`borde_frac`): al rojo se le empuja al canto izquierdo y al verde al derecho.
+Es control visual puro, no depende de la calibracion de distancias. Al tenerlo
+encima (`giro_final_mm`) mete el **giro grande** que lo libra con la cola. Y si
+el pilar se sale de cuadro **estando todavia lejos**, se le busca para volver a
+encuadrarlo (`buscar_pct`); de cerca no, que de cerca manda el compromiso de
+adelantamiento. En el video se ve la linea del canto objetivo y la flecha.
+
+**Memoria del ultimo pilar** (`obstaculos.recordar_lado`, se puede apagar):
+guarda color, por que lado habia que pasarlo, donde estaba y a que distancia,
+durante `memoria_ms`. Sirve en la curva, cuando el pilar sale de cuadro al
+girar y el carro se olvidaba de que lo tenia al lado. Se ve en la telemetria.
+
 ## Los pilares de la seccion siguiente no son de esta recta
 
 Las lineas naranja y azul marcan el limite de la seccion. Un pilar que se ve
@@ -223,6 +299,91 @@ que la linea mas cercana, con `margen_linea_mm` de holgura para que uno justo
 antes de ella siga contando. **En cuanto el carro entra en la zona de esquina
 el filtro se levanta** y esos pilares pasan a contar, que es cuando de verdad
 hay que esquivarlos. Si no se ve ninguna linea, no se filtra nada.
+
+## Como se pasa un pilar (y los tres fallos que tenia)
+
+**1. Se iba al tope de direccion.** El angulo al punto de paso se calculaba
+con la distancia al pilar, asi que al acercarse el mismo desvio lateral pedia
+cada vez mas angulo, hasta el tope. Medido con los valores que el equipo tenia
+en pista: **96 % de volante a 600 mm y 100 % a 400 mm**, con el pilar poniendo
+el 97 % del mando. Arreglado con tres cosas:
+
+- `mirada_min_mm` (350): mirada minima al calcular el angulo. Es lo que impide
+  que el volante se dispare de cerca.
+- `dir_max_pct` (55): tope de lo que puede pedir el esquive. Un pilar nunca
+  deberia mandar el volante a fondo.
+- `rampa_dir_pct_s` (220): cuanto puede cambiar por segundo, para que no haya
+  volantazo en un solo frame.
+
+**2. La rueda trasera se llevaba el pilar.** Cuando el pilar queda muy cerca
+deja de verse: la camara no llega tan abajo. En ese momento el esquive
+desaparecia, el centrado tiraba del carro hacia el medio del carril y, con
+direccion Ackermann, **la cola corta por dentro** y barre el pilar. Aumentar
+el margen no lo arregla: el carro se abre antes y vuelve igual de pronto.
+
+Ahora hay **compromiso de adelantamiento**: desde que el pilar se pierde de
+vista se pide RECTO (no se vuelve hacia el) el tiempo que el carro necesita
+para adelantarlo con todo su largo, calculado con la velocidad real y el nuevo
+`geometria.largo_carro_mm`. Se ve en el video: *ADELANTANDO 0.6s (recto)*.
+
+**3. Un pilar pegado al muro interior lo llevaba de frente contra la esquina.**
+Con `peso_max = 1.0` el pilar ponia el 100 % del mando y la evitacion de muros
+dejaba de contar justo cuando el muro era el problema. Ahora, con
+`ceder_ante_muro`, el peso del pilar **se desvanece segun el pasillo se
+cierra**: el muro recupera el mando. Y si el hueco entre el pilar y la pared
+es mas estrecho que el carro, se apunta al **centro del hueco** en vez de
+elegir un lado y empotrarse (sale avisado en el video).
+
+### El lado de paso NO se invierte con el sentido
+
+Reglamento 9.19: rojo por la derecha, verde por la izquierda. Son la derecha y
+la izquierda **del vehiculo** — el punto 5 lo dice como "el lado del CARRIL por
+el que debe circular". El mismo pilar fisico se pasa por un lado distinto en
+horario que en antihorario, y eso ya sale solo de trabajar en el marco del
+carro: no hay nada que invertir.
+
+Como pasar por el lado equivocado termina la ronda, no se deja a la fe: en el
+video se dibuja una **flecha verde hasta el punto de paso** y el texto
+*"rojo -> paso por su derecha"*, asi que se comprueba con el carro parado,
+antes de arrancar. Si en tu competencia se interpretara al reves, esta el
+interruptor `obstaculos.invertir_en_antihorario` (apagado por defecto).
+
+### Valores recomendados
+
+Los que habia en pista estaban subidos para compensar los fallos de arriba;
+con estos arreglados conviene bajarlos:
+
+| Parametro | En pista | Recomendado | Por que |
+|---|---|---|---|
+| `k_dir` | 2.83 | 1.4 | ya no hace falta forzar |
+| `margen_mm` | 261 | 90 | el margen no arreglaba la cola; el compromiso si |
+| `peso_max` | 1.0 | 0.8 | con 1.0 el muro deja de contar |
+| `activar_desde_mm` | 4000 | 1600 | 4 m es media pista: el pilar mandaba desde lejisimos |
+
+Con los valores viejos + los arreglos, el esquive queda topado en 55 %; con los
+recomendados sube progresivo de 1 % a 37 % segun se acerca.
+
+## El carro nunca debe circular en sentido contrario
+
+Sintoma: tras chocar y retroceder varias veces, el carro se iba **en direccion
+contraria**. Eso termina la ronda (regla 9.25.3).
+
+La causa era una linea: al salir del escape se hacia `rumbo_objetivo = yaw`, o
+sea, **el carro adoptaba como "rumbo bueno" aquel en el que se hubiera quedado
+mirando** despues de maniobrar. Si acababa mirando hacia atras, esa pasaba a
+ser su recta. Y el giro de rescate elegia lado "por donde haya mas hueco", que
+tambien podia dejarlo encarado al reves.
+
+Ahora hay un `rumbo_recta` que **solo cambia en las curvas de verdad** (+-90) y
+que ningun escape puede tocar:
+
+- al salir del escape se vuelve a el, no al yaw de la maniobra;
+- el giro de rescate va hacia el lado que **acerca** a la recta;
+- y si el rumbo se aleja mas de `desvio_max_deg` (110), se fuerza un rescate de
+  rumbo para volver.
+
+Ademas, un giro de rescate **ya no cuenta como esquina**: antes cada choque con
+maniobra sumaba una al marcador de vueltas.
 
 ## Las patas INT del TCS y del MPU (cruzar las lineas rapido)
 
@@ -357,14 +518,14 @@ piloto/
 │   ├── lineas.py           sentido / esquinas / vueltas + zona (dentro de la curva)
 │   ├── navegacion.py       RECTO / PRE_GIRO / GIRO / GIRO_2T / ESCAPE
 │   ├── carrera.py          director de la ronda (3 vueltas y parada en meta)
-│   ├── obstaculos.py       esquive basico rojo/verde
+│   ├── obstaculos.py       esquive rojo/verde con compromiso de paso
 │   ├── protocolo.py        trama binaria v2 (gemela de protocolo.h)
 │   ├── enlace.py           hilo serie; sensores del ESP32 -> eventos
 │   ├── robot.py            el nucleo que une todo
 │   ├── dibujo.py           overlay del video
 │   ├── servidor.py         http.server + MJPEG
 │   └── web/index.html      la interfaz
-└── tools/selftest.py       162 pruebas sin hardware
+└── tools/selftest.py       216 pruebas sin hardware
 ```
 
 ## Notas practicas (heredadas a golpes)
