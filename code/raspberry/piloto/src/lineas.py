@@ -56,6 +56,20 @@ Las lineas del piso marcan FISICAMENTE donde esta la curva:
 
 Entrar es fiable (la primera linea del par); salir se confirma con el giro de
 90 completado, y hay un timeout de seguridad por si el giroscopio falla.
+
+MODO POR COLOR (esquina_color.activo)
+Lo de arriba (par de lineas, cierre, orden) es el modo "par". El modo por
+color es mas simple a proposito y el TCS solo hace dos cosas:
+
+    1. la PRIMERA linea de la ronda fija el sentido (naranja = horario);
+    2. cada linea de ESE color cuenta una esquina y dispara el giro hacia
+       adentro. La del otro color NO EXISTE: ni abre, ni cierra, ni cuenta.
+
+Con eso la azul que llega tarde no puede disparar nada, y "la misma linea
+pisada dos veces" se resuelve con un refractario propio (refractario_ms). El
+giro de 90 completado aqui solo SACA de la zona; no cuenta (salvo
+contar_giro_sin_linea). Si el sentido viene forzado desde la web, se cuenta
+el color de ese sentido aunque la primera linea vista fuera la otra.
 """
 
 from __future__ import annotations
@@ -142,12 +156,22 @@ ZONA_ESQUINA = "esquina"
 
 
 class GestorLineas:
-    def __init__(self, cfg: Dict[str, Any]):
+    def __init__(self, cfg: Dict[str, Any],
+                 cfg_color: Optional[Dict[str, Any]] = None):
         self.cfg = cfg
+        ### el interruptor del modo por color vive en su propio grupo
+        ### (esquina_color.activo), igual que giro2t: un solo sitio que tocar
+        self.cfg_color = cfg_color if cfg_color is not None else {}
         self.reiniciar()
 
     def reiniciar(self) -> None:
         self.sentido = DESCONOCIDO
+        ### modo color: lo que dice la web ("auto"/"horario"/"antihorario");
+        ### lo refresca Carrera.paso() cada frame
+        self.sentido_forzado = "auto"
+        self.ignoradas = 0                  # lineas del otro color (modo color)
+        self.rebotes = 0                    # misma linea repetida (modo color)
+        self._disparo_pendiente = False     # linea buena sin atender aun
         self.sugerencia = DESCONOCIDO       # lo que la camara cree ver delante
         self.esquinas = 0
         self.orden_observado: List[str] = []   # colores 1a y 2a de la ultima esquina
@@ -175,10 +199,26 @@ class GestorLineas:
         self._contada = False
         self.motivo_cierre = ""
 
+    @property
+    def modo_color(self) -> bool:
+        return bool(self.cfg_color.get("activo", False))
+
     # -- entrada 1: eventos del TCS (ya convertidos por el enlace) ---------
-    def evento_tcs(self, color: str) -> None:
+    def evento_tcs(self, color: str) -> bool:
+        """Devuelve True si la linea es 'de esta ronda' (en modo par,
+        siempre; en modo color, solo las del color que cuenta). robot.py lo
+        usa para no marcar 'linea reciente' con una linea ignorada."""
         if bool(self.cfg.get("usar_tcs", True)):
-            self._evento(color, "tcs")
+            return self._evento(color, "tcs")
+        return False
+
+    def tomar_disparo(self) -> bool:
+        """(modo color) True UNA vez por linea buena: la señal para que el
+        navegador rearme la esquina aunque la zona anterior siga abierta."""
+        if self._disparo_pendiente:
+            self._disparo_pendiente = False
+            return True
+        return False
 
     # -- entrada 2: la camara --------------------------------------------
     def paso_camara(self, dets: Dict[str, List[vision.Deteccion]],
@@ -235,6 +275,17 @@ class GestorLineas:
             # girar a la derecha en las esquinas = sentido horario
             self.sentido = HORARIO if lado > 0 else ANTIHORARIO
         self.salir_de_esquina("giro de 90 completado")
+        if self.modo_color:
+            ### aqui el giro solo cierra la zona: la cuenta la llevan las
+            ### lineas del color. Probe a dejar que el giro contara "si no
+            ### habia linea" y con un TCS que rebota se colaban esquinas de
+            ### mas; mejor perder una que sumar una.
+            if (bool(self.cfg_color.get("contar_giro_sin_linea", False))
+                    and (ahora - self._t_esquina) * 1000 >= float(
+                        self.cfg_color.get("refractario_ms", 2000))):
+                self._contada = False
+                self._contar_esquina(ahora, "esquina por giro (sin linea)")
+            return
         if self._esquina_abierta:
             # La curva la abrio una linea: se da por contada aunque la segunda
             # no haya llegado (la azul se pierde a menudo). Se SIGUE esperando
@@ -255,8 +306,11 @@ class GestorLineas:
     def en_esquina(self) -> bool:
         return self.zona == ZONA_ESQUINA
 
-    def entrar_en_esquina(self, motivo: str) -> None:
-        if self.zona != ZONA_ESQUINA:
+    def entrar_en_esquina(self, motivo: str, renovar: bool = False) -> None:
+        """renovar: (modo color) una linea buena con la zona anterior aun
+        abierta es una esquina NUEVA: se reinicia el reloj de la zona para
+        que el timeout no la corte a mitad."""
+        if self.zona != ZONA_ESQUINA or renovar:
             self.zona = ZONA_ESQUINA
             self._t_zona = time.time()
             self.motivo_zona = motivo
@@ -301,13 +355,61 @@ class GestorLineas:
             return HORARIO if naranja_horario else ANTIHORARIO
         return ANTIHORARIO if naranja_horario else HORARIO
 
-    def _evento(self, color: str, fuente: str) -> None:
+    def _color_de(self, sentido: int) -> str:
+        """Inversa de _sentido_de: que color se cruza PRIMERO en ese sentido."""
+        naranja_horario = bool(self.cfg.get("naranja_es_horario", True))
+        if sentido == HORARIO:
+            return "naranja" if naranja_horario else "azul"
+        return "azul" if naranja_horario else "naranja"
+
+    def color_objetivo(self) -> str:
+        """(modo color) el color que cuenta, o '' si aun no hay sentido."""
+        s = self.sentido_efectivo(self.sentido_forzado)
+        return self._color_de(s) if s != DESCONOCIDO else ""
+
+    def _evento_color(self, color: str, fuente: str, ahora: float) -> bool:
+        """Modo por color. La primera linea fija el sentido; desde ahi solo
+        existe el color de ese sentido. Devuelve True si la linea cuenta."""
+        if self.sentido == DESCONOCIDO:
+            ### OJO: si el TCS se pierde la primera naranja y ve la azul,
+            ### el sentido sale al reves toda la ronda. Es el precio de usar
+            ### solo el TCS; con carrera.sentido forzado no pasa.
+            self.sentido = self._sentido_de(color)
+        objetivo = self.color_objetivo()
+        if color != objetivo:
+            self.ignoradas += 1
+            self.ultimo_evento = f"{color} ({fuente}) ignorada: cuentan las {objetivo}"
+            return False
+        refract = float(self.cfg_color.get("refractario_ms", 2000)) / 1000.0
+        if ahora - self._t_esquina < refract:
+            ### misma linea pisada otra vez (rebote del sensor o el carro que
+            ### vuelve sobre ella al maniobrar). En banco, empujando el carro
+            ### a mano sobre la naranja, salian 2-3 eventos en menos de 1 s.
+            self.rebotes += 1
+            self.ultimo_evento = (f"{color} ({fuente}) repetida a los "
+                                  f"{ahora - self._t_esquina:.1f}s, no cuenta")
+            return False
+        self._t_evento = ahora
+        self._colores_esquina = [color]
+        self.orden_observado = [color]
+        self._contada = False
+        self._contar_esquina(ahora, f"linea {color} ({fuente})")
+        self.entrar_en_esquina(f"linea {color} ({fuente})", renovar=True)
+        self._disparo_pendiente = True
+        return True
+
+    def _evento(self, color: str, fuente: str) -> bool:
         """Una linea cruzada. UNA ESQUINA ABIERTA SE QUEDA CON SU SEGUNDA
         LINEA: mientras haya esquina abierta, la linea del otro color la
         CIERRA, nunca abre otra. Es lo que impide el giro fantasma cuando la
-        azul llega tarde (ver el encabezado del modulo)."""
+        azul llega tarde (ver el encabezado del modulo).
+
+        Devuelve True si la linea es de esta ronda (modo par: siempre)."""
         ahora = time.time()
         self.ultimo_evento = f"{color} ({fuente})"
+
+        if self.modo_color:
+            return self._evento_color(color, fuente, ahora)
 
         if self._esquina_abierta:
             if color != self._color_apertura:
@@ -320,14 +422,14 @@ class GestorLineas:
                 # misma linea otra vez (rebote en el borde): no es nada nuevo
                 self.ultimo_evento = f"{color} repetida, ignorada"
             self._t_evento = ahora
-            return
+            return True
 
         refract = float(self.cfg.get("refractario_esquina_ms", 3000)) / 1000.0
         if ahora - self._t_esquina < refract:
             # zona muerta: rebote de la esquina que se acaba de contar
             self._t_evento = ahora
             self.ultimo_evento = f"{color} en refractario, ignorada"
-            return
+            return True
 
         # Primera linea de una esquina nueva. El carro ENTRA en la curva ya
         # mismo (eso es lo que corta el bucle), pero el CONTADOR todavia no
@@ -343,6 +445,7 @@ class GestorLineas:
         if self.sentido == DESCONOCIDO:
             self.sentido = self._sentido_de(color)
         self.entrar_en_esquina(f"linea {color} ({fuente})")
+        return True
 
     def _cerrar_esquina(self, motivo: str) -> None:
         """Deja de esperar la segunda linea. La ZONA de esquina (el anti-bucle)
@@ -434,4 +537,8 @@ class GestorLineas:
             "esperando": self._color_apertura if self._esquina_abierta else "",
             "incoherencias": self.incoherencias,
             "pares_incompletos": self.pares_incompletos,
+            "modo": "color" if self.modo_color else "par",
+            "color_objetivo": self.color_objetivo() if self.modo_color else "",
+            "ignoradas": self.ignoradas,
+            "rebotes": self.rebotes,
         }

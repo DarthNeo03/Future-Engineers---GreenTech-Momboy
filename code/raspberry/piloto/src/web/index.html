@@ -93,11 +93,20 @@
     <div class="fila">
       <button class="mini" id="btn2T" onclick="toggle2T()">Giro 2 tiempos: —</button>
       <button class="mini" id="btnBloq" onclick="toggleBloq()">Anti-bucle: —</button>
+      <button class="mini" id="btnColor" onclick="toggleColor()">Esquina por color: —</button>
     </div>
     <div class="fila">
-      <button class="mini off" onclick="cmd({probar_linea:'naranja'})">Probar esquina (simular linea)</button>
+      <button class="mini off" onclick="cmd({probar_linea:'naranja'})">Probar esquina (linea naranja)</button>
+      <button class="mini off" onclick="cmd({probar_linea:'azul'})">Simular linea azul</button>
     </div>
     <p class="desc">
+    <b>Esquina por color</b>: el TCS solo hace dos cosas: la primera linea fija el sentido
+    (naranja = horario) y cada linea de ESE color dispara un giro hacia adentro y cuenta una
+    esquina; las del otro color se ignoran (la azul tardia ya no gira dos veces). El giro se
+    SUELTA en cuanto se ve un pilar y manda el esquive; cuando el pilar deja de mandar se
+    retoma. Con esto encendido no se usan ni el par de lineas ni el giro de 2 tiempos.
+    Para probarlo en banco: pulsa "linea naranja" (debe girar), luego "linea azul" (debe
+    ignorarla). Parametros en Ajustes &gt; esquina_color.<br>
     <b>Anti-bucle</b>: dentro de la curva (entre las lineas del piso) el giro de 90 se ejecuta
     comprometido y la camara no puede redirigirlo. Sin esto, el hueco blanco que deja el muro
     interno parece camino libre y el carro da vueltas dentro de la esquina.<br>
@@ -277,6 +286,11 @@ function toggle2T(){
 function toggleBloq(){
   if(!valores) return;
   setp("navegacion","bloqueo_esquina", valores.navegacion.bloqueo_esquina?0:1)
+    .then(refrescarValores);
+}
+function toggleColor(){
+  if(!valores || !valores.esquina_color) return;
+  setp("esquina_color","activo", valores.esquina_color.activo?0:1)
     .then(refrescarValores);
 }
 
@@ -658,10 +672,18 @@ function refrescar(){
     fila(tc, "esquinas / vueltas", ca.esquinas + "/" + ca.meta_esquinas + " — vuelta " + ca.vueltas);
     fila(tc, "tiempo", ca.transcurrido_s + " s");
     fila(tc, "lineas", ca.lineas.ultimo + (ca.lineas.orden ? " (orden "+ca.lineas.orden+")" : ""));
-    fila(tc, "orden esperado", ca.lineas.orden_esperado || "(aun sin fijar)");
-    if(ca.lineas.incoherencias || ca.lineas.pares_incompletos)
-      fila(tc, "pares raros", ca.lineas.incoherencias + " al reves, " +
-           ca.lineas.pares_incompletos + " a medias", "avi");
+    if(ca.lineas.modo === "color"){
+      fila(tc, "modo esquinas", "por COLOR: cuenta " + (ca.lineas.color_objetivo || "(sin sentido aun)"),
+           ca.lineas.color_objetivo ? "ok" : "avi");
+      if(ca.lineas.ignoradas || ca.lineas.rebotes)
+        fila(tc, "lineas no contadas", ca.lineas.ignoradas + " del otro color, " +
+             ca.lineas.rebotes + " repetidas");
+    } else {
+      fila(tc, "orden esperado", ca.lineas.orden_esperado || "(aun sin fijar)");
+      if(ca.lineas.incoherencias || ca.lineas.pares_incompletos)
+        fila(tc, "pares raros", ca.lineas.incoherencias + " al reves, " +
+             ca.lineas.pares_incompletos + " a medias", "avi");
+    }
     fila(tc, "zona", ca.lineas.zona + " (" + ca.lineas.zona_s + "s) " + ca.lineas.zona_motivo,
          ca.lineas.zona==="esquina" ? "avi" : "ok");
     if(valores){
@@ -669,6 +691,9 @@ function refrescar(){
       $("btn2T").classList.toggle("off", !valores.giro2t.activo);
       $("btnBloq").textContent = "Anti-bucle: " + (valores.navegacion.bloqueo_esquina?"SI":"no");
       $("btnBloq").classList.toggle("off", !valores.navegacion.bloqueo_esquina);
+      const ec = valores.esquina_color && valores.esquina_color.activo;
+      $("btnColor").textContent = "Esquina por color: " + (ec?"SI":"no");
+      $("btnColor").classList.toggle("off", !ec);
     }
 
     // telemetria

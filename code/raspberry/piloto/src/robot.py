@@ -48,12 +48,16 @@ class Robot:
 
         self.geo = Geometria(self.p["geometria"])
         self.vision = vision.Vision(self.perfil_color["colores"])
-        self.lineas = GestorLineas(self.p["lineas"])
+        ### el modo de esquina por color lo comparten el gestor de lineas (que
+        ### cuenta) y el navegador (que gira): mismo dict, un solo interruptor
+        self.lineas = GestorLineas(self.p["lineas"],
+                                   cfg_color=self.p["esquina_color"])
         self.carrera = Carrera(self.p["carrera"], self.lineas)
         self.navegador = Navegador(self.p["navegacion"], self.p["limites"],
                                    self.p["escape"], self.p["giro2t"],
                                    al_completar_giro=self._giro_completado,
-                                   cfg_obst=self.p["obstaculos"])
+                                   cfg_obst=self.p["obstaculos"],
+                                   cfg_color=self.p["esquina_color"])
         self.esquivador = Esquivador(self.p["obstaculos"])
         self.enlace = Enlace(self.p["enlace"], simulado=simulado, al_log=self.log)
 
@@ -400,12 +404,17 @@ class Robot:
 
             # --- sensores y conteo ---------------------------------------
             for color, _t in self.enlace.eventos_linea():
-                self.lineas.evento_tcs(color)
-                self.t_linea_reciente = time.time()
+                ### en modo color una linea ignorada NO es "linea reciente":
+                ### si lo fuera, la azul tardia + pasillo cerrando volveria a
+                ### disparar el giro que este modo quiere quitar
+                if self.lineas.evento_tcs(color):
+                    self.t_linea_reciente = time.time()
             self.lineas.paso_camara(dets, perfil, self.geo)
             if self.lineas.ultimo_evento and \
                     time.time() - self.lineas._t_evento < 0.1:
                 self.t_linea_reciente = time.time()
+            if self.lineas.tomar_disparo():
+                self.navegador.rearmar_esquina()
 
             self.lineas.paso_zona()          # timeout de la zona de esquina
             yaw = yaw_ahora
@@ -438,6 +447,13 @@ class Robot:
             bias = self.esquivador.paso(dets, perfil, self.geo,
                                         self.lineas.dist_lineas, en_esquina,
                                         sentido, vel_mm_s)
+            ### "pilar en juego" = visto ahora mismo (dist_mm) o en el punto
+            ### ciego mientras se adelanta (adelantando_s). La busqueda del
+            ### modo borde (buscando) no cuenta: es un recuerdo, no un pilar.
+            ### Se lee de la info del esquivador para no tocar obstaculos.py.
+            info_obst = self.esquivador.info
+            pilar_en_juego = ("dist_mm" in info_obst
+                              or "adelantando_s" in info_obst)
 
             # --- decidir ---------------------------------------------------
             if self.modo == "auto" and self.armado and perfil is not None:
@@ -447,7 +463,8 @@ class Robot:
                 else:
                     d = self.navegador.paso(perfil, yaw, sentido,
                                             linea_reciente, bias, en_esquina,
-                                            esquina_confirmada)
+                                            esquina_confirmada,
+                                            pilar_en_juego=pilar_en_juego)
             elif self.modo == "manual" and self.armado:
                 caducado = (time.time() - self.manual["t"]) * 1000 > \
                     float(self.p["manual"]["timeout_ms"])

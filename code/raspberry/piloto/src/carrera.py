@@ -61,6 +61,9 @@ class Carrera:
     def paso(self) -> bool:
         """Llamar una vez por frame. Devuelve True si el carro DEBE PARARSE
         (carrera terminada o fuera de tiempo)."""
+        ### el gestor de lineas necesita saber si el sentido viene forzado
+        ### desde la web (modo color: decide que color cuenta)
+        self.lineas.sentido_forzado = str(self.cfg.get("sentido", "auto"))
         if self.estado == LISTO:
             return False
         ahora = time.time()
@@ -71,7 +74,12 @@ class Carrera:
             if self.transcurrido() > float(self.cfg.get("tiempo_max_s", 180)):
                 self.estado = TERMINADO
                 return True
-            if self.lineas.esquinas >= self.esquinas_meta:
+            ### en modo color la esquina se cuenta al PISAR la linea, o sea
+            ### antes de girar: si se arrancara parada_ms aqui el carro se
+            ### pararia a mitad de la ultima curva. Se espera a salir de la
+            ### zona (giro hecho o timeout). En modo par no cambia nada util.
+            if (self.lineas.esquinas >= self.esquinas_meta
+                    and not self.lineas.en_esquina):
                 # ultima esquina completada: estamos entrando a la seccion de
                 # meta; avanzar un poco mas para meter el carro entero
                 self.estado = PARANDO
