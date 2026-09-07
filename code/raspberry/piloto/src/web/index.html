@@ -686,6 +686,14 @@ function refrescar(){
     }
     fila(tc, "zona", ca.lineas.zona + " (" + ca.lineas.zona_s + "s) " + ca.lineas.zona_motivo,
          ca.lineas.zona==="esquina" ? "avi" : "ok");
+    const lv = ca.lineas.linea_vista_mm;
+    fila(tc, "linea vista / freno",
+         (lv===null||lv===undefined ? "ninguna" : lv + " mm") +
+         (ca.lineas.freno < 1 ? "  —  FRENANDO x" + ca.lineas.freno : ""),
+         ca.lineas.freno < 1 ? "avi" : "");
+    if(s.decision.metricas && s.decision.metricas.reanclajes)
+      fila(tc, "rumbo re-anclado", s.decision.metricas.reanclajes +
+           " esquina(s) sin registrar (recta " + s.decision.metricas.rumbo_recta + ")", "avi");
     if(valores){
       $("btn2T").textContent = "Giro 2 tiempos: " + (valores.giro2t.activo?"SI":"no");
       $("btn2T").classList.toggle("off", !valores.giro2t.activo);

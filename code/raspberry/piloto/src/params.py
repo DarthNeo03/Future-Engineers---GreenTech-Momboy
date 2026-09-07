@@ -170,6 +170,17 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "yaw_cede_al_esquivar": _p("bool", True, "Mientras un pilar manda la direccion, el mantenimiento de rumbo por giroscopio CEDE en la misma proporcion. Sin esto los dos se suman: con el esquive topado en 55 % y yaw_max en 45 %, el volante se iba al 100 % y el carro se cruzaba de golpe, llevandose el pilar con la rueda trasera."),
         "yaw_max": _p("float", 45.0, "Tope de la correccion por rumbo (que el giroscopio ayude, no que mande).", 0.0, 100.0),
         "desvio_max_deg": _p("float", 110.0, "Si el rumbo se aleja mas de esto del rumbo de la recta, el carro se ha quedado mirando hacia atras (tipico despues de varios escapes) y se fuerza una maniobra para volver. El reglamento termina la ronda si se circula en sentido contrario, asi que esto no es cosmetico.", 60.0, 170.0),
+        ### RE-ANCLAJE DEL RUMBO. Visto en pista: el TCS se pierde una linea,
+        ### el centrado toma la curva solo por el hueco blanco, y el codigo se
+        ### queda creyendo que la recta es la de ANTES. El giroscopio tira al
+        ### 45 % hacia esa recta vieja (= al lado contrario) hasta la pared, y
+        ### en la linea siguiente el objetivo sale 90 grados desfasado: giro al
+        ### lado incorrecto. La cura: si el carro lleva un rato girado ~90 EN
+        ### EL SENTIDO DE LA RONDA respecto a la recta, eso fue una esquina.
+        "reanclar_rumbo": _p("bool", True, "RE-ANCLAR LA RECTA A LA REALIDAD. Si en recta el carro lleva reanclar_ms girado entre reanclar_desde_deg y reanclar_max_deg respecto a la recta de referencia, EN EL SENTIDO DE LA RONDA, es que tomo una esquina que el codigo no registro (el TCS se perdio la linea y el centrado doblo solo). Se adopta la recta nueva en vez de tirar hacia la vieja, que es como el carro giraba al lado contrario hasta la pared. Tambien se aplica al apuntar el giro de una esquina: el objetivo sale de la recta REAL, no de la acumulada. Girado en contra del sentido no cuenta: eso lo trata desvio_max_deg."),
+        "reanclar_desde_deg": _p("float", 65.0, "Desde cuantos grados girado (en el sentido de la ronda) se considera que hubo una esquina sin registrar. Por debajo es un desvio normal (esquivar un pilar, entrar torcido). No lo bajes de 50: esquivando se llega a 40.", 40.0, 90.0),
+        "reanclar_max_deg": _p("float", 135.0, "Hasta cuantos grados se acepta como UNA esquina sin registrar. Mas alla ya no se distingue de una vuelta sobre si mismo y manda desvio_max_deg (rescate).", 90.0, 170.0),
+        "reanclar_ms": _p("int", 400, "Cuanto tiene que sostenerse ese giro antes de adoptar la recta nueva. Evita re-anclar por un bandazo de un frame.", 0, 3000),
     },
 
     "giro2t": {
@@ -225,6 +236,15 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "pares_para_invertir": _p("int", 2, "Cuantos pares de lineas seguidos en el orden CONTRARIO hacen falta para aceptar que el carro va de verdad al reves (y no que fue una lectura suelta). Con 2, un par raro se descarta sin contar; dos seguidos invierten el sentido.", 1, 5),
         "cierre_max_ms": _p("int", 6000, "Cuanto se espera la SEGUNDA linea de una esquina ya abierta. Mientras dure, esa linea CIERRA la esquina en vez de abrir otra: es lo que evita que una azul que llega tarde dispare un segundo giro de 90. Debe cubrir toda la curva; solo bajalo si dos esquinas de verdad estan muy seguidas.", 1000, 15000),
         "esquina_max_ms": _p("int", 8000, "Red de seguridad: tiempo maximo que el carro puede considerarse DENTRO de una esquina. Si lo supera vuelve a modo recta aunque el giro no se haya confirmado, para no quedarse bloqueado si el giroscopio falla.", 1000, 20000),
+        ### FRENO ANTE LINEA. El TCS integra 24 ms por muestra (tcs.atime 246):
+        ### a velocidad de crucero una linea de 2 cm deja 1 o 2 lecturas y a
+        ### veces ninguna. La camara ve la linea antes de que pase bajo el
+        ### carro (donde la camara ya no llega), asi que se baja la velocidad
+        ### desde una distancia y se mantiene un rato despues.
+        "frenar_ante_linea": _p("bool", True, "Bajar la velocidad cuando la CAMARA ve una linea del piso cerca, para que el TCS tenga mas muestras al pasar por encima y no se la salte. Funciona aunque usar_camara este apagado: la camara solo mide la distancia, no cuenta ni cruza."),
+        "frenar_desde_mm": _p("float", 500.0, "A menos de esta distancia (desde el morro) de una linea vista, se frena. Cuando la linea sale por debajo del cuadro ya esta a punto de pasar bajo el sensor.", 100.0, 2000.0),
+        "vel_linea_pct": _p("int", 60, "Velocidad mientras se pasa la linea, en % de la que tocaria. 60 = un 40 % mas lento.", 10, 100),
+        "frenar_tras_ms": _p("int", 1500, "Cuanto se sigue frenado despues de que la linea desaparezca del cuadro o de que el TCS avise del cruce: es el tiempo que tarda en pasar bajo el sensor y algo mas.", 0, 6000),
     },
 
     "tcs": {
