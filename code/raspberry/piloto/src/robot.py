@@ -464,7 +464,8 @@ class Robot:
                     d = self.navegador.paso(perfil, yaw, sentido,
                                             linea_reciente, bias, en_esquina,
                                             esquina_confirmada,
-                                            pilar_en_juego=pilar_en_juego)
+                                            pilar_en_juego=pilar_en_juego,
+                                            freno_linea=self.lineas.freno_linea())
             elif self.modo == "manual" and self.armado:
                 caducado = (time.time() - self.manual["t"]) * 1000 > \
                     float(self.p["manual"]["timeout_ms"])

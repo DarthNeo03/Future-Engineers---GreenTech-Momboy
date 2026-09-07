@@ -21,7 +21,7 @@ MPU6050 y el TCS34725 por I2C y manda yaw + cruces de linea a la Pi).
 ```bash
 python3 -m venv .venv && source .venv/bin/activate    # en Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python tools/selftest.py            # 268 pruebas, sin hardware
+python tools/selftest.py            # 295 pruebas, sin hardware
 python main.py                      # camara + ESP32 + web
 python main.py --simulado           # sin ESP32 (pruebas en el PC)
 python main.py --imagen foto.jpg    # sin camara, sobre una foto
@@ -298,6 +298,63 @@ Medido en el selftest (modelo Ackermann): pilar visible entre los ticks 6 y
 46 ticks, una sola esquina contada; con el pasillo en 450 mm la velocidad del
 giro baja de 40 a 26.
 
+## El giro al lado incorrecto: la recta que se quedo atras
+
+Sintoma en pista (con el modo por color, pero pasa igual con el giro normal):
+el carro cruza la naranja y dobla bien, y acto seguido **sigue doblando al
+lado contrario**, sin haber pisado otra linea, hasta la esquina o la pared.
+Otras veces, en la linea siguiente, gira directamente al lado incorrecto.
+
+Causa: la referencia de rumbo (`rumbo_recta`) solo avanzaba 90 grados cuando
+el codigo registraba una esquina. Si el TCS se pierde la linea, el centrado
+toma la curva solo por el hueco blanco del muro interno: el carro dobla bien
+fisicamente, pero el codigo sigue creyendo que la recta es la de ANTES. El
+giroscopio tira al 45 % hacia esa recta vieja, que ahora queda al lado
+contrario, y el carro se va a la pared. Y en la linea siguiente el objetivo
+se calculaba sumando 90 a esa recta desfasada: giro 90 grados fuera de sitio.
+Habia un segundo agujero: `enlace.yaw()` devuelve `None` si la telemetria
+lleva mas de 0,4 s sin llegar, y en ese instante el apuntado se saltaba en
+silencio; al volver el yaw, el giro "terminaba" con la referencia vieja.
+
+Arreglo (`navegacion.reanclar_rumbo`, encendido):
+
+- **En recta**: si el carro lleva `reanclar_ms` girado entre
+  `reanclar_desde_deg` y `reanclar_max_deg` respecto a la recta, **en el
+  sentido de la ronda**, eso fue una esquina sin registrar: se adopta la recta
+  nueva en vez de tirar hacia la vieja. Girado en contra del sentido no cuenta
+  (es esquivar o entrar torcido) y mas alla de 135 tampoco: ahi ya no se
+  distingue de una vuelta sobre si mismo y manda el rescate de
+  `desvio_max_deg`, como antes. Con el sentido desconocido no se toca.
+- **Al apuntar una esquina**: el objetivo sale de la recta REAL (misma regla),
+  no de la acumulada. Vale para el giro normal y el giro por color.
+- **Sin yaw al entrar**: el giro queda pendiente de apuntar y lo hace en cuanto
+  el yaw vuelve, descontando lo girado a ciegas.
+
+Medido en el selftest: tras doblar solo 90 grados, el codigo viejo pedia
+-45 % de volante (izquierda, en horario) de forma sostenida; con el re-anclaje
+la recta pasa a 90 y el volante queda centrado. En la web sale como *rumbo
+re-anclado: N esquina(s) sin registrar* y en el motivo de la decision.
+
+Comprobacion aparte, que el codigo no puede hacer por ti: si en la web
+`carrera.sentido` esta forzado a "horario" y corres en antihorario, el modo
+por color ignora las azules y gira a la derecha en cada naranja, que en
+antihorario es la linea de SALIDA de la curva. Dejalo en AUTO salvo en pruebas.
+
+## Freno ante linea (que el TCS no se la salte)
+
+El TCS integra 24 ms por muestra (`tcs.atime` 246): a velocidad de crucero
+una linea de 2 cm deja 1 o 2 lecturas y a veces ninguna. La camara ve la
+linea ANTES de que pase bajo el carro (donde la camara ya no llega), asi que
+`lineas.frenar_ante_linea` baja la velocidad en recta a `vel_linea_pct` desde
+`frenar_desde_mm` de la linea y la mantiene `frenar_tras_ms` despues de que
+la linea salga por debajo del cuadro, o de que el TCS avise del cruce.
+Funciona aunque `usar_camara` este apagado: la camara solo mide la distancia,
+no cuenta ni cruza. En la web: fila *linea vista / freno*.
+
+Si aun asi se pierde lineas, la otra palanca es `tcs.atime` (bajarlo da mas
+muestras por linea) y despues **repetir la calibracion del TCS**, porque
+cambian todos los valores absolutos.
+
 ## Tres lineas de calibracion
 
 Los perfiles (de parametros y de color) van etiquetados en tres listas:
@@ -563,6 +620,8 @@ distancias fisicas y valen igual en pista ancha (1000 mm) o angosta (600 mm).
 | `esquina_color.activo` | Modo de esquina por color: un solo color cuenta y el giro cede al pilar. |
 | `esquina_color.dir_pct` / `vel_max_pct` / `vel_min_pct` | Cuanto dobla hacia adentro y a que velocidad (variable con el pasillo). |
 | `esquina_color.refractario_ms` | Ventana en la que la misma linea pisada otra vez no cuenta. |
+| `navegacion.reanclar_rumbo` | Adopta la recta real cuando el carro doblo una esquina que el codigo no registro. Dejalo encendido. |
+| `lineas.frenar_desde_mm` / `vel_linea_pct` / `frenar_tras_ms` | Freno ante linea vista por la camara, para que el TCS no se la salte. |
 
 ## Estructura
 
@@ -586,7 +645,7 @@ piloto/
 │   ├── dibujo.py           overlay del video
 │   ├── servidor.py         http.server + MJPEG
 │   └── web/index.html      la interfaz
-└── tools/selftest.py       268 pruebas sin hardware
+└── tools/selftest.py       295 pruebas sin hardware
 ```
 
 ## Notas practicas (heredadas a golpes)

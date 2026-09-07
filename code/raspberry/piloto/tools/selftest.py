@@ -1002,6 +1002,199 @@ prueba("meta: el sentido forzado llega al gestor de lineas",
        gcar.sentido_forzado == "auto")
 
 # ===========================================================================
+print("== el rumbo que se quedo atras (giro al lado incorrecto) ==")
+### Visto en pista: el TCS se pierde la linea, el centrado toma la curva solo
+### por el hueco blanco, y el codigo sigue creyendo que la recta es la vieja.
+### El yaw tira al 45 % hacia ella = al lado contrario, hasta la pared. Y en
+### la linea siguiente el objetivo sale 90 grados desfasado.
+
+def nav_recta(**cambios_nav):
+    v = params_mod.valores_por_defecto()
+    v["navegacion"].update(dict(min_recto_ms=0, retardo_giro_ms=0, reanclar_ms=0),
+                           **cambios_nav)
+    n = Navegador(v["navegacion"], v["limites"], v["escape"], v["giro2t"])
+    n.paso(p_libre, 0.0, 1)             # fija la recta de referencia en 0
+    return n
+
+# --- control: asi se comportaba (re-anclaje apagado) ------------------------
+viejo = nav_recta(reanclar_rumbo=False)
+d_viejo = None
+for _ in range(10):
+    d_viejo = viejo.paso(p_libre, 90.0, 1)      # doblo solo a la derecha
+prueba("(control) sin re-anclar, tras doblar solo el yaw tira a la IZQUIERDA",
+       d_viejo.direccion <= -30 and viejo.estado == RECTO,
+       f"dir={d_viejo.direccion} {d_viejo.motivo}")
+prueba("(control) la recta de referencia se quedo en la vieja",
+       viejo.rumbo_recta == 0.0, str(viejo.rumbo_recta))
+
+# --- arreglado: adopta la recta nueva y deja de tirar -----------------------
+nuevo = nav_recta()
+d_nuevo = None
+for _ in range(3):
+    d_nuevo = nuevo.paso(p_libre, 90.0, 1)
+prueba("re-anclado: la recta pasa a ser la real (90)",
+       nuevo.rumbo_recta == 90.0 and nuevo.reanclajes == 1,
+       f"recta={nuevo.rumbo_recta} reanclajes={nuevo.reanclajes}")
+prueba("re-anclado: el volante queda centrado, no tira al otro lado",
+       abs(d_nuevo.direccion) < 8 and nuevo.estado == RECTO,
+       f"dir={d_nuevo.direccion}")
+prueba("re-anclado: el motivo lo cuenta",
+       "re-anclado" in d_nuevo.motivo, d_nuevo.motivo)
+
+# el tiempo de sostenimiento (un bandazo de un frame no re-ancla)
+tard = nav_recta(reanclar_ms=400)
+tard.paso(p_libre, 90.0, 1)
+prueba("un frame girado no re-ancla todavia", tard.rumbo_recta == 0.0)
+time.sleep(0.45)
+tard.paso(p_libre, 90.0, 1)
+prueba("sostenido reanclar_ms, si", tard.rumbo_recta == 90.0, str(tard.rumbo_recta))
+
+# torcido EN CONTRA del sentido (esquivando hacia el muro exterior) NO es
+# una esquina: la referencia no se toca y el yaw corrige hacia la recta
+contra = nav_recta()
+d_contra = None
+for _ in range(3):
+    d_contra = contra.paso(p_libre, -70.0, 1)
+prueba("girado en contra del sentido no re-ancla",
+       contra.rumbo_recta == 0.0 and contra.reanclajes == 0 and d_contra.direccion > 0,
+       f"recta={contra.rumbo_recta} dir={d_contra.direccion}")
+# ...y mas alla de desvio_max sigue mandando el rescate de siempre
+resc = nav_recta()
+d_resc = resc.paso(p_libre, -120.0, 1)
+prueba("en contra y pasado desvio_max: rescate, como antes",
+       resc.estado == GIRO and "RESCATE" in d_resc.motivo, d_resc.motivo)
+# con el sentido DESCONOCIDO no se re-ancla (no se distingue de una vuelta)
+sinsent = nav_recta()
+for _ in range(3):
+    sinsent.paso(p_libre, 90.0, 0)
+prueba("sin sentido conocido no re-ancla", sinsent.rumbo_recta == 0.0)
+# dos esquinas sin registrar (180): ya no es distinguible de una vuelta
+# sobre si mismo -> rescate, como antes
+dos = nav_recta()
+d_dos = dos.paso(p_libre, 175.0, 1)
+prueba("180 girado: no se re-ancla, manda el rescate",
+       dos.reanclajes == 0 and dos.estado == GIRO, f"{dos.estado} {d_dos.motivo}")
+
+# --- al apuntar la esquina: el objetivo sale de la recta REAL ----------------
+# El carro ya doblo 88 grados solo cuando por fin se registra la linea.
+# Antes: objetivo = 0 + 90 = 90 = donde ya esta -> "giro hecho" al instante y
+# el yaw tirando a la recta de referencia (que era la vieja).
+n_snap, g_snap, _ = nav_color()
+n_snap.paso(p_libre, 0.0, 1)                # recta 0
+g_snap.evento_tcs("naranja")
+n_snap.rearmar_esquina()
+n_snap.paso(p_libre, 88.0, 1, en_esquina=True)     # PRE_GIRO
+d_snap = n_snap.paso(p_libre, 88.0, 1, en_esquina=True)   # GIRO_COLOR
+prueba("al apuntar con 88 girados, la recta base se re-ancla a 90",
+       abs(_norm(n_snap.rumbo_recta - 180.0)) < 1e-6 and n_snap.reanclajes == 1,
+       f"recta={n_snap.rumbo_recta}")
+prueba("y el giro va a la DERECHA (90 mas), no se da por hecho",
+       n_snap.estado == GIRO_COLOR and d_snap.direccion > 40,
+       f"{n_snap.estado} dir={d_snap.direccion}")
+# entrar torcido 30 en contra (esquivando): la base sigue siendo la recta
+n_tor, g_tor, _ = nav_color()
+n_tor.paso(p_libre, 0.0, 1)
+g_tor.evento_tcs("naranja")
+n_tor.rearmar_esquina()
+n_tor.paso(p_libre, -30.0, 1, en_esquina=True)
+n_tor.paso(p_libre, -30.0, 1, en_esquina=True)
+prueba("entrando torcido en contra el objetivo sigue siendo 90",
+       n_tor.rumbo_recta == 90.0 and n_tor.reanclajes == 0,
+       str(n_tor.rumbo_recta))
+# el giro normal (modo par) tambien se beneficia
+n_par, _h, _v = nav_esquina()
+n_par.paso(p_libre, 0.0, 1)
+n_par.paso(p_libre, 88.0, 1, en_esquina=True)      # PRE_GIRO
+n_par.paso(p_libre, 88.0, 1, en_esquina=True)      # GIRO
+prueba("giro normal: tambien apunta desde la recta real",
+       abs(_norm(n_par.rumbo_recta - 180.0)) < 1e-6, str(n_par.rumbo_recta))
+
+# --- el yaw falta justo al entrar en la esquina ----------------------------
+# enlace.yaw() devuelve None con 0,4 s sin telemetria. Antes el apuntado se
+# saltaba y al volver el yaw el giro "terminaba" con la referencia vieja.
+n_sin, g_sin, _ = nav_color()
+n_sin.paso(p_libre, 0.0, 1)
+g_sin.evento_tcs("naranja")
+yaw_s = 0.0
+traza_s = []
+for i in range(400):
+    g_sin.paso_zona()
+    if g_sin.tomar_disparo():
+        n_sin.rearmar_esquina()
+    y_in = None if i < 4 else yaw_s                 # 4 ticks sin yaw
+    d = n_sin.paso(p_libre, y_in, 1, en_esquina=g_sin.en_esquina,
+                   esquina_confirmada=g_sin.en_esquina)
+    traza_s.append((n_sin.estado, d.vel, d.direccion))
+    yaw_s = ((yaw_s + 9.0 * (d.vel / 100.0) * (d.direccion / 100.0)) + 180) % 360 - 180
+    if not g_sin.en_esquina and n_sin.estado == RECTO:
+        break
+prueba("sin yaw al entrar: al volver el yaw se apunta y se completan los 90",
+       80 <= yaw_s <= 105 and n_sin.rumbo_recta == 90.0,
+       f"yaw={yaw_s:.1f} recta={n_sin.rumbo_recta}")
+n_sin2, _h, _v = nav_esquina()
+n_sin2.paso(p_libre, 0.0, 1)
+n_sin2.paso(p_libre, None, 1, en_esquina=True)       # PRE_GIRO sin yaw
+n_sin2.paso(p_libre, None, 1, en_esquina=True)       # GIRO sin yaw
+prueba("giro normal sin yaw: queda pendiente de apuntar",
+       n_sin2.estado == GIRO and not n_sin2._apuntado)
+n_sin2.paso(p_libre, 5.0, 1, en_esquina=True)
+prueba("giro normal: al volver el yaw apunta a 90",
+       n_sin2.rumbo_recta == 90.0 and n_sin2._apuntado, str(n_sin2.rumbo_recta))
+
+# ===========================================================================
+print("== freno ante linea (camara) ==")
+### El TCS integra 24 ms por muestra: a crucero una linea de 2 cm deja 1 o 2
+### lecturas y a veces ninguna. La camara la ve antes: se frena desde una
+### distancia y se sigue lento un rato despues de que pase bajo el carro.
+from src.vision import Deteccion as _Det          # noqa: E402
+
+def linea_vista(dist_mm, color="naranja"):
+    """Deteccion sintetica de una linea cuya base cae a esa distancia."""
+    v = int(geo.distancia_a_fila(dist_mm + gcfg["morro_mm"]))
+    return _Det(color=color, x=220, y=v - 8, w=200, h=8, area=1600,
+                llenado=1.0, aspecto=0.04, cx=320.0, cy=float(v - 4))
+
+fcfg = dict(lcfg, usar_camara=False, frenar_ante_linea=True,
+            frenar_desde_mm=500.0, vel_linea_pct=60, frenar_tras_ms=300)
+gfr = GestorLineas(fcfg)
+gfr.paso_camara({"naranja": [linea_vista(900.0)]}, None, geo)
+prueba("linea lejos (900): se mide pero no frena",
+       gfr.dist_linea_vista is not None and 800 < gfr.dist_linea_vista < 1000
+       and gfr.freno_linea() == 1.0,
+       f"{gfr.dist_linea_vista} {gfr.freno_linea()}")
+gfr.paso_camara({"naranja": [linea_vista(400.0)]}, None, geo)
+prueba("linea a 400: frena a 0.6", abs(gfr.freno_linea() - 0.6) < 1e-6,
+       str(gfr.freno_linea()))
+prueba("con usar_camara apagado la camara NO cuenta ni cruza",
+       gfr.esquinas == 0 and gfr.dist_lineas == {} and not gfr.en_esquina)
+gfr.paso_camara({}, None, geo)                 # salio por debajo del cuadro
+prueba("desaparecida del cuadro: sigue frenado (esta pasando bajo el carro)",
+       abs(gfr.freno_linea() - 0.6) < 1e-6 and gfr.dist_linea_vista is None)
+time.sleep(0.35)
+prueba("pasado frenar_tras_ms vuelve a velocidad normal", gfr.freno_linea() == 1.0)
+gfr.evento_tcs("azul")                         # el TCS avisa del cruce
+prueba("un cruce del TCS tambien frena un rato",
+       abs(gfr.freno_linea() - 0.6) < 1e-6)
+goff = GestorLineas(dict(fcfg, frenar_ante_linea=False))
+goff.paso_camara({"naranja": [linea_vista(300.0)]}, None, geo)
+prueba("frenar_ante_linea apagado: nunca frena", goff.freno_linea() == 1.0)
+# una linea vista por encima del muro (no esta en el piso) no cuenta
+gmur = GestorLineas(fcfg)
+gmur.paso_camara({"naranja": [linea_vista(400.0)]}, p_mitad, geo)
+gmur2 = GestorLineas(fcfg)
+gmur2.paso_camara({"naranja": [linea_vista(400.0)]}, p_libre, geo)
+prueba("con el perfil libre la linea del piso sigue contando",
+       gmur2.dist_linea_vista is not None)
+
+# el navegador aplica el factor en recta
+nf = Navegador(ncfg["navegacion"], ncfg["limites"], ncfg["escape"])
+v_normal = nf.paso(p_libre, None, 0).vel
+v_freno = nf.paso(p_libre, None, 0, freno_linea=0.6).vel
+prueba("en recta el freno por linea baja la velocidad",
+       0 < v_freno < v_normal and abs(v_freno - v_normal * 0.6) <= 1,
+       f"{v_freno} vs {v_normal}")
+
+# ===========================================================================
 print("== clasificador del TCS (gemelo del firmware) ==")
 from src.lineas import clase_tcs, umbrales_desde_muestra   # noqa: E402
 

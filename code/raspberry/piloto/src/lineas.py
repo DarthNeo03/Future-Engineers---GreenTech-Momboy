@@ -172,6 +172,13 @@ class GestorLineas:
         self.ignoradas = 0                  # lineas del otro color (modo color)
         self.rebotes = 0                    # misma linea repetida (modo color)
         self._disparo_pendiente = False     # linea buena sin atender aun
+        ### freno ante linea: la camara mide la distancia a la linea mas
+        ### cercana SIEMPRE (aunque usar_camara este apagado, que solo manda
+        ### sobre contar/cruzar). Con eso se baja la velocidad para que el
+        ### TCS no se la salte.
+        self.dist_linea_vista: Optional[float] = None
+        self._t_linea_cerca = 0.0           # ultima vez que se vio a tiro
+        self._t_tcs = 0.0                   # ultimo aviso del TCS, cuente o no
         self.sugerencia = DESCONOCIDO       # lo que la camara cree ver delante
         self.esquinas = 0
         self.orden_observado: List[str] = []   # colores 1a y 2a de la ultima esquina
@@ -208,9 +215,26 @@ class GestorLineas:
         """Devuelve True si la linea es 'de esta ronda' (en modo par,
         siempre; en modo color, solo las del color que cuenta). robot.py lo
         usa para no marcar 'linea reciente' con una linea ignorada."""
+        self._t_tcs = time.time()
         if bool(self.cfg.get("usar_tcs", True)):
             return self._evento(color, "tcs")
         return False
+
+    def freno_linea(self, ahora: Optional[float] = None) -> float:
+        """Factor 0..1 para la velocidad en recta. Vale vel_linea_pct/100
+        mientras la camara ve una linea a menos de frenar_desde_mm y durante
+        frenar_tras_ms despues de perderla de vista (esta pasando bajo el
+        carro, donde la camara no llega) o de que el TCS avise del cruce."""
+        if not bool(self.cfg.get("frenar_ante_linea", True)):
+            return 1.0
+        ahora = time.time() if ahora is None else ahora
+        cerca = (self.dist_linea_vista is not None and
+                 self.dist_linea_vista <= float(self.cfg.get("frenar_desde_mm", 500.0)))
+        reciente = max(self._t_linea_cerca, self._t_tcs)
+        tras = float(self.cfg.get("frenar_tras_ms", 1500)) / 1000.0
+        if cerca or (reciente and ahora - reciente < tras):
+            return max(0.1, min(1.0, float(self.cfg.get("vel_linea_pct", 60)) / 100.0))
+        return 1.0
 
     def tomar_disparo(self) -> bool:
         """(modo color) True UNA vez por linea buena: la señal para que el
@@ -224,10 +248,12 @@ class GestorLineas:
     def paso_camara(self, dets: Dict[str, List[vision.Deteccion]],
                     perfil: Optional[PerfilMuro], geo: Geometria) -> None:
         """Mira las detecciones naranja/azul que estan SOBRE EL PISO (por
-        debajo de la linea de contacto del muro) y dentro del alcance."""
-        if not bool(self.cfg.get("usar_camara", True)):
-            return
-        self.dist_lineas = {}
+        debajo de la linea de contacto del muro) y dentro del alcance.
+
+        La distancia a la linea mas cercana se mide SIEMPRE (freno ante
+        linea); contar, sugerir sentido y cruzar por camara solo con
+        usar_camara."""
+        distancias: Dict[str, float] = {}
         morro = float(geo.cfg.get("morro_mm", 60.0))
         for color in ("naranja", "azul"):
             mejor: Optional[float] = None
@@ -244,7 +270,16 @@ class GestorLineas:
                 if mejor is None or dist < mejor:
                     mejor = dist
             if mejor is not None:
-                self.dist_lineas[color] = mejor
+                distancias[color] = mejor
+
+        self.dist_linea_vista = min(distancias.values()) if distancias else None
+        if (self.dist_linea_vista is not None and self.dist_linea_vista
+                <= float(self.cfg.get("frenar_desde_mm", 500.0))):
+            self._t_linea_cerca = time.time()
+
+        if not bool(self.cfg.get("usar_camara", True)):
+            return
+        self.dist_lineas = distancias
 
         # sugerencia de sentido: si se ven las dos lineas, la mas cercana es
         # la que se cruzara primero
@@ -541,4 +576,7 @@ class GestorLineas:
             "color_objetivo": self.color_objetivo() if self.modo_color else "",
             "ignoradas": self.ignoradas,
             "rebotes": self.rebotes,
+            "linea_vista_mm": (None if self.dist_linea_vista is None
+                               else round(self.dist_linea_vista)),
+            "freno": round(self.freno_linea(), 2),
         }

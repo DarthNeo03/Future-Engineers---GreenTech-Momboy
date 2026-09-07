@@ -165,6 +165,17 @@ class Navegador:
         self._color_t_inicio = 0.0    # para el max_ms total (con reanudaciones)
         self._t_pilar_fuera = 0.0     # desde cuando no hay pilar en juego
 
+        # --- re-anclaje del rumbo ---
+        ### _apuntado: el giro en curso ya tiene su objetivo puesto CON yaw.
+        ### Si el yaw faltaba justo al entrar en la esquina (enlace.yaw()
+        ### devuelve None con 0,4 s sin telemetria) el apuntado se saltaba en
+        ### silencio y el giro terminaba nada mas volver el yaw, con la
+        ### referencia vieja: el carro se iba al lado contrario.
+        self._apuntado = True
+        self._t_reanclar = 0.0        # desde cuando se ve la esquina sin registrar
+        self._t_ultimo_reanclaje = 0.0
+        self.reanclajes = 0
+
     # ------------------------------------------------------------------
     def reiniciar(self):
         self.pd.reiniciar()
@@ -181,6 +192,8 @@ class Navegador:
         self._color_pendiente = False
         self._color_apuntado = False
         self._t_pilar_fuera = 0.0
+        self._apuntado = True
+        self._t_reanclar = 0.0
 
     @property
     def modo_color(self) -> bool:
@@ -213,11 +226,14 @@ class Navegador:
              bias_obstaculo: Tuple[float, float] = (0.0, 0.0),
              en_esquina: bool = False,
              esquina_confirmada: bool = False,
-             pilar_en_juego: bool = False) -> Decision:
+             pilar_en_juego: bool = False,
+             freno_linea: float = 1.0) -> Decision:
         """sentido: +1 horario, -1 antihorario, 0 desconocido.
         pilar_en_juego: (modo color) hay un pilar visto ahora mismo o en el
                     punto ciego adelantandolo. Es lo que SUELTA el giro por
                     color; fuera de ese modo no se usa.
+        freno_linea: factor 0..1 sobre la velocidad en recta cuando la camara
+                    ve una linea del piso cerca (lineas.frenar_ante_linea).
         bias_obstaculo: (direccion_deseada_pct, peso 0..1) del esquive.
         en_esquina: el carro esta en una curva, por lineas del piso O porque
                     la vision decidio girar. Con bloqueo_esquina, mientras
@@ -337,6 +353,7 @@ class Navegador:
                 else:
                     self._cambiar(GIRO)
                     self._apuntar_a_la_recta_siguiente(yaw, usar_yaw)
+                    self._apuntado = usar_yaw     # sin yaw: apuntar en cuanto vuelva
             else:
                 # giro abierto: contra-direccion si el lado contrario tiene sitio
                 apertura = float(cfg.get("apertura_pct", 25.0))
@@ -367,6 +384,12 @@ class Navegador:
         if self.estado == GIRO:
             venc = (ahora - self.t_estado) * 1000 > float(cfg.get("giro_max_ms", 3000))
             bloqueado = en_esquina and bool(cfg.get("bloqueo_esquina", True))
+            if usar_yaw and not self._apuntado:
+                ### el yaw faltaba al entrar; ahora que esta, se apunta (el
+                ### re-anclaje de _apuntar_a_la_recta_siguiente descuenta lo
+                ### que ya se haya girado a ciegas)
+                self._apuntar_a_la_recta_siguiente(yaw, usar_yaw)
+                self._apuntado = True
             if usar_yaw and self.rumbo_objetivo is not None:
                 err = _norm_ang(self.rumbo_objetivo - yaw)
                 if abs(err) < float(cfg.get("giro_tolerancia_deg", 8.0)) or venc:
@@ -403,6 +426,29 @@ class Navegador:
         # fuerza un giro de rescate para volver, y ese giro no cuenta esquina.
         if usar_yaw and self.rumbo_recta is not None:
             desvio = _norm_ang(yaw - self.rumbo_recta)
+            ### ESQUINA SIN REGISTRAR. Girado ~90 EN EL SENTIDO DE LA RONDA
+            ### respecto a la recta, sostenido: el carro doblo una esquina que
+            ### el codigo no vio (TCS perdido + centrado por el hueco). Antes
+            ### el yaw tiraba hacia la recta vieja = al lado contrario = pared.
+            ### Con el sentido desconocido no se toca: no se distingue de una
+            ### vuelta sobre si mismo, y de eso se encarga desvio_max_deg.
+            if (bool(cfg.get("reanclar_rumbo", True)) and sentido != 0
+                    and float(cfg.get("reanclar_desde_deg", 65.0))
+                    <= sentido * desvio
+                    <= float(cfg.get("reanclar_max_deg", 135.0))):
+                if self._t_reanclar == 0.0:
+                    self._t_reanclar = ahora
+                if (ahora - self._t_reanclar) * 1000 >= float(cfg.get("reanclar_ms", 400)):
+                    self.rumbo_recta = _norm_ang(
+                        self.rumbo_recta + sentido * float(cfg.get("giro_grados", 90.0)))
+                    self.rumbo_objetivo = self.rumbo_recta
+                    self.pd.reiniciar()
+                    self.reanclajes += 1
+                    self._t_ultimo_reanclaje = ahora
+                    self._t_reanclar = 0.0
+                    desvio = _norm_ang(yaw - self.rumbo_recta)
+            else:
+                self._t_reanclar = 0.0
             if abs(desvio) > float(cfg.get("desvio_max_deg", 110.0)):
                 self.lado_giro = -1 if desvio > 0 else 1
                 self.rumbo_objetivo = self.rumbo_recta
@@ -485,6 +531,8 @@ class Navegador:
             motivo += f" esq({bias_dir:+.0f}x{peso:.2f})"
         if self._color_pendiente:
             motivo += " [giro color suelto]"
+        if ahora - self._t_ultimo_reanclaje < 1.5:
+            motivo += " [rumbo re-anclado: esquina sin registrar]"
 
         # --- rumbo por giroscopio -----------------------------------------
         # OJO CON EL SIGNO DE SUMA: la correccion de rumbo se añade DESPUES de
@@ -523,6 +571,12 @@ class Navegador:
 
         # girar fuerte y correr a la vez es como se sale de la pista
         vel *= 1.0 - 0.45 * min(1.0, abs(direccion) / max(1.0, dir_max))
+
+        # linea del piso a la vista (o recien cruzada): despacio, que el TCS
+        # tenga muestras de sobra al pasar por encima
+        if freno_linea < 1.0:
+            vel *= _lim(freno_linea, 0.0, 1.0)
+            motivo += f" linea x{freno_linea:.2f}"
 
         return self._salida(vel, direccion, p, yaw, sentido, motivo)
 
@@ -619,7 +673,9 @@ class Navegador:
         if not reanudar:
             self._color_t_inicio = time.time()
             self._color_apuntado = False
-        if not self._color_apuntado:
+        if not self._color_apuntado and usar_yaw:
+            ### solo cuenta como apuntado si habia yaw; si no, _paso_color
+            ### lo hace en cuanto vuelva
             self._apuntar_a_la_recta_siguiente(yaw, usar_yaw)
             self._color_apuntado = True
         self._color_pendiente = False
@@ -634,8 +690,9 @@ class Navegador:
         el rumbo viejo y el carro se iba derecho al muro de enfrente."""
         if not self._color_apuntado:
             self._color_t_inicio = time.time()
-            self._apuntar_a_la_recta_siguiente(yaw, usar_yaw)
-            self._color_apuntado = True
+            if usar_yaw:
+                self._apuntar_a_la_recta_siguiente(yaw, usar_yaw)
+                self._color_apuntado = True
         self._cambiar(RECTO)
         self.pd.reiniciar()
         self._color_pendiente = True
@@ -653,6 +710,11 @@ class Navegador:
         if pilar_en_juego and bool(g.get("ceder_al_pilar", True)):
             self._soltar_color(yaw, usar_yaw)
             return None
+
+        if usar_yaw and not self._color_apuntado:
+            # el yaw faltaba al arrancar: apuntar ahora (con re-anclaje)
+            self._apuntar_a_la_recta_siguiente(yaw, usar_yaw)
+            self._color_apuntado = True
 
         vencido = (ahora - self._color_t_inicio) * 1000 > float(g.get("max_ms", 3500))
         tope = min(float(g.get("dir_pct", 75.0)), float(self.lim.get("dir_max", 100)))
@@ -733,14 +795,30 @@ class Navegador:
                                       usar_yaw: bool) -> None:
         """Avanza el rumbo de referencia 90 grados: la recta de despues de la
         curva. Se calcula sobre la recta ANTERIOR, no sobre el yaw actual, asi
-        que el error con el que se entre en la curva no se hereda."""
+        que el error con el que se entre en la curva no se hereda.
+
+        RE-ANCLAJE: si el yaw dice que el carro ya lleva ~90 grados girado en
+        el sentido del giro respecto a esa recta, la recta acumulada se quedo
+        una esquina atras (se perdio una linea y el centrado doblo solo). Se
+        parte de la recta REAL; si no, el objetivo sale 90 grados desfasado y
+        el carro dobla al lado contrario. Torcido en contra (esquivando un
+        pilar hacia el muro exterior) no cambia nada: la base sigue siendo la
+        recta acumulada, que ahi es la buena."""
         if not usar_yaw:
             return
         base = self.rumbo_recta if self.rumbo_recta is not None else yaw
         if base is None:
             return
-        self.rumbo_recta = _norm_ang(
-            base + self.lado_giro * float(self.cfg.get("giro_grados", 90.0)))
+        lado = self.lado_giro or 1
+        grados = float(self.cfg.get("giro_grados", 90.0))
+        if bool(self.cfg.get("reanclar_rumbo", True)) and yaw is not None:
+            girado = lado * _norm_ang(yaw - base)
+            if (float(self.cfg.get("reanclar_desde_deg", 65.0)) <= girado
+                    <= float(self.cfg.get("reanclar_max_deg", 135.0))):
+                base = _norm_ang(base + lado * grados)
+                self.reanclajes += 1
+                self._t_ultimo_reanclaje = time.time()
+        self.rumbo_recta = _norm_ang(base + lado * grados)
         self.rumbo_objetivo = self.rumbo_recta
 
     def _terminar_giro(self, yaw: Optional[float] = None,
@@ -753,6 +831,7 @@ class Navegador:
         lado = self.lado_giro
         rescate = self._giro_es_rescate
         self._giro_es_rescate = False
+        self._apuntado = True
         self._cambiar(RECTO)
         self.pd.reiniciar()
         if reanclar:
@@ -832,4 +911,8 @@ class Navegador:
             m["yaw"] = round(yaw, 1)
             if self.rumbo_objetivo is not None:
                 m["rumbo_obj"] = round(self.rumbo_objetivo, 1)
+            if self.rumbo_recta is not None:
+                m["rumbo_recta"] = round(self.rumbo_recta, 1)
+        if self.reanclajes:
+            m["reanclajes"] = self.reanclajes
         return m
