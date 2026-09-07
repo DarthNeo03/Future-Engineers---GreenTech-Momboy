@@ -127,14 +127,49 @@ def anotar(frame: np.ndarray,
                             (det.x, det.base_y + 12),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, bgr, 1, cv2.LINE_AA)
 
-    # --- objetivo del esquive ---------------------------------------------
+    # --- modo borde: donde se quiere ver el canto del pilar ---------------
+    if obst_info and obst_info.get("borde_obj_px") is not None:
+        xo = int(obst_info["borde_obj_px"])
+        cv2.line(frame, (xo, 0), (xo, H), (0, 220, 220), 1, cv2.LINE_AA)
+        cv2.putText(frame, "canto", (max(2, xo - 18), 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.34, (0, 220, 220), 1, cv2.LINE_AA)
+        xb = obst_info.get("borde_px")
+        if xb is not None:
+            cv2.arrowedLine(frame, (int(xb), H // 2), (xo, H // 2),
+                            (0, 220, 220), 2, tipLength=0.15)
+    if obst_info and obst_info.get("buscando"):
+        cv2.putText(frame, "BUSCANDO el pilar (" + str(obst_info.get("lado", "")) + ")",
+                    (8, H - 124), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                    (0, 220, 220), 1, cv2.LINE_AA)
+    if obst_info and obst_info.get("sin_sitio"):
+        cv2.putText(frame, str(obst_info["sin_sitio"]), (8, H - 140),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (60, 60, 235), 1, cv2.LINE_AA)
+
+    # --- esquive: por que lado va a pasar y si esta adelantando ----------
     if obst_info:
-        try:
-            u, v = geo.suelo_a_pixel(float(obst_info["objetivo_mm"]),
-                                     float(obst_info["dist_mm"]) + morro)
-            cv2.drawMarker(frame, (u, v), (0, 255, 0), cv2.MARKER_CROSS, 16, 2)
-        except Exception:
-            pass
+        col_o = (0, 0, 235) if obst_info.get("color") == "rojo" else (0, 200, 0)
+        if "objetivo_mm" in obst_info and "dist_mm" in obst_info:
+            try:
+                u, v = geo.suelo_a_pixel(float(obst_info["objetivo_mm"]),
+                                         float(obst_info["dist_mm"]) + morro)
+                cv2.drawMarker(frame, (u, v), (0, 255, 0), cv2.MARKER_CROSS, 18, 2)
+                # flecha desde el morro hasta el punto de paso: se ve de un
+                # vistazo por que lado piensa pasar, antes de que se mueva
+                cv2.arrowedLine(frame, (W // 2, H - 12), (u, v),
+                                (0, 255, 0), 2, cv2.LINE_AA, tipLength=0.12)
+            except Exception:
+                pass
+        etq = ""
+        if obst_info.get("lado"):
+            etq = (f"{obst_info.get('color', '')} -> paso por su "
+                   f"{obst_info['lado']}")
+        if "adelantando_s" in obst_info:
+            etq += f"  ADELANTANDO {obst_info['adelantando_s']:.1f}s (recto)"
+        if "hueco_estrecho_mm" in obst_info:
+            etq += f"  HUECO {obst_info['hueco_estrecho_mm']}mm: no cabe"
+        if etq:
+            cv2.putText(frame, etq, (6, H - 122), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.42, col_o, 1, cv2.LINE_AA)
 
     # --- volante -----------------------------------------------------------
     cx, cy = W // 2, 22

@@ -52,11 +52,16 @@ class Robot:
         self.carrera = Carrera(self.p["carrera"], self.lineas)
         self.navegador = Navegador(self.p["navegacion"], self.p["limites"],
                                    self.p["escape"], self.p["giro2t"],
-                                   al_completar_giro=self._giro_completado)
+                                   al_completar_giro=self._giro_completado,
+                                   cfg_obst=self.p["obstaculos"])
         self.esquivador = Esquivador(self.p["obstaculos"])
         self.enlace = Enlace(self.p["enlace"], simulado=simulado, al_log=self.log)
 
         self.armado = False
+        # Linea de calibracion en uso ("open" | "obstaculos" | "estacionar").
+        # Solo decide en que lista se guardan y se buscan los perfiles.
+        self.categoria = params_mod.categoria_de(
+            datos_params, params_mod.obtener(datos_params)["nombre"])
         self.modo = "auto"                  # "auto" | "manual" | "parado"
         self.manual = {"vel": 0, "dir": 0, "t": 0.0}
 
@@ -149,6 +154,7 @@ class Robot:
         if si:
             self.enlace.rearmar()
             self.navegador.reiniciar()
+            self.esquivador.reiniciar()
             if self.modo == "auto":
                 self.carrera.arrancar()
                 self.log("[robot] ARMADO: carrera en marcha")
@@ -194,10 +200,13 @@ class Robot:
             self.aplicar_camara()
         return v
 
-    def guardar_perfil_params(self, nombre: str) -> None:
-        params_mod.guardar_perfil(self.datos_params, nombre, self.p)
+    def guardar_perfil_params(self, nombre: str,
+                              categoria: str = "") -> None:
+        cat = params_mod.categoria_valida(categoria or self.categoria)
+        params_mod.guardar_perfil(self.datos_params, nombre, self.p, cat)
         params_mod.guardar_archivo(self.datos_params)
-        self.log(f"[params] perfil '{nombre}' guardado")
+        self.categoria = cat
+        self.log(f"[params] perfil '{nombre}' guardado en '{cat}'")
 
     def cargar_perfil_params(self, nombre: str) -> None:
         perfil = params_mod.obtener(self.datos_params, nombre)
@@ -207,16 +216,20 @@ class Robot:
             if g in self.p:
                 self.p[g].update(copy.deepcopy(claves))
         self.datos_params["activo"] = perfil["nombre"]
+        self.categoria = params_mod.categoria_valida(perfil.get("categoria"))
         params_mod.guardar_archivo(self.datos_params)
         self.enlace.fijar_vmax(int(self.p["limites"]["vmax"]))
         self._cfg_esp_firma = ""
         self.log(f"[params] perfil '{perfil['nombre']}' cargado")
 
-    def guardar_perfil_colores(self, nombre: str) -> None:
+    def guardar_perfil_colores(self, nombre: str,
+                               categoria: str = "") -> None:
+        cat = cc.categoria_valida(categoria or self.categoria)
         cc.guardar_perfil(self.datos_colores, nombre,
                           self.perfil_color["colores"],
                           camara=self.perfil_color.get("camara"),
-                          notas="calibrado desde la web")
+                          notas="calibrado desde la web",
+                          categoria=cat)
         cc.guardar(self.datos_colores)
         self.perfil_color = cc.obtener(self.datos_colores, nombre)
         self.log(f"[colores] perfil '{nombre}' guardado")
@@ -417,8 +430,14 @@ class Robot:
                                                     nav.GIRO_2T))
             debe_parar = self.carrera.paso()
 
+            # Velocidad real estimada: hace falta para saber cuanto tarda el
+            # carro en adelantar un pilar con todo su largo.
+            vel_mm_s = (abs(self.decision.vel) / 100.0
+                        * int(self.p["limites"]["vmax"]) / 255.0
+                        * float(self.p["velocidad"]["vel_max_mm_s"]))
             bias = self.esquivador.paso(dets, perfil, self.geo,
-                                        self.lineas.dist_lineas, en_esquina)
+                                        self.lineas.dist_lineas, en_esquina,
+                                        sentido, vel_mm_s)
 
             # --- decidir ---------------------------------------------------
             if self.modo == "auto" and self.armado and perfil is not None:
@@ -562,6 +581,9 @@ class Robot:
                     for e in p.esquinas[:4]],
             },
             "obstaculo": self.esquivador.info,
+            "memoria_pilar": (self.esquivador.memoria()
+                              if self.esquivador.memoria_viva(time.time()) else None),
+            "categoria": self.categoria,
             "enlace": self._estado_enlace(),
             "geometria": self.geo.estado(),
             "camara_error": self.error_camara,

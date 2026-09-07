@@ -22,7 +22,42 @@ from typing import Any, Dict, List, Optional
 
 RAIZ_PROYECTO = Path(__file__).resolve().parent.parent
 RUTA_PARAMS = RAIZ_PROYECTO / "config" / "params.json"
-MAX_PERFILES = 5
+MAX_PERFILES = 20
+# ===========================================================================
+# TRES LINEAS DE CALIBRACION
+# Cada reto necesita ajustes distintos y no se pueden mezclar: para el Open
+# Challenge interesa correr, para obstaculos interesa ver los pilares pronto y
+# esquivar con holgura, y para estacionar hace falta ademas todo lo del cajon.
+# Por eso los perfiles van etiquetados, cada linea guarda hasta
+# MAX_POR_CATEGORIA y al cambiar de reto se elige la lista que toca sin
+# arriesgar la calibracion buena de los otros dos.
+# ===========================================================================
+CATEGORIAS = {
+    "open": "Open Challenge",
+    "obstaculos": "Esquivar obstaculos",
+    "estacionar": "Obstaculos + estacionar",
+}
+CAT_POR_DEFECTO = "open"
+MAX_POR_CATEGORIA = 20
+
+
+def categoria_valida(cat) -> str:
+    cat = str(cat or "").strip()
+    return cat if cat in CATEGORIAS else CAT_POR_DEFECTO
+
+
+def _recortar_por_categoria(perfiles, maximo=MAX_POR_CATEGORIA):
+    """Deja como mucho 'maximo' perfiles de CADA linea, conservando el orden
+    (el mas reciente va primero)."""
+    cuenta = {}
+    salida = []
+    for p in perfiles:
+        c = categoria_valida(p.get("categoria"))
+        cuenta[c] = cuenta.get(c, 0) + 1
+        if cuenta[c] <= maximo:
+            salida.append(p)
+    return salida
+
 
 
 def _p(tipo: str, defecto, desc: str, minimo=None, maximo=None,
@@ -85,6 +120,7 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "ancho_carro_mm": _p("float", 200.0, "Ancho total del carro con ruedas, en mm. Define el corredor dibujado por donde van a pasar las ruedas.", 100.0, 300.0),
         "margen_ruedas_mm": _p("float", 30.0, "Margen de seguridad extra a cada lado del carro para el corredor, en mm.", 0.0, 150.0),
         "morro_mm": _p("float", 60.0, "Distancia de la lente al frente del carro, en mm. Las distancias mostradas se miden desde el morro.", 0.0, 300.0),
+        "largo_carro_mm": _p("float", 240.0, "Largo total del carro, del morro a la cola. Sirve para saber cuanto tiene que avanzar para adelantar un pilar ENTERO: hasta que la cola no lo pasa, no se puede volver al centro del carril o la rueda trasera se lo lleva.", 100.0, 400.0),
     },
 
     "muro": {
@@ -131,7 +167,9 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "usar_rectas": _p("bool", True, "Usar las paredes ya IDENTIFICADAS (lateral interna / externa / de frente) en vez de la media de las bandas de la imagen. Con el giroscopio, esto es lo que evita que el carro confunda la pared de enfrente con la de su carril cuando llega torcido a la esquina esquivando un pilar."),
         "usar_yaw": _p("bool", True, "Usar el giroscopio: la camara decide CUANDO girar, el giroscopio decide CUANTO (90 grados clavados)."),
         "yaw_kp": _p("float", 1.6, "Correccion de rumbo en recta: % de direccion por grado de error.", 0.0, 10.0),
+        "yaw_cede_al_esquivar": _p("bool", True, "Mientras un pilar manda la direccion, el mantenimiento de rumbo por giroscopio CEDE en la misma proporcion. Sin esto los dos se suman: con el esquive topado en 55 % y yaw_max en 45 %, el volante se iba al 100 % y el carro se cruzaba de golpe, llevandose el pilar con la rueda trasera."),
         "yaw_max": _p("float", 45.0, "Tope de la correccion por rumbo (que el giroscopio ayude, no que mande).", 0.0, 100.0),
+        "desvio_max_deg": _p("float", 110.0, "Si el rumbo se aleja mas de esto del rumbo de la recta, el carro se ha quedado mirando hacia atras (tipico despues de varios escapes) y se fuerza una maniobra para volver. El reglamento termina la ronda si se circula en sentido contrario, asi que esto no es cosmetico.", 60.0, 170.0),
     },
 
     "giro2t": {
@@ -163,6 +201,7 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "ventana_par_ms": _p("int", 2500, "Las dos lineas de una misma esquina llegan dentro de esta ventana; lo que caiga dentro es LA MISMA esquina, no dos.", 500, 6000),
         "refractario_esquina_ms": _p("int", 3000, "Tras contar una esquina no se admite otra (venga del sensor que venga) durante este tiempo.", 500, 10000),
         "pares_para_invertir": _p("int", 2, "Cuantos pares de lineas seguidos en el orden CONTRARIO hacen falta para aceptar que el carro va de verdad al reves (y no que fue una lectura suelta). Con 2, un par raro se descarta sin contar; dos seguidos invierten el sentido.", 1, 5),
+        "cierre_max_ms": _p("int", 6000, "Cuanto se espera la SEGUNDA linea de una esquina ya abierta. Mientras dure, esa linea CIERRA la esquina en vez de abrir otra: es lo que evita que una azul que llega tarde dispare un segundo giro de 90. Debe cubrir toda la curva; solo bajalo si dos esquinas de verdad estan muy seguidas.", 1000, 15000),
         "esquina_max_ms": _p("int", 8000, "Red de seguridad: tiempo maximo que el carro puede considerarse DENTRO de una esquina. Si lo supera vuelve a modo recta aunque el giro no se haya confirmado, para no quedarse bloqueado si el giroscopio falla.", 1000, 20000),
     },
 
@@ -197,7 +236,23 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "margen_mm": _p("float", 70.0, "Holgura extra entre el costado del carro y el pilar al pasarlo.", 0.0, 300.0),
         "semi_pilar_mm": _p("float", 25.0, "Medio ancho del pilar (son de 50x50 mm).", 10.0, 60.0),
         "k_dir": _p("float", 1.4, "Ganancia de la correccion hacia el punto de paso: % de direccion por grado de desvio.", 0.1, 10.0),
-        "peso_max": _p("float", 0.8, "Peso maximo del esquive frente al centrado (1 = el pilar manda del todo).", 0.0, 1.0),
+        "dir_max_pct": _p("float", 55.0, "TOPE de direccion que puede pedir el esquive. El pilar nunca deberia mandar el volante a fondo: eso es lo que hace que el carro gire de golpe y se cruce. Si necesitas mas, acercate mas tarde (mandar_desde_mm) en vez de subir esto.", 10.0, 100.0),
+        "mirada_min_mm": _p("float", 350.0, "Mirada minima al calcular el angulo hacia el punto de paso. Es lo que impide el volantazo al acercarse: sin ella, el mismo desvio lateral pide cada vez mas angulo hasta llegar al tope. Subela si el carro esquiva demasiado brusco.", 150.0, 1200.0),
+        "rampa_dir_pct_s": _p("float", 220.0, "Cuanto puede cambiar la direccion del esquive por segundo. Evita el volantazo en un solo frame.", 40.0, 1000.0),
+        "peso_compromiso": _p("float", 0.7, "Cuanto manda el 'ir recto' mientras se adelanta un pilar que ya no se ve. Si es bajo, el centrado tira del carro hacia el medio y la rueda trasera barre el pilar.", 0.0, 1.0),
+        "compromiso_max_ms": _p("int", 2500, "Tope del compromiso de adelantamiento. Es una red: si la velocidad estimada fuera absurda, el carro no se queda yendo recto para siempre.", 300, 8000),
+        "ceder_ante_muro": _p("bool", True, "Cuando el pasillo se cierra, el esquive cede el mando a la evitacion de muros. Sin esto, un pilar pegado a la pared interior puede llevarse al carro de frente contra la esquina, porque el pilar manda mas que el muro."),
+        "invertir_en_antihorario": _p("bool", False, "Invertir el lado de paso cuando se corre en antihorario. SEGUN EL REGLAMENTO NO HACE FALTA: rojo por la derecha y verde por la izquierda son la derecha y la izquierda DEL VEHICULO, asi que el mismo pilar ya se pasa por el lado contrario al cambiar de sentido, sin tocar nada. Queda por si en tu competencia se interpreta de otra forma; pasar por el lado incorrecto termina la ronda, asi que compruebalo antes con el carro parado."),
+        "peso_max": _p("float", 0.8, "Peso maximo del esquive frente al centrado (1 = el pilar manda del todo, y entonces el muro deja de contar: no lo pongas en 1).", 0.0, 1.0),
+        "modo": _p("str", "punto", "Como se esquiva. 'punto': se apunta a un hueco calculado en milimetros al costado del pilar (necesita la geometria bien calibrada). 'borde': se mantiene el pilar pegado al CANTO de la imagen y, al tenerlo encima, se da el giro grande; es control visual puro, no depende de las distancias y aguanta mejor que el pilar se vea mal de lejos.", opciones=["punto", "borde"]),
+        "borde_frac": _p("float", 0.18, "(modo 'borde') a que fraccion del ancho de imagen se quiere mantener el borde del pilar. 0.18 = a un 18 % del canto. Mas pequeño = se le deja mas cerca del borde, o sea se pasa mas justo.", 0.02, 0.45),
+        "k_borde": _p("float", 90.0, "(modo 'borde') % de direccion por cada ancho de imagen de error. Subelo si tarda en llevar el pilar al canto; bajalo si oscila.", 10.0, 300.0),
+        "giro_final_mm": _p("float", 380.0, "(modo 'borde') distancia a la que se da el GIRO GRANDE final, el que libra al pilar con la cola. Justo antes de que el pilar salga del cuadro por abajo.", 100.0, 900.0),
+        "giro_final_pct": _p("float", 25.0, "(modo 'borde') cuanta direccion extra mete ese giro final, hacia el lado por el que se pasa.", 0.0, 60.0),
+        "buscar_pct": _p("float", 18.0, "(modo 'borde') si el pilar se sale de cuadro estando TODAVIA LEJOS, cuanta direccion se mete para volver a encontrarlo y ponerlo otra vez en el canto. Solo actua lejos: de cerca manda el compromiso de adelantamiento.", 0.0, 60.0),
+        "peso_buscar": _p("float", 0.35, "Cuanto manda esa busqueda frente al centrado. Bajo a proposito: buscar un pilar no puede llevarse al carro contra un muro.", 0.0, 1.0),
+        "recordar_lado": _p("bool", True, "RECORDAR EL ULTIMO PILAR. Al girar en una curva el pilar sale de cuadro y el carro se olvidaba de que lo tenia al lado. Con esto se guarda de que color era, por que lado habia que pasarlo y a que distancia estaba, durante memoria_ms. Lo usan la busqueda del modo 'borde' y la telemetria."),
+        "memoria_ms": _p("int", 3000, "Cuanto dura el recuerdo del ultimo pilar desde que se dejo de ver.", 200, 15000),
         "limitar_por_lineas": _p("bool", True, "No hacer caso a los pilares que quedan MAS ALLA de la linea del piso: esos son de la seccion siguiente. Si se les hace caso desde la recta, el esquive pega el carro a la esquina interna justo antes de la curva y engancha el canto al girar. En cuanto se cruza la linea el filtro se levanta y esos pilares cuentan."),
         "margen_linea_mm": _p("float", 60.0, "Holgura sobre la distancia a la linea: un pilar justo antes de ella sigue contando. Subelo si descarta pilares que si son de esta recta.", 0.0, 400.0),
     },
@@ -299,7 +354,8 @@ def _ahora() -> str:
 
 
 def datos_por_defecto() -> Dict[str, Any]:
-    p = {"nombre": "base", "fecha": _ahora(), "valores": valores_por_defecto()}
+    p = {"nombre": "base", "fecha": _ahora(), "categoria": CAT_POR_DEFECTO,
+         "valores": valores_por_defecto()}
     return {"version": 1, "activo": "base", "perfiles": [p]}
 
 
@@ -329,14 +385,16 @@ def cargar(ruta: Optional[Path] = None) -> Dict[str, Any]:
     if not isinstance(perfiles, list) or not perfiles:
         perfiles = [datos_por_defecto()["perfiles"][0]]
     limpios = []
-    for i, p in enumerate(perfiles[:MAX_PERFILES]):
+    for i, p in enumerate(perfiles):
         if not isinstance(p, dict):
             continue
         limpios.append({
             "nombre": str(p.get("nombre") or f"perfil_{i}"),
             "fecha": str(p.get("fecha") or _ahora()),
+            "categoria": categoria_valida(p.get("categoria")),
             "valores": normalizar(p.get("valores")),
         })
+    limpios = _recortar_por_categoria(limpios)
     if not limpios:
         limpios = [datos_por_defecto()["perfiles"][0]]
     activo = datos.get("activo")
@@ -376,15 +434,32 @@ def obtener(datos: Dict[str, Any], nombre: Optional[str] = None) -> Dict[str, An
 
 
 def guardar_perfil(datos: Dict[str, Any], nombre: str,
-                   valores: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
-    """Mete el perfil de primero; si el nombre existe lo reemplaza en el sitio."""
+                   valores: Dict[str, Dict[str, Any]],
+                   categoria: str = CAT_POR_DEFECTO) -> Dict[str, Any]:
+    """Mete el perfil de primero; si el nombre existe lo reemplaza en el sitio.
+    Cada linea de calibracion guarda sus MAX_POR_CATEGORIA mas recientes."""
     nombre = (nombre or "").strip() or _dt.datetime.now().strftime("params_%m%d_%H%M")
-    nuevo = {"nombre": nombre, "fecha": _ahora(), "valores": normalizar(valores)}
+    nuevo = {"nombre": nombre, "fecha": _ahora(),
+             "categoria": categoria_valida(categoria),
+             "valores": normalizar(valores)}
     perfiles = [p for p in datos.get("perfiles", []) if p["nombre"] != nombre]
     perfiles.insert(0, nuevo)
-    datos["perfiles"] = perfiles[:MAX_PERFILES]
+    datos["perfiles"] = _recortar_por_categoria(perfiles)
     datos["activo"] = nombre
     return datos
+
+
+def listar(datos: Dict[str, Any], categoria: Optional[str] = None):
+    """Nombres de los perfiles, opcionalmente solo los de una linea."""
+    return [p["nombre"] for p in datos.get("perfiles", [])
+            if categoria is None or categoria_valida(p.get("categoria")) == categoria]
+
+
+def categoria_de(datos: Dict[str, Any], nombre: str) -> str:
+    for p in datos.get("perfiles", []):
+        if p["nombre"] == nombre:
+            return categoria_valida(p.get("categoria"))
+    return CAT_POR_DEFECTO
 
 
 def borrar_perfil(datos: Dict[str, Any], nombre: str) -> Dict[str, Any]:
