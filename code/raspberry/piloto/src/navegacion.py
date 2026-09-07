@@ -101,11 +101,13 @@ def _norm_ang(a: float) -> float:
 class Navegador:
     def __init__(self, cfg_nav: Dict[str, Any], cfg_lim: Dict[str, Any],
                  cfg_esc: Dict[str, Any], cfg_2t: Optional[Dict[str, Any]] = None,
-                 al_completar_giro: Optional[Callable[[int], None]] = None):
+                 al_completar_giro: Optional[Callable[[int], None]] = None,
+                 cfg_obst: Optional[Dict[str, Any]] = None):
         self.cfg = cfg_nav
         self.lim = cfg_lim
         self.esc = cfg_esc
         self.g2t = cfg_2t if cfg_2t is not None else {}
+        self.obst = cfg_obst if cfg_obst is not None else {}
         self.al_completar_giro = al_completar_giro or (lambda lado: None)
 
         self.pd = _PD()
@@ -115,6 +117,13 @@ class Navegador:
         self.t_estado = time.time()
         self.lado_giro = 0
         self.rumbo_objetivo: Optional[float] = None
+        # Rumbo de la RECTA por la que se va. Solo cambia en las curvas de
+        # verdad (+-90). Un escape NO puede tocarlo: si el rumbo de referencia
+        # se toma del yaw despues de una maniobra de rescate, el carro adopta
+        # como "bueno" el rumbo en el que se quedo mirando, y si se quedo
+        # mirando hacia atras se va en sentido contrario. El reglamento
+        # termina la ronda por eso.
+        self.rumbo_recta: Optional[float] = None
         self.ultimo = Decision()
 
         self._t_fin_escape = 0.0
@@ -125,6 +134,10 @@ class Navegador:
         # Una esquina, UN giro: sin esto el carro giraria 90 grados otra vez
         # mientras siga dentro de la zona de la curva.
         self._esquina_atendida = False
+        # Un giro de RESCATE (salir de un atasco, recuperar el rumbo) usa la
+        # misma maquinaria que una curva, pero NO es una esquina: si contara,
+        # el marcador de vueltas se dispararia con cada choque.
+        self._giro_es_rescate = False
 
         # --- giro de dos tiempos ---
         self._2t_fase = "avance"      # "avance" | "reversa"
@@ -146,6 +159,7 @@ class Navegador:
         self._pasillo_prev = None
         self._2t_yaw_prev = None
         self._esquina_atendida = False
+        self.rumbo_recta = None
 
     def _cambiar(self, estado: str):
         if estado != self.estado:
@@ -188,6 +202,8 @@ class Navegador:
         usar_yaw = bool(cfg.get("usar_yaw", True)) and yaw is not None
         if usar_yaw and self.rumbo_objetivo is None:
             self.rumbo_objetivo = yaw
+        if usar_yaw and self.rumbo_recta is None:
+            self.rumbo_recta = yaw
 
         # --- velocidad de cierre del pasillo (para el freno por tiempo) ---
         if self._pasillo_prev is not None:
@@ -226,16 +242,25 @@ class Navegador:
                     self._escape_intentos = 0
                     self._cambiar(RECTO)
                     self.pd.reiniciar()
+                    # Se vuelve al rumbo de LA RECTA, no al que haya quedado
+                    # despues de maniobrar. Adoptar el yaw de aqui es como el
+                    # carro terminaba yendose en sentido contrario.
                     if usar_yaw:
-                        self.rumbo_objetivo = yaw   # el rumbo viejo ya no vale
+                        self.rumbo_objetivo = self.rumbo_recta
                 elif self._escape_intentos > int(esc.get("escape_max_intentos", 4)):
-                    # la reversa no gana espacio (algo detras): giro adelante
+                    # La reversa no gana espacio (algo detras): giro adelante.
+                    # Se gira hacia el lado que ACERCA al rumbo de la recta;
+                    # elegir "donde haya mas hueco" es lo que podia dejar al
+                    # carro encarado hacia atras.
                     self._escape_intentos = 0
-                    self.lado_giro = 1 if p.der > p.izq else -1
+                    if usar_yaw and self.rumbo_recta is not None:
+                        err = _norm_ang(self.rumbo_recta - yaw)
+                        self.lado_giro = 1 if err >= 0 else -1
+                        self.rumbo_objetivo = self.rumbo_recta
+                    else:
+                        self.lado_giro = 1 if p.der > p.izq else -1
+                    self._giro_es_rescate = True
                     self._cambiar(GIRO)
-                    if usar_yaw:
-                        self.rumbo_objetivo = _norm_ang(
-                            yaw + self.lado_giro * float(cfg.get("giro_grados", 90.0)))
                 else:
                     deficit = max(0.0, parar_bajo - pasillo)
                     comp = float(esc.get("escape_min_ms", 750)) + \
@@ -258,14 +283,11 @@ class Navegador:
                 # maniobra que retrocede, y nunca debe retroceder en recta.
                 if (bool(self.g2t.get("activo", False)) and usar_yaw
                         and esquina_confirmada):
+                    self._apuntar_a_la_recta_siguiente(yaw, usar_yaw)
                     self._iniciar_2t(yaw)
                 else:
                     self._cambiar(GIRO)
-                    if usar_yaw:
-                        base = (self.rumbo_objetivo if self.rumbo_objetivo is not None
-                                else yaw)
-                        self.rumbo_objetivo = _norm_ang(
-                            base + self.lado_giro * float(cfg.get("giro_grados", 90.0)))
+                    self._apuntar_a_la_recta_siguiente(yaw, usar_yaw)
             else:
                 # giro abierto: contra-direccion si el lado contrario tiene sitio
                 apertura = float(cfg.get("apertura_pct", 25.0))
@@ -318,6 +340,21 @@ class Navegador:
                                         + (" [en esquina]" if bloqueado else ""))
 
         # =================== RECTO ========================================
+        # Guardia de sentido: si el rumbo se ha ido mas de desvio_max_deg de la
+        # recta, el carro quedo mirando hacia atras (tipico tras varios
+        # escapes). Circular en sentido contrario TERMINA LA RONDA, asi que se
+        # fuerza un giro de rescate para volver, y ese giro no cuenta esquina.
+        if usar_yaw and self.rumbo_recta is not None:
+            desvio = _norm_ang(yaw - self.rumbo_recta)
+            if abs(desvio) > float(cfg.get("desvio_max_deg", 110.0)):
+                self.lado_giro = -1 if desvio > 0 else 1
+                self.rumbo_objetivo = self.rumbo_recta
+                self._giro_es_rescate = True
+                self._cambiar(GIRO)
+                return self._salida(vel_giro, 0.0, p, yaw, sentido,
+                                    f"RESCATE de rumbo: {desvio:+.0f} grados "
+                                    f"fuera de la recta")
+
         recto_estable = (ahora - self.t_estado) * 1000 >= float(
             cfg.get("min_recto_ms", 700))
 
@@ -367,16 +404,33 @@ class Navegador:
 
         # --- esquive de pilares (sesgo ponderado) --------------------------
         bias_dir, peso = bias_obstaculo
+        if peso > 0.0 and bool(self.obst.get("ceder_ante_muro", True)):
+            # Con el pasillo cerrandose, el pilar CEDE el mando a la evitacion
+            # de muros. Sin esto, un pilar pegado a la pared interior se lleva
+            # al carro de frente contra la esquina: el esquive pesaba mas que
+            # el muro justo cuando el muro era el problema.
+            holgura = (pasillo - parar_bajo) / max(
+                1.0, float(cfg.get("frenar_bajo_mm", 1000.0)) - parar_bajo)
+            peso *= _lim(holgura, 0.0, 1.0)
         if peso > 0.0:
             direccion = (1.0 - peso) * direccion + peso * bias_dir
             motivo += f" esq({bias_dir:+.0f}x{peso:.2f})"
 
         # --- rumbo por giroscopio -----------------------------------------
+        # OJO CON EL SIGNO DE SUMA: la correccion de rumbo se añade DESPUES de
+        # mezclar el esquive. Mientras se esquiva a proposito, el carro se sale
+        # del rumbo de la recta y esta correccion tira justo al reves, o sea
+        # pelea contra el esquive y ademas SUMA: con el tope del esquive en
+        # 55 % y yaw_max en 45 %, el volante llegaba al 100 % y el carro se
+        # cruzaba de golpe (la rueda trasera se llevaba el pilar). Mientras el
+        # pilar manda, el mantenimiento de rumbo cede en la misma proporcion.
         if usar_yaw and self.rumbo_objetivo is not None:
             err = _norm_ang(self.rumbo_objetivo - yaw)
             corr = _lim(err * float(cfg.get("yaw_kp", 1.6)),
                         -float(cfg.get("yaw_max", 45.0)),
                         float(cfg.get("yaw_max", 45.0)))
+            if peso > 0.0 and bool(cfg.get("yaw_cede_al_esquivar", True)):
+                corr *= (1.0 - peso)
             direccion += corr
             motivo += f" yaw{err:+.0f}"
 
@@ -485,6 +539,20 @@ class Navegador:
                             f"2T reversa {girado:.0f}/{objetivo:.0f} deg")
 
     # ------------------------------------------------------------------
+    def _apuntar_a_la_recta_siguiente(self, yaw: Optional[float],
+                                      usar_yaw: bool) -> None:
+        """Avanza el rumbo de referencia 90 grados: la recta de despues de la
+        curva. Se calcula sobre la recta ANTERIOR, no sobre el yaw actual, asi
+        que el error con el que se entre en la curva no se hereda."""
+        if not usar_yaw:
+            return
+        base = self.rumbo_recta if self.rumbo_recta is not None else yaw
+        if base is None:
+            return
+        self.rumbo_recta = _norm_ang(
+            base + self.lado_giro * float(self.cfg.get("giro_grados", 90.0)))
+        self.rumbo_objetivo = self.rumbo_recta
+
     def _terminar_giro(self, yaw: Optional[float] = None,
                        reanclar: bool = False):
         """reanclar: fijar el rumbo de la recta nueva al yaw actual. Se usa al
@@ -493,10 +561,17 @@ class Navegador:
         objetivo ya es exactamente 'el de antes mas 90', y sustituirlo por el
         yaw real meteria el error de cada giro en la referencia siguiente."""
         lado = self.lado_giro
+        rescate = self._giro_es_rescate
+        self._giro_es_rescate = False
         self._cambiar(RECTO)
         self.pd.reiniciar()
         if reanclar:
-            self.rumbo_objetivo = yaw
+            # El 2T mide su propio angulo acumulado; la referencia buena sigue
+            # siendo la recta, no el yaw con el que quedo la maniobra.
+            self.rumbo_objetivo = (self.rumbo_recta if self.rumbo_recta is not None
+                                   else yaw)
+        if rescate:
+            return          # un rescate no es una esquina: no cuenta vuelta
         try:
             self.al_completar_giro(lado)
         except Exception:

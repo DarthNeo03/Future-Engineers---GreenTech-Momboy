@@ -145,7 +145,9 @@
   <div class="caja" id="editorColor"></div>
   <div class="caja">
     <h3>Perfiles de color (5 rotativos)</h3>
-    <div class="sel-fila"><select id="selPerfilColor"></select>
+    <div class="et"><span>linea de calibracion</span></div>
+    <select id="catColor" onchange="cambiarCategoria(this.value)"></select>
+    <div class="sel-fila" style="margin-top:6px"><select id="selPerfilColor"></select>
       <button class="mini" onclick="cargarPerfilColor()">Cargar</button></div>
     <div class="sel-fila" style="margin-top:6px">
       <input type="text" id="nomPerfilColor" placeholder="nombre nuevo">
@@ -157,7 +159,9 @@
 <div class="tab cont" id="tab-ajustes">
   <div class="caja">
     <h3>Perfiles de parametros (5 rotativos)</h3>
-    <div class="sel-fila"><select id="selPerfilParams"></select>
+    <div class="et"><span>linea de calibracion</span></div>
+    <select id="catParams" onchange="cambiarCategoria(this.value)"></select>
+    <div class="sel-fila" style="margin-top:6px"><select id="selPerfilParams"></select>
       <button class="mini" onclick="cargarPerfilParams()">Cargar</button></div>
     <div class="sel-fila" style="margin-top:6px">
       <input type="text" id="nomPerfilParams" placeholder="nombre nuevo">
@@ -481,7 +485,8 @@ function agregarRango(){
 }
 function guardarPerfilColor(){
   const n = $("nomPerfilColor").value.trim() || undefined;
-  cmd({perfil_color_guardar: n || ("calib_"+new Date().toISOString().slice(5,16).replace(/[-T:]/g,""))})
+  cmd({perfil_color_guardar: n || ("calib_"+new Date().toISOString().slice(5,16).replace(/[-T:]/g,"")),
+       categoria: categoriaActual})
     .then(()=>aviso("perfil de color guardado"));
 }
 function cargarPerfilColor(){
@@ -611,7 +616,8 @@ function sincronizarParam(grupo, clave, valor){
 }
 function guardarPerfilParams(){
   const n = $("nomPerfilParams").value.trim();
-  cmd({perfil_params_guardar: n || ("params_"+new Date().toISOString().slice(5,16).replace(/[-T:]/g,""))})
+  cmd({perfil_params_guardar: n || ("params_"+new Date().toISOString().slice(5,16).replace(/[-T:]/g,"")),
+       categoria: categoriaActual})
     .then(()=>aviso("parametros guardados"));
 }
 function cargarPerfilParams(){
@@ -686,8 +692,24 @@ function refrescar(){
            s.perfil.desvio_recta===null||s.perfil.desvio_recta===undefined ? "avi" : "ok");
     }
     if(m.yaw!==undefined) fila(t, "yaw / rumbo", m.yaw + " / " + (m.rumbo_obj!==undefined?m.rumbo_obj:"-"));
-    if(s.obstaculo && s.obstaculo.color)
-      fila(t, "pilar", s.obstaculo.color+" a "+s.obstaculo.dist_mm+"mm peso "+s.obstaculo.peso, "avi");
+    if(s.memoria_pilar)
+      fila(t, "ultimo pilar (memoria)",
+           s.memoria_pilar.color+" por su "+s.memoria_pilar.lado+
+           " hace "+s.memoria_pilar.edad_s+" s", "avi");
+    if(s.obstaculo && s.obstaculo.buscando)
+      fila(t, "buscando el pilar", "salio de cuadro lejos: volviendo a encuadrarlo", "avi");
+    if(s.obstaculo && s.obstaculo.sin_sitio)
+      fila(t, "OJO", s.obstaculo.sin_sitio+" (no se cambia de lado)", "mal");
+    if(s.obstaculo && s.obstaculo.color){
+      const o = s.obstaculo;
+      fila(t, "pilar", o.color + (o.dist_mm!==undefined ? " a "+o.dist_mm+" mm" : "") +
+           "  &rarr; paso por su <b>"+(o.lado||"?")+"</b>", "avi");
+      if(o.adelantando_s!==undefined)
+        fila(t, "adelantando", o.adelantando_s+" s yendo recto (no vuelvo hacia el)", "avi");
+      if(o.hueco_estrecho_mm!==undefined)
+        fila(t, "hueco", o.hueco_estrecho_mm+" mm: no cabe el carro, voy al centro", "mal");
+      fila(t, "esquive dir / peso", (o.dir!==undefined?o.dir+"%":"-")+"  /  "+o.peso);
+    }
     fila(t, "ESP32", s.simulado ? "simulado" :
          (el.conectado ? el.puerto+" "+el.latencia_ms+"ms" : el.motivo),
          el.conectado||s.simulado ? "ok" : "mal");
@@ -740,10 +762,36 @@ function refrescar(){
 
     // perfiles (solo si no se esta escribiendo)
     if(Date.now()-tocando > 2000){
-      llenarSelect("selPerfilColor", s.perfiles_color.lista, s.perfiles_color.activo);
-      llenarSelect("selPerfilParams", s.perfiles_params.lista, s.perfiles_params.activo);
+      if(s.categoria && !catTocada) categoriaActual = s.categoria;
+      llenarCategorias(s.categorias);
+      llenarSelect("selPerfilColor",
+                   s.perfiles_color.lista.filter(p=>p.categoria===categoriaActual)
+                                         .map(p=>p.nombre), s.perfiles_color.activo);
+      llenarSelect("selPerfilParams",
+                   s.perfiles_params.lista.filter(p=>p.categoria===categoriaActual)
+                                          .map(p=>p.nombre), s.perfiles_params.activo);
     }
   }).catch(()=>{});
+}
+// Linea de calibracion en uso. Los perfiles se guardan y se listan por linea,
+// asi que la calibracion del Open Challenge no estorba a la de obstaculos.
+let categoriaActual = "open";
+let catTocada = 0;
+function cambiarCategoria(cat){
+  categoriaActual = cat;
+  catTocada = Date.now();
+  cmd({categoria: cat}).then(()=>aviso("linea: "+cat));
+}
+function llenarCategorias(cats){
+  if(!cats) return;
+  for(const id of ["catColor","catParams"]){
+    const sel = $(id); if(!sel) continue;
+    const firma = Object.keys(cats).join("|")+categoriaActual;
+    if(sel._firma === firma) continue;
+    sel._firma = firma;
+    sel.innerHTML = Object.entries(cats).map(([k,v])=>
+      '<option value="'+k+'"'+(k===categoriaActual?" selected":"")+'>'+v+'</option>').join("");
+  }
 }
 function llenarSelect(id, lista, activo){
   const sel = $(id);

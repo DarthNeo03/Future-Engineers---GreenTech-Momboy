@@ -30,7 +30,42 @@ from typing import Any, Dict, List, Optional, Union
 RAIZ_PROYECTO = Path(__file__).resolve().parent.parent
 RUTA_CONFIG_POR_DEFECTO = RAIZ_PROYECTO / "config" / "colors.json"
 
-MAX_PERFILES = 5
+MAX_PERFILES = 20
+# ===========================================================================
+# TRES LINEAS DE CALIBRACION
+# Cada reto necesita ajustes distintos y no se pueden mezclar: para el Open
+# Challenge interesa correr, para obstaculos interesa ver los pilares pronto y
+# esquivar con holgura, y para estacionar hace falta ademas todo lo del cajon.
+# Por eso los perfiles van etiquetados, cada linea guarda hasta
+# MAX_POR_CATEGORIA y al cambiar de reto se elige la lista que toca sin
+# arriesgar la calibracion buena de los otros dos.
+# ===========================================================================
+CATEGORIAS = {
+    "open": "Open Challenge",
+    "obstaculos": "Esquivar obstaculos",
+    "estacionar": "Obstaculos + estacionar",
+}
+CAT_POR_DEFECTO = "open"
+MAX_POR_CATEGORIA = 20
+
+
+def categoria_valida(cat) -> str:
+    cat = str(cat or "").strip()
+    return cat if cat in CATEGORIAS else CAT_POR_DEFECTO
+
+
+def _recortar_por_categoria(perfiles, maximo=MAX_POR_CATEGORIA):
+    """Deja como mucho 'maximo' perfiles de CADA linea, conservando el orden
+    (el mas reciente va primero)."""
+    cuenta = {}
+    salida = []
+    for p in perfiles:
+        c = categoria_valida(p.get("categoria"))
+        cuenta[c] = cuenta.get(c, 0) + 1
+        if cuenta[c] <= maximo:
+            salida.append(p)
+    return salida
+
 VERSION_ESQUEMA = 2
 
 # --------------------------------------------------------------------------
@@ -296,6 +331,7 @@ def normalizar_perfil(perfil: Any, nombre_alt: str = "sin_nombre") -> Dict[str, 
     return {
         "nombre": str(perfil.get("nombre") or nombre_alt),
         "fecha": str(perfil.get("fecha") or _ahora()),
+        "categoria": categoria_valida(perfil.get("categoria")),
         "notas": str(perfil.get("notas") or ""),
         "camara": camara,
         "colores": colores,
@@ -350,7 +386,7 @@ def cargar(ruta: Optional[Union[str, Path]] = None,
     if not isinstance(perfiles, list) or not perfiles:
         perfiles = [perfil_nuevo("base")]
     perfiles = [normalizar_perfil(p, f"perfil_{i}") for i, p in enumerate(perfiles)]
-    perfiles = perfiles[:MAX_PERFILES]
+    perfiles = _recortar_por_categoria(perfiles)
 
     activo = datos.get("activo")
     nombres = [p["nombre"] for p in perfiles]
@@ -368,7 +404,8 @@ def guardar(datos: Dict[str, Any],
     datos = {
         "version": VERSION_ESQUEMA,
         "activo": datos.get("activo"),
-        "perfiles": [normalizar_perfil(p) for p in datos.get("perfiles", [])][:MAX_PERFILES],
+        "perfiles": _recortar_por_categoria(
+            [normalizar_perfil(p) for p in datos.get("perfiles", [])]),
     }
     nombres = [p["nombre"] for p in datos["perfiles"]]
     if datos["activo"] not in nombres:
@@ -393,8 +430,17 @@ def guardar(datos: Dict[str, Any],
 # --------------------------------------------------------------------------
 # Operaciones sobre perfiles
 # --------------------------------------------------------------------------
-def listar(datos: Dict[str, Any]) -> List[str]:
-    return [p["nombre"] for p in datos.get("perfiles", [])]
+def listar(datos: Dict[str, Any],
+           categoria: Optional[str] = None) -> List[str]:
+    return [p["nombre"] for p in datos.get("perfiles", [])
+            if categoria is None or categoria_valida(p.get("categoria")) == categoria]
+
+
+def categoria_de(datos: Dict[str, Any], nombre: str) -> str:
+    for p in datos.get("perfiles", []):
+        if p["nombre"] == nombre:
+            return categoria_valida(p.get("categoria"))
+    return CAT_POR_DEFECTO
 
 
 def obtener(datos: Dict[str, Any],
@@ -424,20 +470,22 @@ def guardar_perfil(datos: Dict[str, Any],
                    colores: Dict[str, Any],
                    camara: Optional[Dict[str, Any]] = None,
                    notas: str = "",
-                   hacer_activo: bool = True) -> Dict[str, Any]:
+                   hacer_activo: bool = True,
+                   categoria: str = CAT_POR_DEFECTO) -> Dict[str, Any]:
     """Inserta el perfil de primero. Si el nombre ya existe lo reemplaza en el
     sitio (no gasta cupo). Si no, empuja y descarta el mas viejo pasado de 5."""
     nombre = (nombre or "").strip() or _dt.datetime.now().strftime("calib_%m%d_%H%M")
     nuevo = normalizar_perfil({
         "nombre": nombre,
         "fecha": _ahora(),
+        "categoria": categoria,
         "notas": notas,
         "camara": camara or {},
         "colores": colores,
     })
     perfiles = [p for p in datos.get("perfiles", []) if p["nombre"] != nombre]
     perfiles.insert(0, nuevo)
-    datos["perfiles"] = perfiles[:MAX_PERFILES]
+    datos["perfiles"] = _recortar_por_categoria(perfiles)
     if hacer_activo:
         datos["activo"] = nombre
     elif datos.get("activo") not in listar(datos):
