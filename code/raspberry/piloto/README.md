@@ -9,8 +9,9 @@ por encima del muro, conteo de esquinas).
 Raspberry Pi 5 (vision + decisiones)  <-USB->  ESP32 (motor, servo, MPU6050, TCS34725)
 ```
 
-El firmware del ESP32 vive en `code/esp32_carro/` (protocolo v2: ahora lee el
-MPU6050 y el TCS34725 por I2C y manda yaw + cruces de linea a la Pi).
+El firmware del ESP32 vive en `code/esp32_carro/` (protocolo v2: lee el
+MPU6050 y el TCS34725 por I2C y manda yaw, cruces de linea y el estado de los
+dos pulsadores de competencia a la Pi).
 
 ---
 
@@ -21,20 +22,29 @@ MPU6050 y el TCS34725 por I2C y manda yaw + cruces de linea a la Pi).
 ```bash
 python3 -m venv .venv && source .venv/bin/activate    # en Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python tools/selftest.py            # 295 pruebas, sin hardware
+python tools/selftest.py            # 323 pruebas, sin hardware
 python main.py                      # camara + ESP32 + web
 python main.py --simulado           # sin ESP32 (pruebas en el PC)
 python main.py --imagen foto.jpg    # sin camara, sobre una foto
 python main.py --vmax 90            # tope de PWM solo para esta prueba
+./piloto.sh arrancar                # COMPETENCIA: demonio sin web (SSH/VNC)
 ```
 
 **ESP32**: abrir `code/esp32_carro/esp32_carro.ino` en el IDE de Arduino (los
-5 archivos en la misma carpeta) y subir. Sin librerias externas. Al subir
-firmware nuevo, subirlo ANTES de correr `main.py`.
+6 archivos en la misma carpeta) y subir. Sin librerias externas. Al subir
+firmware nuevo, subirlo ANTES de correr `main.py`. **Los pulsadores necesitan
+la version 4** (la trama de sensores paso de 14 a 15 bytes); con firmware
+viejo todo lo demas sigue igual, pero los botones no llegan.
 
 Web de depuracion: **http://carrito.local:8080/** (o `http://<ip>:8080/`).
 El carro **arranca desarmado**: pulsar ARMAR. En modo auto, ARMAR arranca la
 carrera (cronometro + conteo).
+
+En competencia no hay web: el start es el **pulsador de ARRANQUE** y la
+emergencia el de **PARO** (los dos cuelgan del ESP32), y el programa se
+lanza como demonio con `./piloto.sh arrancar`. Ver
+[Los dos pulsadores](#los-dos-pulsadores-el-start-del-reglamento) y
+[Correr sin la web](#correr-sin-la-web-el-demonio-ssh-y-vnc).
 
 ---
 
@@ -581,6 +591,126 @@ distancias fisicas y valen igual en pista ancha (1000 mm) o angosta (600 mm).
 
 ---
 
+## Los dos pulsadores (el start del reglamento)
+
+En competencia el robot se coloca en la pista y arranca con **una sola
+pulsacion**: no hay teclado, ni pantalla, ni web, ni cable. El boton ARMAR de
+la interfaz no sirve para eso, asi que el carro lleva dos pulsadores.
+
+**Cuelgan del ESP32, no de la Pi.** El firmware
+(`code/esp32_carro/botones.h`) los lee a 100 Hz con antirrebote y manda su
+nivel en la trama de sensores, 40 veces por segundo; `src/botones.py` decide
+que significan. Dos cables por pulsador y ninguna resistencia:
+
+```
+GPIO13 ---[ pulsador ARRANQUE ]--- GND      (pull-up interno del ESP32)
+GPIO23 ---[ pulsador PARO     ]--- GND
+GPIO2  ---[ 330 ohm ]--- LED --- GND        encendido = el carro puede moverse
+```
+
+(GPIO2 suele ser ademas el LED de a bordo de la placa, asi que el LED
+externo es opcional. Ni el 13 ni el 23 son pines de arranque, asi que un
+pulsador pisado al encender no impide el boot.)
+
+| Pulsador | Corta | Larga (`largo_ms`, 1.5 s) |
+|---|---|---|
+| **ARRANQUE** (verde) | ARMA y arranca la ronda. Si ya corre, la para. Si la ronda ya termino, arranca una nueva. | Reinicia la ronda: desarmado, 0 esquinas, cronometro a cero. Es lo que se pulsa entre intento e intento. |
+| **PARO** (rojo) | PARADA DE EMERGENCIA: el ESP32 corta la traccion **en el acto** y la Pi desarma. | Apaga la Pi, **solo** si `botones.paro_apaga_pi` esta encendido. |
+
+### El PARO corta en el ESP32, no en la Pi
+
+Es la razon de peso para colgar los pulsadores del ESP32 y no del GPIO de la
+Pi. Cuando se confirma la pulsacion, el firmware **enclava un corte local** y
+para el motor en el siguiente tick de 10 ms: no espera el viaje de ida y
+vuelta por el serial (~50 ms) y no depende de que el programa de la Pi este
+sano. Con el pulsador en la Pi, un programa colgado mandando "adelante"
+dejaba la emergencia sin efecto hasta que saltara el failsafe de 300 ms.
+
+El enclavamiento se suelta solo cuando la Pi acusa recibo (manda un mando
+desarmado) **y** el dedo ya no esta encima. El operador no tiene que hacer
+nada raro: pulsa ARRANQUE y el carro vuelve a estar listo.
+
+### Nivel, no contador (al reves que las lineas)
+
+Los cruces de linea viajan como contadores porque una linea se cruza en 40 ms
+y perderla es perder una esquina. Un dedo, en cambio, aguanta el pulsador
+100-300 ms = 4-12 tramas: el nivel llega de sobra. Y hay una razon de
+seguridad que decide el empate: un contador **guarda pulsaciones pendientes**,
+asi que un corte del serial con una pulsacion sin entregar podria arrancar el
+carro solo al reconectar. Con nivel, lo que se pierde no se ejecuta: el fallo
+es "no pasa nada", que delante de un juez es el fallo bueno.
+
+### Lo demas que hay que saber
+
+- **Hay que subir el firmware nuevo** (version 4): la trama de sensores paso
+  de 14 a 15 bytes. La Pi acepta las dos, asi que con firmware viejo todo
+  sigue funcionando *menos* los pulsadores; se nota en `botones.frescos` a
+  falso y en que no pasa nada al pulsar.
+- **Se prueban sin cablear nada**: `/api/cmd?boton=arranque` (y
+  `&tipo=larga`) inyecta la pulsacion por el mismo camino que la fisica,
+  antirrebote incluido. Funciona igual en el PC con `--simulado`, y sigue
+  valiendo aunque `botones.activo` este apagado (lo manda quien ya podia
+  armar el carro desde la web).
+- **Un pulsador pisado cuando la Pi empieza a mirarlo queda mudo** hasta que
+  se le ve suelto una vez: dedo apoyado, cable al reves o boton pegado no
+  pueden lanzar la ronda solos.
+- **Si el enlace se cae, se olvida el estado de los pulsadores**, y al volver
+  cada uno tiene que verse suelto otra vez. Sin eso, un nivel viejo congelado
+  en "pisado" seria una pulsacion larga fantasma, y la reconexion con el dedo
+  encima, un arranque solo.
+- **Tiempo muerto** (`repeticion_ms`, 800 ms): un doble toque involuntario
+  justo despues del start pararia la ronda recien empezada.
+- Todo el grupo `botones` se aplica **en caliente**. Los pines no estan ahi a
+  proposito: son del firmware, como los del motor.
+
+## Correr sin la web: el demonio (SSH y VNC)
+
+En competencia no hay nadie mirando la web y el stream MJPEG cuesta CPU y
+bateria, asi que la ronda se corre con `--sin-web`. `piloto.sh` lo lanza en
+segundo plano, en su propia sesion, con la salida a un log:
+
+```bash
+./piloto.sh arrancar        # segundo plano, SIN web (competencia)
+./piloto.sh estado          # si corre, desde cuando y con que argumentos
+./piloto.sh log -f          # el registro en directo
+./piloto.sh parar           # SIGTERM: emergencia, servo al centro, cierre
+./piloto.sh web             # igual pero CON la web, para depurar
+./piloto.sh consola         # en primer plano (Ctrl+C para salir)
+./piloto.sh servicio        # arranque automatico al encender (systemd)
+```
+
+**Por SSH**, desde el portatil y con el carro sin pantalla:
+
+```bash
+ssh pi@carrito.local '~/piloto/piloto.sh arrancar'
+ssh pi@carrito.local '~/piloto/piloto.sh estado'
+ssh pi@carrito.local '~/piloto/piloto.sh parar'
+```
+
+El proceso queda en su propia sesion (`setsid`), con la entrada en
+`/dev/null` y la salida al log: el comando vuelve enseguida y **cerrar el SSH
+no se lleva el carro por delante**.
+
+**Por VNC**: los mismos comandos en cualquier terminal del escritorio. Para
+mirar la telemetria desde el navegador de la propia Pi, arranca con
+`./piloto.sh web` y abre `http://localhost:8080/`.
+
+Detalles que importan:
+
+- `parar` manda **SIGTERM**, que `main.py` atiende: parada de emergencia,
+  servo al centro y cierre del puerto. Matar a lo bruto deja al ESP32 con la
+  ultima orden hasta que salte su vigilante de 300 ms.
+- El log vive en `~/.local/state/piloto/piloto.log` y rota solo a los 8 MB.
+- `./piloto.sh servicio` instala `piloto.service` (systemd) para que el
+  piloto arranque solo al encender la Pi, sin web y con los grupos `dialout`
+  (el serie del ESP32) y `video`. A partir de ahi manda systemd: `sudo systemctl
+  start|stop|status piloto` (el script lo detecta y avisa en vez de pelearse
+  con el).
+- Variables: `PILOTO_ARGS` (argumentos fijos, p.ej. `--perfil pabellon`),
+  `PILOTO_PYTHON`, `PILOTO_LOG`, `PILOTO_ESTADO`.
+
+---
+
 ## La web (todo en caliente, nada requiere reiniciar)
 
 - **Carrera**: video anotado, ARMAR/PARAR, modo, sentido, conteo, ajustes
@@ -607,6 +737,7 @@ distancias fisicas y valen igual en pista ancha (1000 mm) o angosta (600 mm).
 | Parametro | Que hace |
 |---|---|
 | `limites.vmax` | Tope duro de PWM. El freno de mano de todas las pruebas. |
+| `botones.activo` | Hacer caso a los pulsadores del ESP32. Encendido de fabrica: sin web son el unico mando. |
 | `navegacion.kp` / `kd` | PD del centrado: kp si corrige lento, kd si oscila. |
 | `navegacion.girar_bajo_mm` | Pasillo con el que asume esquina y gira. |
 | `navegacion.ttc_min_s` | Freno por tiempo-hasta-el-muro (anti-inercia). El que mas se toca. |
@@ -627,7 +758,8 @@ distancias fisicas y valen igual en pista ancha (1000 mm) o angosta (600 mm).
 
 ```
 piloto/
-├── main.py                 arranque; --simulado, --imagen, --vmax, --puerto
+├── main.py                 arranque; --simulado, --imagen, --vmax, --puerto, --sin-web
+├── piloto.sh               demonio sin web (arrancar/parar/estado/log; SSH y VNC)
 ├── config/                 params.json y colors.json (se crean solos; 5 perfiles c/u)
 ├── src/
 │   ├── geometria.py        pixeles <-> mm sobre el suelo; horizonte; corredor
@@ -641,11 +773,12 @@ piloto/
 │   ├── obstaculos.py       esquive rojo/verde con compromiso de paso
 │   ├── protocolo.py        trama binaria v2 (gemela de protocolo.h)
 │   ├── enlace.py           hilo serie; sensores del ESP32 -> eventos
+│   ├── botones.py          los pulsadores del ESP32: corta/larga -> ordenes
 │   ├── robot.py            el nucleo que une todo
 │   ├── dibujo.py           overlay del video
 │   ├── servidor.py         http.server + MJPEG
 │   └── web/index.html      la interfaz
-└── tools/selftest.py       295 pruebas sin hardware
+└── tools/selftest.py       323 pruebas sin hardware
 ```
 
 ## Notas practicas (heredadas a golpes)

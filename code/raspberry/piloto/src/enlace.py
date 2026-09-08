@@ -145,6 +145,23 @@ class Enlace:
             salida.append(self._eventos_linea.popleft())
         return salida
 
+    def botones(self) -> Tuple[bool, bool, bool, bool]:
+        """Los dos pulsadores de competencia, que cuelgan del ESP32:
+
+            (arranque_pisado, paro_pisado, cortado_por_paro, frescos)
+
+        Es NIVEL, no evento: quien decide si fue pulsacion corta o larga es
+        src/botones.py. 'frescos' dice si el dato vale; sin el, un nivel viejo
+        congelado en "pisado" al caerse el enlace seria una pulsacion larga
+        fantasma, y al reaparecer, una corta fantasma. Cuando es False hay
+        que OLVIDAR el estado de los pulsadores, no interpretarlo."""
+        s = self.sensores
+        frescos = (self.conectado and not self.simulado
+                   and (time.time() - self.ultimos_sensores) < 0.4)
+        if not frescos:
+            return (False, False, False, False)
+        return (s.boton_arranque, s.boton_paro, s.paro_por_boton, True)
+
     # -- ciclo de vida ----------------------------------------------------
     def iniciar(self) -> None:
         self._parar.clear()
@@ -386,6 +403,9 @@ class Enlace:
                 "ratio_b": round(s.b * 255.0 / s.c, 0) if s.c else 0,
                 "clase": {0: "-", 1: "naranja", 2: "azul"}.get(s.clase_linea, "-"),
                 "cnt_naranja": s.cnt_naranja, "cnt_azul": s.cnt_azul,
+                "boton_arranque": s.boton_arranque,
+                "boton_paro": s.boton_paro,
+                "paro_por_boton": s.paro_por_boton,
                 "frescos": time.time() - self.ultimos_sensores < 0.4,
             },
         }

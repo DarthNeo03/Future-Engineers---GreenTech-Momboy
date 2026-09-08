@@ -8,6 +8,8 @@ main.py — Piloto WRO 2026 (Open Challenge + deteccion de obstaculos).
     python3 main.py --vmax 90           # tope de PWM solo para esta prueba
     python3 main.py --puerto COM7       # forzar el puerto serie
     python3 main.py --perfil pista_casa # perfil de parametros a cargar
+    python3 main.py --sin-web           # COMPETENCIA: solo los pulsadores
+    ./piloto.sh arrancar                # lo mismo, como demonio (SSH/VNC)
 
 Web de depuracion: http://carrito.local:8080/ (o la IP de la Pi).
 
@@ -17,7 +19,11 @@ SEGURIDAD, en orden de quien reacciona antes:
   3. Si el serial se calla >300 ms, el ESP32 corta el motor y centra el servo.
   4. Si la tarea de control del ESP32 se cuelga >200 ms, su vigilante corta.
   5. Ctrl+C manda parada de emergencia antes de salir.
-El carro ARRANCA DESARMADO: hay que pulsar ARMAR en la web.
+El carro ARRANCA DESARMADO. Se arma con el pulsador de ARRANQUE (el start del
+reglamento) o con el boton ARMAR de la web; el de PARO es la emergencia. Los
+dos pulsadores cuelgan del ESP32 y llegan por la trama de sensores, y el de
+PARO ademas corta la traccion en el propio ESP32. Con --sin-web son el UNICO
+mando: comprueba botones.activo antes de la ronda.
 """
 
 from __future__ import annotations
@@ -72,6 +78,18 @@ def main() -> int:
         servidor = srv_mod.Servidor(r)
         url = servidor.iniciar()
         r.log(f"[web] {url} (o http://<ip-de-la-pi>:{r.p['red']['puerto_http']}/)")
+    else:
+        # Modo competencia: sin web el unico mando son los pulsadores, asi
+        # que si estan apagados el carro se queda mudo y mas vale decirlo
+        # aqui que descubrirlo con el juez delante.
+        b = r.p["botones"]
+        if bool(b.get("activo")):
+            r.log("[main] sin web: mandan los pulsadores del ESP32 "
+                  "(ARRANQUE = start, PARO = emergencia)")
+        else:
+            r.log("[main] AVISO: --sin-web con botones.activo APAGADO: el "
+                  "carro se queda sin ningun mando. Enciende botones.activo "
+                  "o arranca sin --sin-web.")
 
     cerrando = {"si": False}
 

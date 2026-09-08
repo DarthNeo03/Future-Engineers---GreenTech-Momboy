@@ -26,6 +26,7 @@ sys.path.insert(0, str(RAIZ))
 
 from src import protocolo as P          # noqa: E402
 from src import params as params_mod    # noqa: E402
+from src import botones as bot_mod      # noqa: E402
 from src.geometria import Geometria     # noqa: E402
 from src import muro                    # noqa: E402
 from src.lineas import (GestorLineas, HORARIO, ANTIHORARIO,   # noqa: E402
@@ -66,15 +67,24 @@ prueba("mando: ida y vuelta", (m2.vel, m2.direccion, m2.vmax, m2.armado) ==
 
 s = P.Sensores(yaw_deci=-1234, gz_deci=567, c=1000, r=400, g=300, b=250,
                estado=P.S_MPU_OK | P.S_TCS_OK | (P.LINEA_AZUL << 6),
-               cnt_lineas=0x53)
+               cnt_lineas=0x53, botones=P.B_ARRANQUE | P.B_PARO_CORTO)
 tr = s.a_bytes()
-prueba("sensores: 19 bytes", len(tr) == 19, f"{len(tr)}")
-s2 = P.Sensores.desde_payload(tr[4:18])
+prueba("sensores: 20 bytes (15 de payload)", len(tr) == 20, f"{len(tr)}")
+s2 = P.Sensores.desde_payload(tr[4:19])
 prueba("sensores: ida y vuelta",
        (s2.yaw_deci, s2.gz_deci, s2.c, s2.cnt_naranja, s2.cnt_azul) ==
        (-1234, 567, 1000, 3, 5))
 prueba("sensores: clase linea", s2.clase_linea == P.LINEA_AZUL)
 prueba("sensores: yaw en grados", abs(s2.yaw + 123.4) < 1e-6)
+prueba("sensores: nivel de los pulsadores",
+       s2.boton_arranque and not s2.boton_paro and s2.paro_por_boton,
+       f"{s2.botones:#04x}")
+# Un ESP32 con firmware viejo manda 14 bytes: tiene que seguir hablando, solo
+# que sin botones. Si esto falla, actualizar el firmware deja de ser opcional
+# y pasa a ser obligatorio, que es justo lo que se quiere evitar.
+s3 = P.Sensores.desde_payload(tr[4:18])
+prueba("sensores: payload viejo de 14 bytes sigue valiendo",
+       s3.botones == 0 and s3.cnt_azul == 5 and s3.yaw_deci == -1234)
 
 cfg = P.empaquetar_cfg_tcs(80, 120, 60, 110, 70, 1, 3, 246, 2)
 prueba("cfg_tcs: 18 bytes (13 de payload)", len(cfg) == 18, f"{len(cfg)}")
@@ -1643,8 +1653,184 @@ prueba("si se pierde CERCA no lo busca: adelanta comprometido",
        str(eb.info))
 
 # ===========================================================================
+print("== botones (los dos pulsadores de competencia) ==")
+# La logica del pulsador no toca hardware: se le dan niveles y relojes. Lo
+# que se prueba aqui es justo lo que no se puede probar con un dedo en la
+# pista: rebotes de contacto y el boton pisado al encender.
+b = bot_mod.Pulsador("arranque", antirrebote_ms=40.0, largo_ms=1000.0)
+t = 100.0
+prueba("empieza suelto", b.paso(False, t) == "" and not b.pulsado)
+
+# rebote de contacto: sube y baja varias veces en 10 ms y NO cuenta
+ev = ""
+for i in range(6):
+    t += 0.005
+    ev = ev or b.paso(i % 2 == 0, t)
+prueba("un rebote de 5 ms no dispara nada", ev == "" and not b.pulsado)
+
+# ahora se mantiene pisado: se admite pasado el antirrebote. Cada cambio de
+# nivel reinicia la cuenta, asi que hacen falta dos lecturas separadas.
+t += 0.05
+b.paso(True, t)                          # sube el nivel: empieza la cuenta
+t += 0.05
+prueba("40 ms pisado = pulsado", b.paso(True, t) == "" and b.pulsado)
+t += 0.10
+b.paso(False, t)                         # baja: empieza la cuenta de la soltada
+t += 0.05
+prueba("suelto antes del tiempo largo = pulsacion CORTA",
+       b.paso(False, t) == bot_mod.CORTA)
+
+# pisado largo: avisa SIN soltar y al soltar ya no da la corta
+t += 0.10
+b.paso(True, t)
+t += 0.06
+b.paso(True, t)
+t += 1.0
+prueba("pisado 1 s = pulsacion LARGA", b.paso(True, t) == bot_mod.LARGA)
+t += 0.5
+prueba("la larga no se repite sola", b.paso(True, t) == "")
+t += 0.10
+prueba("al soltar tras una larga no sale una corta", b.paso(False, t) == "")
+
+# el boton pisado al encender el carro no puede lanzar la ronda
+b2 = bot_mod.Pulsador("arranque", antirrebote_ms=40.0, largo_ms=300.0)
+t = 500.0
+eventos = []
+for _ in range(20):                      # 2 s con el boton pisado desde el 0
+    t += 0.1
+    eventos.append(b2.paso(True, t))
+for _ in range(2):                       # y al fin se suelta (y se confirma)
+    t += 0.1
+    eventos.append(b2.paso(False, t))
+prueba("boton pisado al arrancar: mudo hasta verlo suelto",
+       not any(eventos), str([e for e in eventos if e]))
+for pisado in (True, True, False, False):
+    t += 0.1
+    ultimo_ev = b2.paso(pisado, t)
+prueba("y despues ya funciona", ultimo_ev == bot_mod.CORTA, ultimo_ev)
+
+# El gestor completo contra un ESP32 de mentira. Es el camino entero: nivel
+# en la trama de sensores -> antirrebote -> corta/larga -> accion.
+class EnlaceFalso:
+    """Lo unico que el gestor le pide al enlace: el nivel de los pulsadores."""
+
+    def __init__(self):
+        self.arranque = False
+        self.paro = False
+        self.corte = False
+        self.frescos = True
+
+    def botones(self):
+        return (self.arranque, self.paro, self.corte, self.frescos)
+
+
+enl = EnlaceFalso()
+cfg_bot = params_mod.valores_por_defecto()["botones"]
+cfg_bot.update({"activo": True, "largo_ms": 250, "antirrebote_ms": 10,
+                "repeticion_ms": 100, "hz": 200})
+hechas = []
+g = bot_mod.GestorBotones(
+    cfg_bot, enl,
+    acciones={"arranque_corta": lambda: hechas.append("start"),
+              "arranque_larga": lambda: hechas.append("reinicio"),
+              "paro_corta": lambda: hechas.append("paro"),
+              "paro_larga": lambda: hechas.append("apagar")})
+g.iniciar()
+time.sleep(0.1)                          # verlos sueltos una vez
+
+enl.arranque = True
+time.sleep(0.12)
+enl.arranque = False
+time.sleep(0.12)
+prueba("el nivel que manda el ESP32 dispara la accion", hechas == ["start"],
+       str(hechas))
+
+enl.paro = True
+time.sleep(0.35)                         # mas que largo_ms
+prueba("mantenerlo pisado = pulsacion larga", hechas[-1:] == ["apagar"],
+       str(hechas))
+enl.paro = False
+time.sleep(0.15)
+prueba("al soltar tras la larga no sale ademas la corta",
+       "paro" not in hechas, str(hechas))
+
+# El caso peligroso: el enlace se cae con el dedo encima y vuelve con el dedo
+# todavia encima. Si eso contara como pulsacion, el carro saldria corriendo
+# solo al reconectar el serial.
+del hechas[:]
+enl.arranque = True
+enl.frescos = False                      # se cae con el boton pisado
+time.sleep(0.15)
+prueba("con el enlace caido no pasa nada", hechas == [], str(hechas))
+enl.frescos = True                       # vuelve, y sigue pisado
+time.sleep(0.4)
+prueba("y al volver con el boton pisado tampoco arranca", hechas == [],
+       str(hechas))
+enl.arranque = False
+time.sleep(0.15)
+prueba("soltarlo solo lo desbloquea, no cuenta como pulsacion", hechas == [],
+       str(hechas))
+enl.arranque = True
+time.sleep(0.12)
+enl.arranque = False
+time.sleep(0.12)
+prueba("despues ya vuelve a funcionar", hechas == ["start"], str(hechas))
+
+# El corte local del ESP32 se ve desde la web
+del hechas[:]
+enl.corte = True
+time.sleep(0.1)
+prueba("el estado dice que el ESP32 corto por el pulsador de PARO",
+       g.estado()["corte_esp32"] is True, str(g.estado()))
+enl.corte = False
+
+# Pulsadores virtuales: el mismo camino, sin ESP32 (asi se ensaya en el PC)
+del hechas[:]
+g.pulsar_virtual(bot_mod.ARRANQUE)
+time.sleep(0.3)
+prueba("pulsador virtual corto = la misma accion", hechas == ["start"],
+       str(hechas))
+prueba("el estado dice cual fue la ultima",
+       g.estado()["ultimo"] == "arranque:corta", str(g.estado()))
+try:
+    g.pulsar_virtual("acelerador")
+    prueba("un boton inventado lanza", False)
+except ValueError:
+    prueba("un boton inventado lanza", True)
+
+# Apagados, los pulsadores del ESP32 se ignoran; los virtuales, no (esos los
+# manda quien ya podia armar el carro desde la web).
+del hechas[:]
+cfg_bot["activo"] = False
+time.sleep(0.1)
+enl.arranque = True
+time.sleep(0.15)
+enl.arranque = False
+time.sleep(0.15)
+prueba("con botones.activo apagado el ESP32 se ignora", hechas == [],
+       str(hechas))
+g.pulsar_virtual(bot_mod.ARRANQUE)
+time.sleep(0.3)
+prueba("pero el virtual de la web sigue valiendo", hechas == ["start"],
+       str(hechas))
+g.cerrar()
+
+# ===========================================================================
 print("== parametros ==")
 vals = params_mod.valores_por_defecto()
+prueba("los botones tienen su grupo de parametros",
+       set(("activo", "largo_ms", "repeticion_ms")) <= set(vals["botones"]),
+       str(sorted(vals["botones"])))
+prueba("los pulsadores vienen encendidos (el start del reglamento)",
+       vals["botones"]["activo"] is True)
+# Los pines NO se configuran desde aqui: son del firmware del ESP32, como los
+# del motor. Si algun dia reaparecen en este grupo es que alguien volvio a
+# cablearlos a la Pi sin actualizar el resto.
+prueba("los pines no viven en los parametros de la Pi",
+       not [k for k in vals["botones"] if k.startswith("pin")],
+       str(sorted(vals["botones"])))
+prueba("el apagado por PARO largo viene desactivado",
+       vals["botones"]["paro_apaga_pi"] is False)
 prueba("validar recorta", params_mod.validar("limites", "vmax", 999) == 255)
 prueba("validar bool", params_mod.validar("navegacion", "usar_yaw", "0") is False)
 try:
