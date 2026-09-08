@@ -1,10 +1,11 @@
 {
  "version": 1,
- "activo": "Funp3",
+ "activo": "Fun2p",
  "perfiles": [
   {
    "nombre": "Funp3",
    "fecha": "2026-09-02 12:06:30",
+   "categoria": "open",
    "valores": {
     "limites": {
      "vmax": 255,
@@ -30,7 +31,8 @@
      "fx_px": 460.0,
      "ancho_carro_mm": 227.6,
      "margen_ruedas_mm": 45.9,
-     "morro_mm": 60.0
+     "morro_mm": 60.0,
+     "largo_carro_mm": 240.0
     },
     "muro": {
      "metodo": "negro",
@@ -75,7 +77,13 @@
      "usar_rectas": true,
      "usar_yaw": true,
      "yaw_kp": 1.6,
-     "yaw_max": 45.0
+     "yaw_cede_al_esquivar": true,
+     "yaw_max": 45.0,
+     "desvio_max_deg": 110.0,
+     "reanclar_rumbo": true,
+     "reanclar_desde_deg": 65.0,
+     "reanclar_max_deg": 135.0,
+     "reanclar_ms": 400
     },
     "giro2t": {
      "activo": true,
@@ -89,6 +97,19 @@
      "avance_max_ms": 272,
      "max_ciclos": 3,
      "max_ms": 7000
+    },
+    "esquina_color": {
+     "activo": false,
+     "dir_pct": 75.0,
+     "vel_max_pct": 40,
+     "vel_min_pct": 22,
+     "max_ms": 3500,
+     "ceder_al_pilar": true,
+     "reanudar": true,
+     "reanudar_tras_ms": 400,
+     "refractario_ms": 2000,
+     "vision_dispara": true,
+     "contar_giro_sin_linea": false
     },
     "escape": {
      "escape_min_ms": 771,
@@ -104,7 +125,12 @@
      "ventana_par_ms": 2500,
      "refractario_esquina_ms": 3000,
      "pares_para_invertir": 2,
-     "esquina_max_ms": 6000
+     "cierre_max_ms": 6000,
+     "esquina_max_ms": 6000,
+     "frenar_ante_linea": true,
+     "frenar_desde_mm": 500.0,
+     "vel_linea_pct": 60,
+     "frenar_tras_ms": 1500
     },
     "tcs": {
      "c_min": 0,
@@ -117,6 +143,7 @@
      "muestras_min": 1,
      "refractario_ds": 3,
      "atime": 246,
+     "int_umbral_pct": 55,
      "gain": 2
     },
     "carrera": {
@@ -134,7 +161,23 @@
      "margen_mm": 95.4,
      "semi_pilar_mm": 55.1,
      "k_dir": 2.8126,
+     "dir_max_pct": 55.0,
+     "mirada_min_mm": 350.0,
+     "rampa_dir_pct_s": 220.0,
+     "peso_compromiso": 0.7,
+     "compromiso_max_ms": 2500,
+     "ceder_ante_muro": true,
+     "invertir_en_antihorario": false,
      "peso_max": 1.0,
+     "modo": "punto",
+     "borde_frac": 0.18,
+     "k_borde": 90.0,
+     "giro_final_mm": 380.0,
+     "giro_final_pct": 25.0,
+     "buscar_pct": 18.0,
+     "peso_buscar": 0.35,
+     "recordar_lado": true,
+     "memoria_ms": 3000,
      "limitar_por_lineas": true,
      "margen_linea_mm": 115.2
     },
@@ -142,6 +185,14 @@
      "timeout_ms": 400,
      "manual_seguro": false,
      "vel_max_manual": 60
+    },
+    "botones": {
+     "activo": true,
+     "antirrebote_ms": 50,
+     "largo_ms": 3000,
+     "repeticion_ms": 800,
+     "hz": 50,
+     "apagar_con_larga": false
     },
     "enlace": {
      "puerto": "",
@@ -171,6 +222,7 @@
   {
    "nombre": "Funp2",
    "fecha": "2026-09-02 11:02:20",
+   "categoria": "open",
    "valores": {
     "limites": {
      "vmax": 255,
@@ -196,7 +248,8 @@
      "fx_px": 460.0,
      "ancho_carro_mm": 227.6,
      "margen_ruedas_mm": 45.9,
-     "morro_mm": 60.0
+     "morro_mm": 60.0,
+     "largo_carro_mm": 240.0
     },
     "muro": {
      "metodo": "negro",
@@ -241,7 +294,13 @@
      "usar_rectas": true,
      "usar_yaw": true,
      "yaw_kp": 1.6,
-     "yaw_max": 45.0
+     "yaw_cede_al_esquivar": true,
+     "yaw_max": 45.0,
+     "desvio_max_deg": 110.0,
+     "reanclar_rumbo": true,
+     "reanclar_desde_deg": 65.0,
+     "reanclar_max_deg": 135.0,
+     "reanclar_ms": 400
     },
     "giro2t": {
      "activo": false,
@@ -255,6 +314,19 @@
      "avance_max_ms": 2000,
      "max_ciclos": 3,
      "max_ms": 7000
+    },
+    "esquina_color": {
+     "activo": false,
+     "dir_pct": 75.0,
+     "vel_max_pct": 40,
+     "vel_min_pct": 22,
+     "max_ms": 3500,
+     "ceder_al_pilar": true,
+     "reanudar": true,
+     "reanudar_tras_ms": 400,
+     "refractario_ms": 2000,
+     "vision_dispara": true,
+     "contar_giro_sin_linea": false
     },
     "escape": {
      "escape_min_ms": 771,
@@ -270,7 +342,12 @@
      "ventana_par_ms": 2500,
      "refractario_esquina_ms": 3000,
      "pares_para_invertir": 2,
-     "esquina_max_ms": 6000
+     "cierre_max_ms": 6000,
+     "esquina_max_ms": 6000,
+     "frenar_ante_linea": true,
+     "frenar_desde_mm": 500.0,
+     "vel_linea_pct": 60,
+     "frenar_tras_ms": 1500
     },
     "tcs": {
      "c_min": 842,
@@ -283,6 +360,7 @@
      "muestras_min": 1,
      "refractario_ds": 3,
      "atime": 246,
+     "int_umbral_pct": 55,
      "gain": 2
     },
     "carrera": {
@@ -300,7 +378,23 @@
      "margen_mm": 95.4,
      "semi_pilar_mm": 55.1,
      "k_dir": 2.8126,
+     "dir_max_pct": 55.0,
+     "mirada_min_mm": 350.0,
+     "rampa_dir_pct_s": 220.0,
+     "peso_compromiso": 0.7,
+     "compromiso_max_ms": 2500,
+     "ceder_ante_muro": true,
+     "invertir_en_antihorario": false,
      "peso_max": 1.0,
+     "modo": "punto",
+     "borde_frac": 0.18,
+     "k_borde": 90.0,
+     "giro_final_mm": 380.0,
+     "giro_final_pct": 25.0,
+     "buscar_pct": 18.0,
+     "peso_buscar": 0.35,
+     "recordar_lado": true,
+     "memoria_ms": 3000,
      "limitar_por_lineas": true,
      "margen_linea_mm": 115.2
     },
@@ -308,6 +402,14 @@
      "timeout_ms": 400,
      "manual_seguro": false,
      "vel_max_manual": 60
+    },
+    "botones": {
+     "activo": true,
+     "antirrebote_ms": 50,
+     "largo_ms": 3000,
+     "repeticion_ms": 800,
+     "hz": 50,
+     "apagar_con_larga": false
     },
     "enlace": {
      "puerto": "",
@@ -337,6 +439,7 @@
   {
    "nombre": "Fun2p",
    "fecha": "2026-09-02 10:48:38",
+   "categoria": "open",
    "valores": {
     "limites": {
      "vmax": 255,
@@ -362,7 +465,8 @@
      "fx_px": 460.0,
      "ancho_carro_mm": 227.6,
      "margen_ruedas_mm": 45.9,
-     "morro_mm": 60.0
+     "morro_mm": 60.0,
+     "largo_carro_mm": 240.0
     },
     "muro": {
      "metodo": "negro",
@@ -407,7 +511,13 @@
      "usar_rectas": true,
      "usar_yaw": true,
      "yaw_kp": 1.6,
-     "yaw_max": 45.0
+     "yaw_cede_al_esquivar": true,
+     "yaw_max": 45.0,
+     "desvio_max_deg": 110.0,
+     "reanclar_rumbo": true,
+     "reanclar_desde_deg": 65.0,
+     "reanclar_max_deg": 135.0,
+     "reanclar_ms": 400
     },
     "giro2t": {
      "activo": true,
@@ -421,6 +531,19 @@
      "avance_max_ms": 272,
      "max_ciclos": 3,
      "max_ms": 7000
+    },
+    "esquina_color": {
+     "activo": false,
+     "dir_pct": 75.0,
+     "vel_max_pct": 40,
+     "vel_min_pct": 22,
+     "max_ms": 3500,
+     "ceder_al_pilar": true,
+     "reanudar": true,
+     "reanudar_tras_ms": 400,
+     "refractario_ms": 2000,
+     "vision_dispara": true,
+     "contar_giro_sin_linea": false
     },
     "escape": {
      "escape_min_ms": 771,
@@ -436,7 +559,12 @@
      "ventana_par_ms": 2500,
      "refractario_esquina_ms": 3000,
      "pares_para_invertir": 2,
-     "esquina_max_ms": 6000
+     "cierre_max_ms": 6000,
+     "esquina_max_ms": 6000,
+     "frenar_ante_linea": true,
+     "frenar_desde_mm": 500.0,
+     "vel_linea_pct": 60,
+     "frenar_tras_ms": 1500
     },
     "tcs": {
      "c_min": 0,
@@ -449,6 +577,7 @@
      "muestras_min": 1,
      "refractario_ds": 3,
      "atime": 246,
+     "int_umbral_pct": 55,
      "gain": 2
     },
     "carrera": {
@@ -466,7 +595,23 @@
      "margen_mm": 95.4,
      "semi_pilar_mm": 55.1,
      "k_dir": 2.8126,
+     "dir_max_pct": 55.0,
+     "mirada_min_mm": 350.0,
+     "rampa_dir_pct_s": 220.0,
+     "peso_compromiso": 0.7,
+     "compromiso_max_ms": 2500,
+     "ceder_ante_muro": true,
+     "invertir_en_antihorario": false,
      "peso_max": 1.0,
+     "modo": "punto",
+     "borde_frac": 0.18,
+     "k_borde": 90.0,
+     "giro_final_mm": 380.0,
+     "giro_final_pct": 25.0,
+     "buscar_pct": 18.0,
+     "peso_buscar": 0.35,
+     "recordar_lado": true,
+     "memoria_ms": 3000,
      "limitar_por_lineas": true,
      "margen_linea_mm": 115.2
     },
@@ -474,6 +619,14 @@
      "timeout_ms": 400,
      "manual_seguro": false,
      "vel_max_manual": 60
+    },
+    "botones": {
+     "activo": true,
+     "antirrebote_ms": 50,
+     "largo_ms": 3000,
+     "repeticion_ms": 800,
+     "hz": 50,
+     "apagar_con_larga": false
     },
     "enlace": {
      "puerto": "",
@@ -503,6 +656,7 @@
   {
    "nombre": "Fun2",
    "fecha": "2026-09-02 10:47:07",
+   "categoria": "open",
    "valores": {
     "limites": {
      "vmax": 255,
@@ -528,7 +682,8 @@
      "fx_px": 460.0,
      "ancho_carro_mm": 200.0,
      "margen_ruedas_mm": 45.9,
-     "morro_mm": 60.0
+     "morro_mm": 60.0,
+     "largo_carro_mm": 240.0
     },
     "muro": {
      "metodo": "negro",
@@ -573,7 +728,13 @@
      "usar_rectas": true,
      "usar_yaw": true,
      "yaw_kp": 1.6,
-     "yaw_max": 45.0
+     "yaw_cede_al_esquivar": true,
+     "yaw_max": 45.0,
+     "desvio_max_deg": 110.0,
+     "reanclar_rumbo": true,
+     "reanclar_desde_deg": 65.0,
+     "reanclar_max_deg": 135.0,
+     "reanclar_ms": 400
     },
     "giro2t": {
      "activo": false,
@@ -587,6 +748,19 @@
      "avance_max_ms": 2000,
      "max_ciclos": 3,
      "max_ms": 7000
+    },
+    "esquina_color": {
+     "activo": false,
+     "dir_pct": 75.0,
+     "vel_max_pct": 40,
+     "vel_min_pct": 22,
+     "max_ms": 3500,
+     "ceder_al_pilar": true,
+     "reanudar": true,
+     "reanudar_tras_ms": 400,
+     "refractario_ms": 2000,
+     "vision_dispara": true,
+     "contar_giro_sin_linea": false
     },
     "escape": {
      "escape_min_ms": 771,
@@ -602,7 +776,12 @@
      "ventana_par_ms": 2500,
      "refractario_esquina_ms": 3000,
      "pares_para_invertir": 2,
-     "esquina_max_ms": 6000
+     "cierre_max_ms": 6000,
+     "esquina_max_ms": 6000,
+     "frenar_ante_linea": true,
+     "frenar_desde_mm": 500.0,
+     "vel_linea_pct": 60,
+     "frenar_tras_ms": 1500
     },
     "tcs": {
      "c_min": 842,
@@ -615,6 +794,7 @@
      "muestras_min": 1,
      "refractario_ds": 3,
      "atime": 246,
+     "int_umbral_pct": 55,
      "gain": 2
     },
     "carrera": {
@@ -632,7 +812,23 @@
      "margen_mm": 95.4,
      "semi_pilar_mm": 55.1,
      "k_dir": 4.6144,
+     "dir_max_pct": 55.0,
+     "mirada_min_mm": 350.0,
+     "rampa_dir_pct_s": 220.0,
+     "peso_compromiso": 0.7,
+     "compromiso_max_ms": 2500,
+     "ceder_ante_muro": true,
+     "invertir_en_antihorario": false,
      "peso_max": 1.0,
+     "modo": "punto",
+     "borde_frac": 0.18,
+     "k_borde": 90.0,
+     "giro_final_mm": 380.0,
+     "giro_final_pct": 25.0,
+     "buscar_pct": 18.0,
+     "peso_buscar": 0.35,
+     "recordar_lado": true,
+     "memoria_ms": 3000,
      "limitar_por_lineas": true,
      "margen_linea_mm": 60.0
     },
@@ -640,6 +836,14 @@
      "timeout_ms": 400,
      "manual_seguro": false,
      "vel_max_manual": 60
+    },
+    "botones": {
+     "activo": true,
+     "antirrebote_ms": 50,
+     "largo_ms": 3000,
+     "repeticion_ms": 800,
+     "hz": 50,
+     "apagar_con_larga": false
     },
     "enlace": {
      "puerto": "",
@@ -669,6 +873,7 @@
   {
    "nombre": "Fun1PG",
    "fecha": "2026-09-02 10:43:33",
+   "categoria": "open",
    "valores": {
     "limites": {
      "vmax": 255,
@@ -694,7 +899,8 @@
      "fx_px": 460.0,
      "ancho_carro_mm": 200.0,
      "margen_ruedas_mm": 45.9,
-     "morro_mm": 60.0
+     "morro_mm": 60.0,
+     "largo_carro_mm": 240.0
     },
     "muro": {
      "metodo": "negro",
@@ -739,7 +945,13 @@
      "usar_rectas": true,
      "usar_yaw": true,
      "yaw_kp": 1.6,
-     "yaw_max": 45.0
+     "yaw_cede_al_esquivar": true,
+     "yaw_max": 45.0,
+     "desvio_max_deg": 110.0,
+     "reanclar_rumbo": true,
+     "reanclar_desde_deg": 65.0,
+     "reanclar_max_deg": 135.0,
+     "reanclar_ms": 400
     },
     "giro2t": {
      "activo": false,
@@ -753,6 +965,19 @@
      "avance_max_ms": 2000,
      "max_ciclos": 3,
      "max_ms": 7000
+    },
+    "esquina_color": {
+     "activo": false,
+     "dir_pct": 75.0,
+     "vel_max_pct": 40,
+     "vel_min_pct": 22,
+     "max_ms": 3500,
+     "ceder_al_pilar": true,
+     "reanudar": true,
+     "reanudar_tras_ms": 400,
+     "refractario_ms": 2000,
+     "vision_dispara": true,
+     "contar_giro_sin_linea": false
     },
     "escape": {
      "escape_min_ms": 771,
@@ -768,7 +993,12 @@
      "ventana_par_ms": 2500,
      "refractario_esquina_ms": 3000,
      "pares_para_invertir": 2,
-     "esquina_max_ms": 6000
+     "cierre_max_ms": 6000,
+     "esquina_max_ms": 6000,
+     "frenar_ante_linea": true,
+     "frenar_desde_mm": 500.0,
+     "vel_linea_pct": 60,
+     "frenar_tras_ms": 1500
     },
     "tcs": {
      "c_min": 842,
@@ -781,6 +1011,7 @@
      "muestras_min": 1,
      "refractario_ds": 3,
      "atime": 246,
+     "int_umbral_pct": 55,
      "gain": 2
     },
     "carrera": {
@@ -798,7 +1029,23 @@
      "margen_mm": 50.4,
      "semi_pilar_mm": 55.1,
      "k_dir": 4.6144,
+     "dir_max_pct": 55.0,
+     "mirada_min_mm": 350.0,
+     "rampa_dir_pct_s": 220.0,
+     "peso_compromiso": 0.7,
+     "compromiso_max_ms": 2500,
+     "ceder_ante_muro": true,
+     "invertir_en_antihorario": false,
      "peso_max": 1.0,
+     "modo": "punto",
+     "borde_frac": 0.18,
+     "k_borde": 90.0,
+     "giro_final_mm": 380.0,
+     "giro_final_pct": 25.0,
+     "buscar_pct": 18.0,
+     "peso_buscar": 0.35,
+     "recordar_lado": true,
+     "memoria_ms": 3000,
      "limitar_por_lineas": true,
      "margen_linea_mm": 60.0
     },
@@ -806,6 +1053,14 @@
      "timeout_ms": 400,
      "manual_seguro": false,
      "vel_max_manual": 60
+    },
+    "botones": {
+     "activo": true,
+     "antirrebote_ms": 50,
+     "largo_ms": 3000,
+     "repeticion_ms": 800,
+     "hz": 50,
+     "apagar_con_larga": false
     },
     "enlace": {
      "puerto": "",
