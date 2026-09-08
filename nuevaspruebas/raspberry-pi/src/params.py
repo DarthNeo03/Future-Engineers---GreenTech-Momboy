@@ -305,6 +305,22 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "vel_max_manual": _p("int", 60, "Tope de velocidad del joystick, en % de vmax.", 10, 100),
     },
 
+    ### EL PULSADOR DE COMPETENCIA
+    ### En competencia no hay web ni teclado: el robot se coloca en la pista y
+    ### arranca con UNA pulsacion. El mismo boton arma y desarma, como el
+    ### start/stop de un cronometro. Cuelga del ESP32 (GPIO13, ver
+    ### esp32_carro/botones.h), que lo lee con antirrebote y manda su NIVEL en
+    ### la trama de sensores; aqui solo se decide que significa. El pin es del
+    ### firmware, no se toca desde aqui. Todo este grupo se aplica en caliente.
+    "botones": {
+        "activo": _p("bool", True, "Hacer caso al pulsador del ESP32. Apagalo solo para depurar (por ejemplo si el pulsador viene loco): las pulsaciones VIRTUALES de la web siguen funcionando igual, porque esas las manda quien ya podia armar el carro desde la interfaz."),
+        "antirrebote_ms": _p("int", 50, "Tiempo que el nivel tiene que aguantar quieto antes de creerselo. Se suma al antirrebote del ESP32 (30 ms) y filtra la trama suelta rara; subelo si el pulsador viene ruidoso, sin recompilar el firmware.", 0, 400),
+        "largo_ms": _p("int", 3000, "A partir de cuanto una pulsacion es LARGA. Con un solo boton la larga es la unica funcion extra que hay, y solo hace algo si apagar_con_larga esta encendido: por eso es tan generosa, para que sostener el dedo sin querer no apague la Pi.", 500, 8000),
+        "repeticion_ms": _p("int", 800, "Tiempo muerto tras atender una pulsacion. Un doble toque involuntario justo despues del start desarmaria la ronda recien empezada: esto lo evita.", 0, 5000),
+        "hz": _p("int", 50, "Veces por segundo que la Pi mira el estado del pulsador. Las tramas de sensores llegan a 40 Hz, asi que mas de 50 no aporta nada.", 20, 200),
+        "apagar_con_larga": _p("bool", False, "Dejar que la pulsacion LARGA apague la Pi. Comodo al terminar (quitarle la corriente con la SD montada es como se corrompen las tarjetas), pero necesita sudo sin contrasena para 'systemctl poweroff'. Apagado por defecto: con un solo boton, sostenerlo sin querer no puede apagar el carro en mitad de una prueba."),
+    },
+
     "enlace": {
         "puerto": _p("str", "", "Puerto serie del ESP32 (vacio = autodeteccion probando todos)."),
         "baudios": _p("int", 115200, "Baudios del enlace.", 9600, 921600),

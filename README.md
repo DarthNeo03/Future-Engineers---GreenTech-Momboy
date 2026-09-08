@@ -37,18 +37,24 @@ chassis revisions and about four months of evenings.
 
 | Folder | What is in it |
 |---|---|
-| [`open-challenge/`](open-challenge/) | Everything needed to run the Open Challenge: Pi software + ESP32 firmware |
-| [`obstacle-challenge/`](obstacle-challenge/) | Everything needed to run the Obstacle Challenge |
+| [`nuevaspruebas/`](nuevaspruebas/) | The car we race. Pilot program (Pi) + ESP32 firmware. Both challenges, selected by profile |
+| [`main/`](main/) | The previous system, still runnable: reconizer (Pi) + the same firmware |
 | [`schemes/`](schemes/) | Wiring diagram, system block diagram, pinout, power budget |
 | [`3d-model/`](3d-model/) | Printed parts (STL) and the sliced projects with the settings we used |
 | [`images/`](images/) | Team and vehicle photos, build photos, and the frames the car itself recorded |
 | [`journal/`](journal/) | The engineering journal, the test logs, and the previous prototype |
 | [`video/`](video/) | Links to the driving videos |
 
-The two challenge folders each carry a complete copy of the program. It is the
-same software with different calibration profiles: we chose the duplication so
-that either round can be read, cloned and run on its own, and we say so here
-rather than letting a judge discover two copies and wonder which one is real.
+The two code folders are named after the branch each one comes from, and each
+is complete and runnable on its own: `nuevaspruebas/` is the car we race today,
+`main/` is the system that came before it. Keeping both means we can go back to
+a known-good program in the pits by changing which `main.py` we launch, instead
+of reverse-engineering a git revert under pressure.
+
+There is no separate folder per challenge. It is one program that runs both
+rounds, and the round is chosen by which calibration profile is loaded — the
+Obstacle Challenge simply switches obstacle handling on. Splitting it into two
+copies would have meant fixing every bug twice.
 
 ## The team
 
@@ -194,6 +200,39 @@ immediately after `Wire.begin()`, before the sensors woke up and while the motor
 start-up pulled the rail down, and then declared both absent for the rest of the
 run. Wait 250 ms, retry every 3 s, and give the humans a manual retry button.
 
+### The start button, and stopping without the panel
+
+The rules want the round to begin with a single action on a robot already
+sitting on the track: no keyboard, no screen, no cable, nothing wireless. So
+there is **one push button** on GPIO 13 — two wires and the internal pull-up,
+no resistor — and it works like the start/stop of a stopwatch:
+
+| Press it | With the car | What happens |
+|---|---|---|
+| once | stopped | arms and starts the round |
+| again | running | disarms and stops |
+
+Two details we argued about and are glad we got right:
+
+- **It travels as a level, not as a counter.** A floor line is crossed in 40 ms
+  and has to be latched and counted or it is lost; a finger holds a button for
+  100–300 ms, which is four to twelve sensor frames. And a counter would store
+  presses: a serial glitch with an undelivered press could start the car *by
+  itself* on reconnect. With a level, what is lost is simply not executed —
+  "nothing happens" is the good failure to have in front of a judge.
+- **The emergency cut happens in the ESP32, not in the Pi.** With one button the
+  ESP32 cannot know what a press means — except in the case that matters: if the
+  car is *armed*, a press can only mean stop. Nobody presses to arm a car that is
+  already moving. So it latches a local cut and the motor is dead on the next
+  10 ms tick, without the round trip over serial and even if the Pi is hung
+  shouting "forward".
+
+A blue LED on GPIO 2 shows the state, so we can tell from outside the track
+whether the car is armed, disarmed, or cut by the button.
+
+There is also a daemon (`piloto.sh`) that runs the pilot with no web panel, so
+in competition nothing on the car needs a network at all.
+
 ### Calibration, and the rule that shapes it
 
 The rules do not let us calibrate after technical inspection, so everything is
@@ -277,7 +316,7 @@ overlay draws a green arrow to the pass point and writes "red → pass on its
 right", so we verify it with the car standing still.
 
 Three failures worth reading, all fixed and all documented in
-[`obstacle-challenge/README.md`](obstacle-challenge/README.md):
+[`nuevaspruebas/README.md`](nuevaspruebas/README.md):
 
 1. Steering saturating as the car closed on a pillar (96 % of lock at 600 mm,
    100 % at 400 mm) — fixed with a minimum look-ahead, a ceiling on what
@@ -309,12 +348,12 @@ the car onto the inner corner exactly when it should be setting up to turn.
 
 ```bash
 git clone https://github.com/DarthNeo03/Future-Engineers---GreenTech-Momboy.git
-cd Future-Engineers---GreenTech-Momboy/open-challenge/raspberry-pi
+cd Future-Engineers---GreenTech-Momboy/nuevaspruebas/raspberry-pi
 
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt      # opencv-python, numpy, pyserial
 
-python3 tools/selftest.py            # 295 checks — no camera, no car, no ESP32
+python3 tools/selftest.py            # 323 checks — no camera, no car, no ESP32
 python3 main.py --simulado           # run the whole pilot on a laptop
 python3 main.py --imagen ../../images/test-captures/frames/...   # replay a real frame
 python3 main.py                      # the real thing: camera + ESP32 + panel
@@ -327,7 +366,7 @@ firmware **before** running `main.py`.
 Three things make this project reproducible, and they were worth more to us than
 any single algorithm:
 
-- **295 checks that run on any laptop.** Everything that can break hardware or
+- **323 checks that run on any laptop.** Everything that can break hardware or
   count wrong lives in pure Python or pure C++ and is tested without the car.
   There is one car and two of us; whoever does not have it can still work.
 - **The car records what it sees.** The frame sequences in
@@ -349,7 +388,7 @@ any single algorithm:
 | One steering actuator | MG996R on a rack and pinion |
 | Differential-wheeled base disqualified | Ackermann steering; no independent side drive |
 | No radio, Bluetooth or Wi-Fi while running | No Wi-Fi in the firmware; the Pi's panel and access point are shut down for the round |
-| One switch, one start button | Main switch on the battery. **Start button: TODO — see [`schemes/pinout.md`](schemes/pinout.md)** |
+| One switch, one start button | Main switch on the battery rail, and one push button on GPIO 13: press it once and the round starts, press it again and the car stops |
 | Wired connections only between components | USB and jumper wires |
 | No calibration after technical inspection | Everything is calibrated beforehand and saved as profiles |
 | Repository public, and public for 12 months after the event | Public; will stay up |
@@ -364,14 +403,16 @@ We would rather write this down than have a judge find it:
 
 1. **Parallel parking.** The rear camera slot is reserved in the configuration
    and the profile line exists; the manoeuvre is not written yet.
-2. **The physical start button.** Today the car is armed from the debug panel,
-   which cannot be how a round starts. Pin, wiring and documentation pending.
-3. **The power budget.** The topology is drawn, the measurements are not taken.
-4. **The car's weight**, and the final photos and videos.
+2. **The power budget.** The topology is drawn, the measurements are not taken.
+3. **The car's weight**, and the final photos and videos.
+4. **The button on the old system.** `main/` gets the button firmware, so the
+   physical button still cuts the motor there, but the Python side of the button
+   only exists in `nuevaspruebas/`. We did not port it to code we no longer
+   develop.
 
 ## License
 
 See [`LICENSE`](LICENSE). The engineering notes inside
-`open-challenge/raspberry-pi/README.md` and
-`journal/prototypes/reconizer/docs/CONTEXTO.md` are in Spanish, the language we
-work in; everything a judge needs is in English here.
+`nuevaspruebas/raspberry-pi/README.md` and
+`journal/prototypes/CONTEXTO-reconizer.md` are in Spanish, the language we work
+in; everything a judge needs is in English here.

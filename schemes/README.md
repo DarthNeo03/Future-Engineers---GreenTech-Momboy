@@ -66,6 +66,9 @@ is how you hang a bus.
    range breaks the steering rack, and we broke one that way.
 4. The ESP32 watchdog: if the control task or the Pi goes quiet, the motor stops.
 5. The car always boots **disarmed**.
+6. The button latches a local cut inside the ESP32: pressed while the car is
+   armed, the motor dies on the next 10 ms tick, without waiting for the Pi and
+   even if the Pi is hung.
 
 ## Rules the wiring has to satisfy
 
@@ -74,5 +77,5 @@ is how you hang a bus.
 | One driving motor connected to the axle through gearing, one steering actuator | Single DC motor → 2:1 gearing → rear axle; MG996R on the steering rack |
 | No differential-drive base | Ackermann steering with a mechanical differential; no independent left/right drive |
 | No radio, Bluetooth or Wi-Fi while the vehicle runs | The ESP32 firmware has no Wi-Fi stack at all. The Pi's access point and web panel are bench tools and get shut down before the round |
-| One switch to power on, one start button | Main switch on the battery rail — **the start button is still pending, see `pinout.md`** |
+| One switch to power on, one start button | Main switch on the battery rail; one push button on GPIO 13 that arms and starts, and disarms and stops |
 | Wired connections only between components | USB and jumper wires; nothing on the car talks over the air |

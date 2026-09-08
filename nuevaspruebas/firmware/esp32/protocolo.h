@@ -32,7 +32,7 @@ static const uint8_t TIPO_CMD_CAL  = 0x06;   // Pi -> ESP32, 1 byte
 static const uint8_t TIPO_TELE     = 0x81;   // ESP32 -> Pi, 8 bytes
 static const uint8_t TIPO_LOG      = 0x82;   // ESP32 -> Pi, texto
 static const uint8_t TIPO_PONG     = 0x83;   // ESP32 -> Pi, 1 byte
-static const uint8_t TIPO_SENSORES = 0x84;   // ESP32 -> Pi, 14 bytes
+static const uint8_t TIPO_SENSORES = 0x84;   // ESP32 -> Pi, 15 bytes
 
 // Banderas del mando
 static const uint8_t F_ARMADO  = 0x01;
@@ -60,6 +60,14 @@ static const uint8_t S_TCS_INT     = 0x20;   // pata INT del TCS cableada
 static const uint8_t LINEA_NADA    = 0;
 static const uint8_t LINEA_NARANJA = 1;
 static const uint8_t LINEA_AZUL    = 2;
+
+// Bits del byte de BOTONES de la trama de sensores (byte 14, version 3).
+// El pulsador de armar/desarmar cuelga del ESP32, no de la Pi: aqui viaja su
+// NIVEL ya con antirrebote, no un evento. Ver botones.h para por que es nivel
+// y no contador como los cruces de linea.
+static const uint8_t B_BOTON  = 0x01;   // pulsador pisado
+static const uint8_t B_CORTE  = 0x02;   // el ESP32 corto la traccion por el
+                                        // boton (se pulso con el carro armado)
 
 // Comandos de calibracion (TIPO_CMD_CAL)
 static const uint8_t CAL_GIRO       = 1;   // sesgo del giroscopio, carro QUIETO
@@ -151,19 +159,25 @@ inline uint8_t empaquetarTelemetria(const Telemetria &t, uint8_t *salida) {
 }
 
 // --------------------------------------------------------------------------
-// Trama de sensores 0x84: yaw del MPU6050 + lectura y eventos del TCS34725.
-// Los cruces de linea viajan como CONTADORES de 4 bits (envuelven en 16):
-// aunque se pierdan tramas, la Pi ve el contador avanzar y no pierde cruces.
+// Trama de sensores 0x84: yaw del MPU6050 + lectura y eventos del TCS34725 +
+// el pulsador. Los cruces de linea viajan como CONTADORES de 4 bits
+// (envuelven en 16): aunque se pierdan tramas, la Pi ve el contador avanzar y
+// no pierde cruces. El boton NO: va como nivel (ver botones.h).
+//
+// El payload paso de 14 a 15 bytes en la version 3. La Pi acepta los dos
+// tamanos, asi que un ESP32 con firmware viejo sigue hablando; lo que no
+// tendra son botones.
 struct Sensores {
   int16_t  yaw_deci;      // yaw en decimas de grado, -1800..1800
   int16_t  gz_deci;       // velocidad de giro en decimas de grado/s
   uint16_t c, r, g, b;    // lectura cruda del TCS34725
   uint8_t  estado;        // bits S_* + (clase de linea << 6)
   uint8_t  cnt_lineas;    // naranja en los 4 bits bajos, azul en los 4 altos
+  uint8_t  botones;       // bits B_*: nivel del pulsador + corte local
 };
 
 inline uint8_t empaquetarSensores(const Sensores &s, uint8_t *salida) {
-  uint8_t p[14];
+  uint8_t p[15];
   p[0]  = (uint8_t)(s.yaw_deci & 0xFF);   p[1]  = (uint8_t)((uint16_t)s.yaw_deci >> 8);
   p[2]  = (uint8_t)(s.gz_deci & 0xFF);    p[3]  = (uint8_t)((uint16_t)s.gz_deci >> 8);
   p[4]  = (uint8_t)(s.c & 0xFF);          p[5]  = (uint8_t)(s.c >> 8);
@@ -172,7 +186,8 @@ inline uint8_t empaquetarSensores(const Sensores &s, uint8_t *salida) {
   p[10] = (uint8_t)(s.b & 0xFF);          p[11] = (uint8_t)(s.b >> 8);
   p[12] = s.estado;
   p[13] = s.cnt_lineas;
-  return empaquetar(TIPO_SENSORES, p, 14, salida);
+  p[14] = s.botones;
+  return empaquetar(TIPO_SENSORES, p, 15, salida);
 }
 
 // Configuracion del clasificador de lineas (TIPO_CFG_TCS, 10 bytes).

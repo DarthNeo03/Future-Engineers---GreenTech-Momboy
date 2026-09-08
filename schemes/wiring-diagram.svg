@@ -2,7 +2,7 @@
   <rect x="0" y="0" width="1120" height="780" fill="#ffffff"/>
 
   <text x="30" y="38" font-size="22" font-weight="bold" fill="#111827">GreenTech Momboy — WRO 2026 Future Engineers</text>
-  <text x="30" y="60" font-size="14" fill="#4b5563">Wiring diagram. Pin numbers read from the firmware we flash (open-challenge/firmware/esp32).</text>
+  <text x="30" y="60" font-size="14" fill="#4b5563">Wiring diagram. Pin numbers read from the firmware we flash (nuevaspruebas/firmware/esp32, identical to main/).</text>
 
   <!-- legend -->
   <g font-size="12" fill="#374151">
@@ -77,7 +77,8 @@
     <text x="266" y="618">GPIO 19  INT TCS</text>
     <text x="266" y="638">GPIO 18  INT MPU</text>
     <text x="266" y="658">GPIO 16/17  UART2</text>
-    <text x="266" y="682">USB  ← link + 5 V from the Pi</text>
+    <text x="266" y="678">GPIO 13  BOTON  ·  GPIO 2  LED</text>
+    <text x="266" y="700">USB  ← link + 5 V from the Pi</text>
   </g>
 
   <!-- Pi <-> ESP32 -->
@@ -151,10 +152,13 @@
   <line x1="226" y1="758" x2="1070" y2="758" stroke="#6b7280" stroke-width="2" stroke-dasharray="2 4"/>
   <text x="240" y="774" font-size="12" fill="#374151">Common ground: battery −, regulator −, Pi, ESP32, IBT-2 and servo all tied together. Without this the PWM and the I2C read noise.</text>
 
-  <!-- start button TODO -->
-  <rect x="860" y="600" width="210" height="96" rx="8" fill="#fefce8" stroke="#a16207" stroke-width="2" stroke-dasharray="6 4"/>
-  <text x="965" y="626" font-size="15" font-weight="bold" text-anchor="middle" fill="#713f12">START BUTTON</text>
-  <text x="965" y="648" font-size="12" text-anchor="middle" fill="#854d0e">required by the rules</text>
-  <text x="965" y="666" font-size="12" text-anchor="middle" fill="#854d0e">pin + wiring: TODO</text>
-  <text x="965" y="684" font-size="12" text-anchor="middle" fill="#854d0e">(no wireless during the run)</text>
+  <!-- start button + status LED -->
+  <rect x="860" y="596" width="210" height="100" rx="8" fill="#ecfeff" stroke="#0e7490" stroke-width="2"/>
+  <text x="965" y="620" font-size="15" font-weight="bold" text-anchor="middle" fill="#164e63">BUTTON + STATUS LED</text>
+  <text x="965" y="640" font-size="12" text-anchor="middle" fill="#155e75">GPIO 13 —[ button ]— GND</text>
+  <text x="965" y="658" font-size="12" text-anchor="middle" fill="#155e75">internal pull-up, no resistor</text>
+  <text x="965" y="676" font-size="12" text-anchor="middle" fill="#155e75">press: arm/start · press: stop</text>
+  <text x="965" y="692" font-size="12" text-anchor="middle" fill="#155e75">LED on GPIO 2 shows the state</text>
+  <polyline points="500,678 520,678 520,726 940,726 940,696" fill="none" stroke="#1f2937" stroke-width="2"/>
+  <text x="640" y="720" font-size="11" fill="#111827">GPIO 13 / GPIO 2 — the cut is latched inside the ESP32 (10 ms), not in the Pi</text>
 </svg>

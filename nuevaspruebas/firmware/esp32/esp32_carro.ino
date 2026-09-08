@@ -19,6 +19,14 @@
 //   TCS34725 INT -> GPIO 19   borde de linea por hardware, enganchado
 //   MPU6050  INT -> GPIO 18   data ready: dt exacto para integrar el yaw
 //
+// PULSADOR Y LED DE ESTADO (ver botones.h)
+//   BOTON -> GPIO 13 a GND   arma y desarma (el mismo, como un cronometro).
+//                            Pulsarlo con el carro ARMADO corta la traccion
+//                            AQUI, en el tick siguiente, sin esperar a la Pi.
+//   LED   -> GPIO 2          el azul de a bordo. Fijo = armado; un destello =
+//                            listo; parpadeo rapido = sin ordenes de la Pi;
+//                            dos destellos = cortado por el boton.
+//
 // TAREAS FreeRTOS
 //   nucleo 0: tareaRx (prio 5)        lee UARTs, valida CRC, publica el mando
 //             tareaSensores (3)       MPU6050 (yaw) + TCS34725 (lineas) por I2C,
@@ -37,6 +45,7 @@
 #include "seguridad.h"
 #include "sensores_i2c.h"
 #include "lineas.h"
+#include "botones.h"
 
 // ======================= PINES =======================
 // Puente H (tal cual tu montaje actual)
@@ -66,6 +75,16 @@ const int PIN_RX2 = 16;   // <- TX de la Pi (GPIO14)
 const int PIN_TX2 = 17;   // -> RX de la Pi (GPIO15)
 const uint32_t BAUDIOS = 115200;
 
+// Pulsador de competencia, entre el pin y GND (pull-up interno). El 13 no es
+// pin de arranque (strapping) ni de entrada-sola: pisado al encender no
+// impide el boot ni deja el pin al aire.
+const int PIN_BOTON = 13;
+// LED de estado: el AZUL de a bordo, que en casi todas las placas ESP32 es el
+// GPIO2. Si tu placa lo tiene en otro pin, cambialo aqui y ya. En competencia
+// no hay web: este LED es lo unico que dice que esta pasando (patrones en
+// botones.h).
+const int PIN_LED_ESTADO = 2;
+
 // Si el carro avanza al reves, cambia esto a 1 en vez de recablear.
 #define INVERTIR_MOTOR 0
 
@@ -86,7 +105,7 @@ const uint32_t FAILSAFE_MS      = 300;  // silencio tolerado de la Pi
 const uint32_t VIGILANTE_MS     = 200;  // silencio tolerado del propio control
 const uint32_t REINTENTO_I2C_MS = 3000; // sondear sensores que falten
 
-const uint8_t VERSION_FIRMWARE = 3;
+const uint8_t VERSION_FIRMWARE = 4;   // 4 = trama de sensores con botones
 
 // ======================= ESTADO COMPARTIDO =======================
 QueueHandle_t colaMando = NULL;         // longitud 1, el nuevo pisa al viejo
@@ -103,12 +122,17 @@ volatile int8_t   enlaceActivo    = -1;  // 0 = USB, 1 = GPIO, -1 = ninguno aun
 seg::ControlServo servo;
 seg::ControlMotor motor;
 
+// El pulsador. Lo lee tareaControl (100 Hz, nucleo 1) y su estado se publica
+// aqui para que la trama de sensores lo mande a la Pi.
+bot::Panel boton;
+volatile uint8_t bitsBotones = 0;      // bits proto::B_*
+
 // --- sensores I2C (los toca solo tareaSensores; la copia publicada se
 //     protege con un spinlock porque telemetria la lee desde otro nucleo) ---
 sens::Mpu6050 mpu;
 sens::Tcs34725 tcs;
 lin::Clasificador clasificador;
-proto::Sensores sensoresPub = {0, 0, 0, 0, 0, 0, 0, 0};
+proto::Sensores sensoresPub = {0, 0, 0, 0, 0, 0, 0, 0, 0};
 portMUX_TYPE muxSensores = portMUX_INITIALIZER_UNLOCKED;
 
 volatile uint8_t calPendiente = 0;       // proto::CAL_* pedido por la Pi
@@ -274,7 +298,32 @@ void tareaControl(void *) {
     msUltimoControl = ahora;
 
     const bool silencio = (ahora - msUltimoMando) > FAILSAFE_MS;
-    const bool frenar = silencio || m.parada() || !m.armado();
+
+    // ---- Pulsador --------------------------------------------------------
+    // Se lee aqui, en el tick de 100 Hz. Con el carro ARMADO una pulsacion
+    // solo puede querer decir PARAR (nadie pulsa para armar lo que ya anda),
+    // asi que en ese caso se corta la traccion en este mismo tick: sin
+    // esperar el viaje de ida y vuelta por el serial (~50 ms) y aunque el
+    // programa de la Pi este colgado mandando "adelante". Con el carro
+    // parado la pulsacion no corta nada: es la de arrancar, y esa la
+    // interpreta la Pi, que es quien sabe en que estado esta la ronda.
+    const bool corteBoton = boton.paso(ahora, m.armado());
+    bitsBotones = (uint8_t)((boton.pisado() ? proto::B_BOTON : 0) |
+                            (corteBoton     ? proto::B_CORTE : 0));
+
+    const bool frenar = silencio || m.parada() || corteBoton || !m.armado();
+
+    // ---- LED de estado ---------------------------------------------------
+    // Sin web es lo unico que dice desde fuera que esta pasando. El orden de
+    // los casos es el de urgencia: lo primero que hay que ver es por que NO
+    // arranca, y lo ultimo, que va a salir corriendo.
+    uint16_t patronLed;
+    if (corteBoton)      patronLed = bot::LED_CORTE;    // dos destellos
+    else if (silencio)   patronLed = bot::LED_SIN_PI;   // parpadeo rapido
+    else if (!frenar)    patronLed = bot::LED_ARMADO;   // fijo encendido
+    else                 patronLed = bot::LED_LISTO;    // un destello
+    digitalWrite(PIN_LED_ESTADO,
+                 bot::ledEncendido(patronLed, ahora) ? HIGH : LOW);
 
     // ---- Servo -----------------------------------------------------------
     // Ojo: el servo se sigue atendiendo aunque el motor este parado. Si la Pi
@@ -286,7 +335,7 @@ void tareaControl(void *) {
 
     // ---- Motor -----------------------------------------------------------
     int pedido = frenar ? 0 : seg::pwmDesdePorcentaje(m.vel, m.vmax);
-    if (silencio || m.parada()) {
+    if (silencio || m.parada() || corteBoton) {
       motor.cortar(ahora);            // sin rampa: parada dura
       pararMotorHW();
     } else {
@@ -481,6 +530,7 @@ void tareaSensores(void *) {
     if (clasificador.sobreLinea()) s.estado |= proto::S_SOBRE_LINEA;
     s.estado |= (uint8_t)(clasificador.clase() << 6);
     s.cnt_lineas = clasificador.contadores();
+    s.botones = bitsBotones;         // lo pone tareaControl, aqui solo viaja
     portENTER_CRITICAL(&muxSensores);
     sensoresPub = s;
     portEXIT_CRITICAL(&muxSensores);
@@ -548,6 +598,11 @@ void setup() {
   cm.rampaPorTick = 10;                // 0 -> 255 en ~260 ms
   cm.msFrenoAntesDeInvertir = 150;
   motor.configurar(cm);
+
+  // --- Pulsador y LED de estado ---
+  boton.iniciar(PIN_BOTON);
+  pinMode(PIN_LED_ESTADO, OUTPUT);
+  digitalWrite(PIN_LED_ESTADO, LOW);   // apagado hasta el primer tick
 
   // --- Enlaces ---
   Serial.begin(BAUDIOS);

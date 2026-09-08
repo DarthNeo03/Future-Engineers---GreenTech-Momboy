@@ -60,7 +60,7 @@
   <text x="475" y="490" font-size="12" text-anchor="middle" fill="#065f46">bench and practice only;</text>
   <text x="475" y="506" font-size="12" text-anchor="middle" fill="#065f46">shut down for the round</text>
 
-  <text x="50" y="548" font-size="12" fill="#065f46">tools/selftest.py — 295 checks that run on any laptop, with no camera and no car</text>
+  <text x="50" y="548" font-size="12" fill="#065f46">tools/selftest.py — 323 checks that run on any laptop, with no camera and no car</text>
   <text x="50" y="566" font-size="12" fill="#065f46">params.py — every knob, self-documented; adding one makes it appear in the panel by itself</text>
 
   <!-- arrows inside PI -->

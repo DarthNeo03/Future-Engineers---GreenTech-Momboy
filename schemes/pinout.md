@@ -1,7 +1,7 @@
 # Pinout and bus map
 
 Everything here was read straight out of the firmware we actually flash
-(`open-challenge/firmware/esp32/esp32_carro.ino`), so it matches the car on the
+(`nuevaspruebas/firmware/esp32/esp32_carro.ino`, identical to `main/`'s), so it matches the car on the
 table, not a plan we never built.
 
 ## ESP32 (hardware controller)
@@ -17,6 +17,8 @@ table, not a plan we never built.
 | `SCL` | GPIO 22 | MPU-6050 + TCS34725 | Same bus |
 | `INT_TCS` | GPIO 19 | TCS34725 INT | Open-drain, active LOW, internal pull-up. Optional |
 | `INT_MPU` | GPIO 18 | MPU-6050 INT | Push-pull, active HIGH. Optional |
+| `BOTON` | GPIO 13 | Push button to GND | Arm/start and disarm/stop. Internal pull-up, no resistor, two wires |
+| `LED_ESTADO` | GPIO 2 | Status LED | Shows armed / disarmed / cut by the button |
 | `RX2` | GPIO 16 | Raspberry Pi GPIO 14 (TX) | Alternative link if we do not use USB |
 | `TX2` | GPIO 17 | Raspberry Pi GPIO 15 (RX) | Crossed, 115200 baud |
 
@@ -42,7 +44,7 @@ the GPIO UART with no recompile.
 
 ## Link protocol
 
-Binary frames with CRC, firmware version 3. Commands go Pi → ESP32 at ~100 Hz,
+Binary frames with CRC, firmware version 4. Commands go Pi → ESP32 at ~100 Hz,
 telemetry comes back at 20 Hz (motor/servo state) and 40 Hz (yaw + colour).
 Line crossings travel as **counters**, not as events, so a dropped frame never
 loses a crossing.
@@ -57,7 +59,9 @@ driver straight off the Pi.
 > the regulator feeding the Pi, the rail feeding the servo, and the fuse (if
 > any). Fill in `power-budget.md` and the power block of `wiring-diagram.svg`.
 
-> **TODO (team):** the physical **start button**. The rules allow one switch and
-> one start button, and no wireless while the vehicle is running, so the ARM
-> button in the web panel cannot be what starts the round in competition. Decide
-> the pin, wire it, and document it here.
+The button travels inside the sensor frame, whose payload grew from 14 to 15
+bytes in firmware 4. The Pi accepts both sizes, so an ESP32 with older firmware
+still talks — it just has no button.
+
+GPIO 13 was chosen because it is not a strapping pin and not input-only: a
+button held down at power-up cannot stop the ESP32 from booting.

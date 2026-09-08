@@ -12,4 +12,4 @@
 half the decisions in the journal: the shiny-wall failure, the corridor that
 measured 1064 mm of clear road exactly where the car had to turn, the blue line
 the colour sensor kept missing. Anyone can replay them with
-`open-challenge/raspberry-pi/main.py --imagen <file>` and see what the car saw.
+`nuevaspruebas/raspberry-pi/main.py --imagen <file>` and see what the car saw.

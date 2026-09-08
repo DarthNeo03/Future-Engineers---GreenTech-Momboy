@@ -184,8 +184,28 @@ the car back towards a straight that no longer existed. Now, if the car has been
 turned by a corner-sized angle for long enough, in the direction of the round,
 it adopts the new straight: that was a corner nobody registered.
 
-**8 Sept.** Chassis **WRO CAR XVII** closed as final, and this repository
-restructured and documented for the judges.
+**8 Sept — the button.** Until this week the car was armed from the web panel,
+which cannot be how a competition round starts: the rules want one action on a
+robot already placed on the track, and no wireless while it runs. So the round
+now starts with **one push button on GPIO 13**, working like a stopwatch — press
+to arm and go, press again to stop — plus a status LED on GPIO 2.
+
+Two decisions inside that are worth more than the button itself. First, the
+press travels to the Pi as a **level, not a counter**: a counter would store
+presses, and a serial glitch with an undelivered press could start the car by
+itself on reconnect. With a level, what is lost is simply not executed. Second,
+when the car is armed a press can only mean *stop*, so the **ESP32 latches the
+cut locally** and the motor dies on the next 10 ms tick — no round trip over
+serial, and it works even if the Pi is hung shouting "forward". The self-test
+suite went from 295 to 323 checks with it.
+
+**8 Sept — one repository instead of four branches.** Chassis **WRO CAR XVII**
+closed as final, and the repository unified: the pilot and the button branch
+merged, the documentation written, and the code split into `nuevaspruebas/` (what
+we race) and `main/` (the system before it), each named after the branch it came
+from and each runnable on its own. The point is being able to fall back to a
+known-good program in the pits by changing which `main.py` we launch, instead of
+reverse-engineering a git revert under pressure.
 
 ---
 
@@ -213,7 +233,7 @@ were asked, repeatedly, how we knew.
 - **The panel is the shared language.** Everything is adjustable while the car
   runs, and everything is on screen. Two people who can both see the same
   telemetry argue about the car, not about opinions.
-- **Everything testable runs without the car.** 295 checks that need no camera
+- **Everything testable runs without the car.** 323 checks that need no camera
   and no hardware. There is one car and two of us: whoever does not have it can
   still work.
 
@@ -237,6 +257,4 @@ were asked, repeatedly, how we knew.
 - The parallel parking manoeuvre and the rear camera (the slot is reserved, the
   code is not written).
 - Measure the power budget properly, and the finished car's weight.
-- The physical start button, so nothing about starting a round depends on the
-  web panel.
 - Take the required photos and record both videos.

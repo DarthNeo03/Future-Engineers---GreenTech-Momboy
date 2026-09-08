@@ -73,6 +73,13 @@ LINEA_NADA = 0
 LINEA_NARANJA = 1
 LINEA_AZUL = 2
 
+# --- bits del byte de botones (byte 14 de la trama de sensores, version 3) --
+# El pulsador de armar/desarmar cuelga del ESP32, no del GPIO de la Pi: aqui
+# llega su NIVEL ya con antirrebote, no un evento. Ver src/botones.py.
+B_BOTON = 0x01         # pulsador pisado
+B_CORTE = 0x02         # el ESP32 corto la traccion por el boton (se pulso
+                       # con el carro armado, que solo puede querer decir parar)
+
 # --- comandos de calibracion ----------------------------------------------
 CAL_GIRO = 1           # medir sesgo del giroscopio (carro QUIETO) y cero yaw
 CAL_CERO_YAW = 2       # solo poner el yaw a cero
@@ -201,7 +208,7 @@ class Telemetria:
 # ---------------------------------------------------------------------------
 @dataclass
 class Sensores:
-    """Trama 0x84. 14 bytes de payload:
+    """Trama 0x84. 15 bytes de payload:
 
         yaw_deci   int16   yaw en decimas de grado, -1800..1800
         gz_deci    int16   velocidad de giro en decimas de grado/s
@@ -211,6 +218,15 @@ class Sensores:
                            Avanza en cada CRUCE detectado y envuelve en 16:
                            la Pi compara con el ultimo valor visto, asi que
                            perder tramas no pierde cruces.
+        botones    uint8   bits B_*: NIVEL del pulsador de armar/desarmar (ya
+                           con antirrebote) y si el ESP32 corto la traccion
+                           por el. Nivel y no contador a proposito: un
+                           contador guardaria pulsaciones pendientes y podria
+                           arrancar el carro al reconectar. Ver
+                           esp32_carro/botones.h.
+
+    El byte de botones llego con la version 3 del mensaje. Un ESP32 con
+    firmware viejo manda 14 bytes y se lee igual: sin botones.
     """
     yaw_deci: int = 0
     gz_deci: int = 0
@@ -220,6 +236,7 @@ class Sensores:
     b: int = 0
     estado: int = 0
     cnt_lineas: int = 0
+    botones: int = 0
 
     @property
     def yaw(self) -> float:
@@ -261,19 +278,33 @@ class Sensores:
     def cnt_azul(self) -> int:
         return (self.cnt_lineas >> 4) & 0x0F
 
+    @property
+    def boton(self) -> bool:
+        """Nivel del pulsador de armar/desarmar (ya con antirrebote)."""
+        return bool(self.botones & B_BOTON)
+
+    @property
+    def corte_por_boton(self) -> bool:
+        """El ESP32 tiene la traccion cortada porque se pulso el boton con el
+        carro armado."""
+        return bool(self.botones & B_CORTE)
+
     def a_bytes(self) -> bytes:
         return empaquetar(TIPO_SENSORES, struct.pack(
-            "<hhHHHHBB",
+            "<hhHHHHBBB",
             _lim(self.yaw_deci, -32768, 32767),
             _lim(self.gz_deci, -32768, 32767),
             _lim(self.c, 0, 65535), _lim(self.r, 0, 65535),
             _lim(self.g, 0, 65535), _lim(self.b, 0, 65535),
-            self.estado & 0xFF, self.cnt_lineas & 0xFF))
+            self.estado & 0xFF, self.cnt_lineas & 0xFF,
+            self.botones & 0xFF))
 
     @staticmethod
     def desde_payload(payload: bytes) -> "Sensores":
         (yaw, gz, c, r, g, b, est, cnt) = struct.unpack("<hhHHHHBB", payload[:14])
-        return Sensores(yaw, gz, c, r, g, b, est, cnt)
+        # 15 bytes = firmware con botones; 14 = firmware viejo, sin ellos
+        bot = payload[14] if len(payload) >= 15 else 0
+        return Sensores(yaw, gz, c, r, g, b, est, cnt, bot)
 
 
 # ---------------------------------------------------------------------------

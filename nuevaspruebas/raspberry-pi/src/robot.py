@@ -7,8 +7,10 @@ Si este hilo se atasca >250 ms, el enlace manda ceros; si el serial se calla
 >300 ms, el ESP32 corta solo. El robot NACE DESARMADO: hay que pulsar ARMAR.
 
 Al ARMAR en modo auto arranca la carrera (cronometro + conteo de esquinas).
-En competencia, ARMAR es el "boton de start" (se puede cablear uno fisico a
-la Pi mas adelante; el metodo armar() ya esta listo para eso).
+En competencia el ARMAR de la web no vale (no hay teclado ni pantalla): manda
+UN SOLO pulsador, que arma y desarma segun como este el carro. Cuelga del
+ESP32 y llega en la trama de sensores; botones.py decide si fue pulsacion
+corta o larga y entra por los mismos metodos que usa la web.
 """
 
 from __future__ import annotations
@@ -22,11 +24,12 @@ from typing import Any, Dict, List, Optional
 import cv2
 import numpy as np
 
+from . import botones as botones_mod
 from . import camara as cam_mod
 from . import color_config as cc
 from . import dibujo, muro, params as params_mod, vision
 from . import protocolo as P
-from .carrera import Carrera, LISTO
+from .carrera import Carrera, LISTO, TERMINADO
 from .enlace import Enlace
 from .geometria import Geometria
 from . import lineas as lineas_mod
@@ -60,6 +63,16 @@ class Robot:
                                    cfg_color=self.p["esquina_color"])
         self.esquivador = Esquivador(self.p["obstaculos"])
         self.enlace = Enlace(self.p["enlace"], simulado=simulado, al_log=self.log)
+        # El pulsador de competencia. Cuelga del ESP32 y llega por la trama de
+        # sensores, por eso el gestor lee del enlace. Se construye SIEMPRE,
+        # tambien en --simulado: las pulsaciones virtuales de la web
+        # (/api/cmd?boton=corta) entran por el mismo camino, asi que la
+        # secuencia de start se ensaya en el PC igual que en la pista.
+        self.botones = botones_mod.GestorBotones(
+            self.p["botones"], self.enlace,
+            acciones={"corta": self.boton_pulsado,
+                      "larga": self.boton_largo},
+            al_log=self.log)
 
         self.armado = False
         # Linea de calibracion en uso ("open" | "obstaculos" | "estacionar").
@@ -114,6 +127,7 @@ class Robot:
         self._parar.clear()
         self._hilo = threading.Thread(target=self._bucle, daemon=True, name="control")
         self._hilo.start()
+        self.botones.iniciar()
 
     def _abrir_camara(self) -> None:
         c = self.p["camara"]
@@ -141,6 +155,10 @@ class Robot:
 
     def cerrar(self) -> None:
         self._parar.set()
+        try:
+            self.botones.cerrar()
+        except Exception:
+            pass
         if self._hilo:
             self._hilo.join(timeout=2.0)
         try:
@@ -191,6 +209,39 @@ class Robot:
 
     def _giro_completado(self, lado: int) -> None:
         self.lineas.giro_completado(lado)
+
+    # -- el pulsador de competencia (el start del reglamento) --------------
+    # Son las MISMAS ordenes que manda la web: el boton no puede hacer nada
+    # que no se pueda deshacer desde la web, ni al reves.
+    def boton_pulsado(self) -> None:
+        """Pulsacion corta, el unico boton que hay. Armado <-> desarmado,
+        como el start/stop de un cronometro:
+
+          - parado  -> ARMA y arranca la ronda;
+          - andando -> DESARMA con parada de emergencia (el ESP32 ya corto la
+            traccion en cuanto se pulso, esto es lo que falta);
+          - terminada la ronda -> arranca una NUEVA. Al acabar, el carro se
+            queda armado y quieto en la meta; ahi lo que se quiere es volver a
+            salir, no tener que pulsar dos veces.
+        """
+        if self.armado and self.carrera.estado != TERMINADO:
+            self.emergencia()
+        else:
+            self.armar(True)
+
+    def boton_largo(self) -> None:
+        """Pulsacion larga: apagar la Pi, si esta permitido. Primero se corta
+        el motor: nunca se apaga un carro que se esta moviendo."""
+        self.emergencia()
+        if bool(self.p["botones"].get("apagar_con_larga", False)):
+            botones_mod.apagar_pi(self.log)
+        else:
+            self.log("[boton] pulsacion larga: apagado desactivado "
+                     "(botones.apagar_con_larga)")
+
+    def pulsar_boton(self, tipo: str = botones_mod.CORTA) -> None:
+        """Pulsacion virtual, para probar la secuencia sin cablear nada."""
+        self.botones.pulsar_virtual(tipo)
 
     # -- parametros y perfiles --------------------------------------------
     def fijar_param(self, grupo: str, clave: str, valor: Any) -> Any:
@@ -602,6 +653,7 @@ class Robot:
             "memoria_pilar": (self.esquivador.memoria()
                               if self.esquivador.memoria_viva(time.time()) else None),
             "categoria": self.categoria,
+            "botones": self.botones.estado(),
             "enlace": self._estado_enlace(),
             "geometria": self.geo.estado(),
             "camara_error": self.error_camara,

@@ -220,6 +220,12 @@ class Servidor:
                     r.lineas.evento_tcs(color)
                     r.t_linea_reciente = time.time()
                     r.log(f"[prueba] cruce de linea {color} inyectado")
+                elif k == "boton":
+                    # Pulsacion VIRTUAL del boton de competencia: entra por el
+                    # mismo camino que la fisica (antirrebote, tiempo largo,
+                    # tiempo muerto), asi que sirve para ensayar la secuencia
+                    # sin cablear nada. ?boton=corta (o ?boton=larga)
+                    r.pulsar_boton(v if v in ("corta", "larga") else "corta")
                 elif k in ("val", "color", "x", "y", "dist", "lat", "acumular",
                            "categoria"):
                     pass          # argumentos de otras ordenes
