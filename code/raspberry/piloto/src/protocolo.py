@@ -74,11 +74,11 @@ LINEA_NARANJA = 1
 LINEA_AZUL = 2
 
 # --- bits del byte de botones (byte 14 de la trama de sensores, version 3) --
-# Los dos pulsadores de competencia cuelgan del ESP32, no del GPIO de la Pi:
-# aqui llega su NIVEL ya con antirrebote, no un evento. Ver src/botones.py.
-B_ARRANQUE = 0x01      # pulsador de ARRANQUE (el "start") pisado
-B_PARO = 0x02          # pulsador de PARO pisado
-B_PARO_CORTO = 0x04    # el ESP32 corto la traccion por el pulsador de PARO
+# El pulsador de armar/desarmar cuelga del ESP32, no del GPIO de la Pi: aqui
+# llega su NIVEL ya con antirrebote, no un evento. Ver src/botones.py.
+B_BOTON = 0x01         # pulsador pisado
+B_CORTE = 0x02         # el ESP32 corto la traccion por el boton (se pulso
+                       # con el carro armado, que solo puede querer decir parar)
 
 # --- comandos de calibracion ----------------------------------------------
 CAL_GIRO = 1           # medir sesgo del giroscopio (carro QUIETO) y cero yaw
@@ -218,11 +218,12 @@ class Sensores:
                            Avanza en cada CRUCE detectado y envuelve en 16:
                            la Pi compara con el ultimo valor visto, asi que
                            perder tramas no pierde cruces.
-        botones    uint8   bits B_*: NIVEL de los dos pulsadores (ya con
-                           antirrebote) y si el ESP32 corto por el de PARO.
-                           Nivel y no contador a proposito: un contador
-                           guardaria pulsaciones pendientes y podria arrancar
-                           el carro al reconectar. Ver esp32_carro/botones.h.
+        botones    uint8   bits B_*: NIVEL del pulsador de armar/desarmar (ya
+                           con antirrebote) y si el ESP32 corto la traccion
+                           por el. Nivel y no contador a proposito: un
+                           contador guardaria pulsaciones pendientes y podria
+                           arrancar el carro al reconectar. Ver
+                           esp32_carro/botones.h.
 
     El byte de botones llego con la version 3 del mensaje. Un ESP32 con
     firmware viejo manda 14 bytes y se lee igual: sin botones.
@@ -278,17 +279,15 @@ class Sensores:
         return (self.cnt_lineas >> 4) & 0x0F
 
     @property
-    def boton_arranque(self) -> bool:
-        return bool(self.botones & B_ARRANQUE)
+    def boton(self) -> bool:
+        """Nivel del pulsador de armar/desarmar (ya con antirrebote)."""
+        return bool(self.botones & B_BOTON)
 
     @property
-    def boton_paro(self) -> bool:
-        return bool(self.botones & B_PARO)
-
-    @property
-    def paro_por_boton(self) -> bool:
-        """El ESP32 tiene la traccion cortada por el pulsador de PARO."""
-        return bool(self.botones & B_PARO_CORTO)
+    def corte_por_boton(self) -> bool:
+        """El ESP32 tiene la traccion cortada porque se pulso el boton con el
+        carro armado."""
+        return bool(self.botones & B_CORTE)
 
     def a_bytes(self) -> bytes:
         return empaquetar(TIPO_SENSORES, struct.pack(

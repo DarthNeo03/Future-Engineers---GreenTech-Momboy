@@ -62,12 +62,12 @@ static const uint8_t LINEA_NARANJA = 1;
 static const uint8_t LINEA_AZUL    = 2;
 
 // Bits del byte de BOTONES de la trama de sensores (byte 14, version 3).
-// Los pulsadores cuelgan del ESP32, no de la Pi: aqui viaja su NIVEL ya con
-// antirrebote, no un evento. Ver botones.h para por que es nivel y no
-// contador como los cruces de linea.
-static const uint8_t B_ARRANQUE   = 0x01;   // pulsador de ARRANQUE pisado
-static const uint8_t B_PARO       = 0x02;   // pulsador de PARO pisado
-static const uint8_t B_PARO_CORTO = 0x04;   // el ESP32 corto por el de PARO
+// El pulsador de armar/desarmar cuelga del ESP32, no de la Pi: aqui viaja su
+// NIVEL ya con antirrebote, no un evento. Ver botones.h para por que es nivel
+// y no contador como los cruces de linea.
+static const uint8_t B_BOTON  = 0x01;   // pulsador pisado
+static const uint8_t B_CORTE  = 0x02;   // el ESP32 corto la traccion por el
+                                        // boton (se pulso con el carro armado)
 
 // Comandos de calibracion (TIPO_CMD_CAL)
 static const uint8_t CAL_GIRO       = 1;   // sesgo del giroscopio, carro QUIETO
@@ -160,9 +160,9 @@ inline uint8_t empaquetarTelemetria(const Telemetria &t, uint8_t *salida) {
 
 // --------------------------------------------------------------------------
 // Trama de sensores 0x84: yaw del MPU6050 + lectura y eventos del TCS34725 +
-// los dos pulsadores. Los cruces de linea viajan como CONTADORES de 4 bits
+// el pulsador. Los cruces de linea viajan como CONTADORES de 4 bits
 // (envuelven en 16): aunque se pierdan tramas, la Pi ve el contador avanzar y
-// no pierde cruces. Los botones NO: van como nivel (ver botones.h).
+// no pierde cruces. El boton NO: va como nivel (ver botones.h).
 //
 // El payload paso de 14 a 15 bytes en la version 3. La Pi acepta los dos
 // tamanos, asi que un ESP32 con firmware viejo sigue hablando; lo que no
@@ -173,7 +173,7 @@ struct Sensores {
   uint16_t c, r, g, b;    // lectura cruda del TCS34725
   uint8_t  estado;        // bits S_* + (clase de linea << 6)
   uint8_t  cnt_lineas;    // naranja en los 4 bits bajos, azul en los 4 altos
-  uint8_t  botones;       // bits B_*: nivel de los pulsadores + corte local
+  uint8_t  botones;       // bits B_*: nivel del pulsador + corte local
 };
 
 inline uint8_t empaquetarSensores(const Sensores &s, uint8_t *salida) {

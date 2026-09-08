@@ -11,7 +11,7 @@ Raspberry Pi 5 (vision + decisiones)  <-USB->  ESP32 (motor, servo, MPU6050, TCS
 
 El firmware del ESP32 vive en `code/esp32_carro/` (protocolo v2: lee el
 MPU6050 y el TCS34725 por I2C y manda yaw, cruces de linea y el estado de los
-dos pulsadores de competencia a la Pi).
+el estado del pulsador de competencia a la Pi).
 
 ---
 
@@ -32,18 +32,18 @@ python main.py --vmax 90            # tope de PWM solo para esta prueba
 
 **ESP32**: abrir `code/esp32_carro/esp32_carro.ino` en el IDE de Arduino (los
 6 archivos en la misma carpeta) y subir. Sin librerias externas. Al subir
-firmware nuevo, subirlo ANTES de correr `main.py`. **Los pulsadores necesitan
+firmware nuevo, subirlo ANTES de correr `main.py`. **El pulsador necesita
 la version 4** (la trama de sensores paso de 14 a 15 bytes); con firmware
-viejo todo lo demas sigue igual, pero los botones no llegan.
+viejo todo lo demas sigue igual, pero el boton no llega.
 
 Web de depuracion: **http://carrito.local:8080/** (o `http://<ip>:8080/`).
 El carro **arranca desarmado**: pulsar ARMAR. En modo auto, ARMAR arranca la
 carrera (cronometro + conteo).
 
-En competencia no hay web: el start es el **pulsador de ARRANQUE** y la
-emergencia el de **PARO** (los dos cuelgan del ESP32), y el programa se
-lanza como demonio con `./piloto.sh arrancar`. Ver
-[Los dos pulsadores](#los-dos-pulsadores-el-start-del-reglamento) y
+En competencia no hay web: manda **el pulsador** que cuelga del ESP32 (la
+misma pulsacion arma y desarma) y el **LED azul** dice en que estado esta el
+carro; el programa se lanza como demonio con `./piloto.sh arrancar`. Ver
+[El boton y el LED](#el-boton-y-el-led-el-start-del-reglamento) y
 [Correr sin la web](#correr-sin-la-web-el-demonio-ssh-y-vnc).
 
 ---
@@ -591,44 +591,64 @@ distancias fisicas y valen igual en pista ancha (1000 mm) o angosta (600 mm).
 
 ---
 
-## Los dos pulsadores (el start del reglamento)
+## El boton y el LED (el start del reglamento)
 
 En competencia el robot se coloca en la pista y arranca con **una sola
 pulsacion**: no hay teclado, ni pantalla, ni web, ni cable. El boton ARMAR de
-la interfaz no sirve para eso, asi que el carro lleva dos pulsadores.
+la interfaz no sirve para eso, asi que el carro lleva **un pulsador**, y es el
+mismo para las dos cosas, como el start/stop de un cronometro:
 
-**Cuelgan del ESP32, no de la Pi.** El firmware
-(`code/esp32_carro/botones.h`) los lee a 100 Hz con antirrebote y manda su
-nivel en la trama de sensores, 40 veces por segundo; `src/botones.py` decide
-que significan. Dos cables por pulsador y ninguna resistencia:
-
-```
-GPIO13 ---[ pulsador ARRANQUE ]--- GND      (pull-up interno del ESP32)
-GPIO23 ---[ pulsador PARO     ]--- GND
-GPIO2  ---[ 330 ohm ]--- LED --- GND        encendido = el carro puede moverse
-```
-
-(GPIO2 suele ser ademas el LED de a bordo de la placa, asi que el LED
-externo es opcional. Ni el 13 ni el 23 son pines de arranque, asi que un
-pulsador pisado al encender no impide el boot.)
-
-| Pulsador | Corta | Larga (`largo_ms`, 1.5 s) |
+| Pulsacion | Con el carro... | Que hace |
 |---|---|---|
-| **ARRANQUE** (verde) | ARMA y arranca la ronda. Si ya corre, la para. Si la ronda ya termino, arranca una nueva. | Reinicia la ronda: desarmado, 0 esquinas, cronometro a cero. Es lo que se pulsa entre intento e intento. |
-| **PARO** (rojo) | PARADA DE EMERGENCIA: el ESP32 corta la traccion **en el acto** y la Pi desarma. | Apaga la Pi, **solo** si `botones.paro_apaga_pi` esta encendido. |
+| corta | parado | **ARMA** y arranca la ronda |
+| corta | andando | **DESARMA**: parada de emergencia |
+| corta | ronda terminada | arranca una **ronda nueva** |
+| larga (`largo_ms`, 3 s) | cualquiera | para y **apaga la Pi**, solo si `botones.apagar_con_larga` esta encendido |
 
-### El PARO corta en el ESP32, no en la Pi
+**Cuelga del ESP32, no de la Pi.** El firmware (`code/esp32_carro/botones.h`)
+lo lee a 100 Hz con antirrebote y manda su nivel en la trama de sensores, 40
+veces por segundo; `src/botones.py` decide que significa, porque es el lado
+que sabe si el carro estaba armado. Dos cables y ninguna resistencia:
 
-Es la razon de peso para colgar los pulsadores del ESP32 y no del GPIO de la
-Pi. Cuando se confirma la pulsacion, el firmware **enclava un corte local** y
-para el motor en el siguiente tick de 10 ms: no espera el viaje de ida y
-vuelta por el serial (~50 ms) y no depende de que el programa de la Pi este
-sano. Con el pulsador en la Pi, un programa colgado mandando "adelante"
+```
+GPIO13 ---[ pulsador ]--- GND      (pull-up interno del ESP32)
+GPIO2  ---> LED azul de a bordo    (el de la placa; no hay que cablear nada)
+```
+
+El 13 no es pin de arranque, asi que un pulsador pisado al encender no impide
+el boot.
+
+### El LED azul dice en que estado esta el carro
+
+Sin web es lo unico que informa desde fuera, asi que lleva cuatro patrones
+que se distinguen de un vistazo a dos metros:
+
+| LED | Estado |
+|---|---|
+| **fijo encendido** | ARMADO: el carro puede salir corriendo AHORA |
+| **un destello corto** cada 1.6 s | listo y desarmado, con la Pi hablando |
+| **parpadeo rapido** (5 Hz) | sin ordenes de la Pi (failsafe): programa caido, cable suelto o Pi arrancando todavia |
+| **dos destellos** y pausa | cortado por el pulsador (emergencia enclavada) |
+
+Los patrones son 16 ranuras de 100 ms leidas del reloj, sin estado propio
+(`bot::ledEncendido`), asi que da igual quien los pinte y cada cuanto. Si tu
+placa tiene el LED en otro pin, se cambia `PIN_LED_ESTADO` en el `.ino` y ya.
+
+### La emergencia corta en el ESP32, no en la Pi
+
+Es la razon de peso para colgar el pulsador del ESP32. Con un solo boton el
+firmware no sabe que significa una pulsacion... salvo en el caso que importa:
+**si el carro esta ARMADO, lo unico que puede querer decir es parar** (nadie
+pulsa para armar lo que ya anda). En ese caso el firmware **enclava un corte
+local** y para el motor en el siguiente tick de 10 ms: no espera el viaje de
+ida y vuelta por el serial (~50 ms) y no depende de que el programa de la Pi
+este sano. Con el pulsador en la Pi, un programa colgado mandando "adelante"
 dejaba la emergencia sin efecto hasta que saltara el failsafe de 300 ms.
 
-El enclavamiento se suelta solo cuando la Pi acusa recibo (manda un mando
-desarmado) **y** el dedo ya no esta encima. El operador no tiene que hacer
-nada raro: pulsa ARRANQUE y el carro vuelve a estar listo.
+Con el carro parado la pulsacion no corta nada: esa es la de arrancar, y la
+interpreta la Pi. El enclavamiento se suelta cuando la Pi acusa recibo (manda
+un mando desarmado) **y** el dedo ya no esta encima; el operador no tiene que
+hacer nada raro: vuelve a pulsar y el carro sale.
 
 ### Nivel, no contador (al reves que las lineas)
 
@@ -644,24 +664,24 @@ es "no pasa nada", que delante de un juez es el fallo bueno.
 
 - **Hay que subir el firmware nuevo** (version 4): la trama de sensores paso
   de 14 a 15 bytes. La Pi acepta las dos, asi que con firmware viejo todo
-  sigue funcionando *menos* los pulsadores; se nota en `botones.frescos` a
-  falso y en que no pasa nada al pulsar.
-- **Se prueban sin cablear nada**: `/api/cmd?boton=arranque` (y
-  `&tipo=larga`) inyecta la pulsacion por el mismo camino que la fisica,
-  antirrebote incluido. Funciona igual en el PC con `--simulado`, y sigue
-  valiendo aunque `botones.activo` este apagado (lo manda quien ya podia
-  armar el carro desde la web).
-- **Un pulsador pisado cuando la Pi empieza a mirarlo queda mudo** hasta que
+  sigue funcionando *menos* el pulsador; se nota en `botones.frescos` a falso
+  y en que no pasa nada al pulsar.
+- **Se prueba sin cablear nada**: `/api/cmd?boton=corta` (o `?boton=larga`)
+  inyecta la pulsacion por el mismo camino que la fisica, antirrebote
+  incluido. Funciona igual en el PC con `--simulado`, y sigue valiendo aunque
+  `botones.activo` este apagado (lo manda quien ya podia armar el carro desde
+  la web).
+- **El pulsador pisado cuando la Pi empieza a mirarlo queda mudo** hasta que
   se le ve suelto una vez: dedo apoyado, cable al reves o boton pegado no
   pueden lanzar la ronda solos.
-- **Si el enlace se cae, se olvida el estado de los pulsadores**, y al volver
-  cada uno tiene que verse suelto otra vez. Sin eso, un nivel viejo congelado
-  en "pisado" seria una pulsacion larga fantasma, y la reconexion con el dedo
-  encima, un arranque solo.
+- **Si el enlace se cae, se olvida el estado del pulsador**, y al volver tiene
+  que verse suelto otra vez. Sin eso, un nivel viejo congelado en "pisado"
+  seria una pulsacion larga fantasma, y la reconexion con el dedo encima, un
+  arranque solo.
 - **Tiempo muerto** (`repeticion_ms`, 800 ms): un doble toque involuntario
-  justo despues del start pararia la ronda recien empezada.
-- Todo el grupo `botones` se aplica **en caliente**. Los pines no estan ahi a
-  proposito: son del firmware, como los del motor.
+  justo despues del start desarmaria la ronda recien empezada.
+- Todo el grupo `botones` se aplica **en caliente**. El pin no esta ahi a
+  proposito: es del firmware, como los del motor.
 
 ## Correr sin la web: el demonio (SSH y VNC)
 
@@ -737,7 +757,7 @@ Detalles que importan:
 | Parametro | Que hace |
 |---|---|
 | `limites.vmax` | Tope duro de PWM. El freno de mano de todas las pruebas. |
-| `botones.activo` | Hacer caso a los pulsadores del ESP32. Encendido de fabrica: sin web son el unico mando. |
+| `botones.activo` | Hacer caso al pulsador del ESP32. Encendido de fabrica: sin web es el unico mando. |
 | `navegacion.kp` / `kd` | PD del centrado: kp si corrige lento, kd si oscila. |
 | `navegacion.girar_bajo_mm` | Pasillo con el que asume esquina y gira. |
 | `navegacion.ttc_min_s` | Freno por tiempo-hasta-el-muro (anti-inercia). El que mas se toca. |
@@ -773,7 +793,7 @@ piloto/
 │   ├── obstaculos.py       esquive rojo/verde con compromiso de paso
 │   ├── protocolo.py        trama binaria v2 (gemela de protocolo.h)
 │   ├── enlace.py           hilo serie; sensores del ESP32 -> eventos
-│   ├── botones.py          los pulsadores del ESP32: corta/larga -> ordenes
+│   ├── botones.py          el boton del ESP32: corta/larga -> armar/desarmar
 │   ├── robot.py            el nucleo que une todo
 │   ├── dibujo.py           overlay del video
 │   ├── servidor.py         http.server + MJPEG

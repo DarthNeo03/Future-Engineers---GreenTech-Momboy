@@ -19,11 +19,12 @@ SEGURIDAD, en orden de quien reacciona antes:
   3. Si el serial se calla >300 ms, el ESP32 corta el motor y centra el servo.
   4. Si la tarea de control del ESP32 se cuelga >200 ms, su vigilante corta.
   5. Ctrl+C manda parada de emergencia antes de salir.
-El carro ARRANCA DESARMADO. Se arma con el pulsador de ARRANQUE (el start del
-reglamento) o con el boton ARMAR de la web; el de PARO es la emergencia. Los
-dos pulsadores cuelgan del ESP32 y llegan por la trama de sensores, y el de
-PARO ademas corta la traccion en el propio ESP32. Con --sin-web son el UNICO
-mando: comprueba botones.activo antes de la ronda.
+El carro ARRANCA DESARMADO. Se arma con el pulsador de competencia (el start
+del reglamento) o con el boton ARMAR de la web. El pulsador es UNO SOLO y
+hace las dos cosas: pulsar con el carro parado arma, pulsar con el carro
+andando desarma. Cuelga del ESP32, y el ESP32 corta la traccion en el acto
+cuando se pulsa con el carro armado. Con --sin-web es el UNICO mando:
+comprueba botones.activo antes de la ronda.
 """
 
 from __future__ import annotations
@@ -84,8 +85,8 @@ def main() -> int:
         # aqui que descubrirlo con el juez delante.
         b = r.p["botones"]
         if bool(b.get("activo")):
-            r.log("[main] sin web: mandan los pulsadores del ESP32 "
-                  "(ARRANQUE = start, PARO = emergencia)")
+            r.log("[main] sin web: manda el pulsador del ESP32 "
+                  "(la misma pulsacion arma y desarma)")
         else:
             r.log("[main] AVISO: --sin-web con botones.activo APAGADO: el "
                   "carro se queda sin ningun mando. Enciende botones.activo "

@@ -1,25 +1,26 @@
 // ===========================================================================
-// botones.h — Los dos pulsadores de competencia, colgados del ESP32.
+// botones.h — El pulsador de competencia y el LED de estado del ESP32.
 //
 // El reglamento WRO Future Engineers exige que la ronda EMPIECE con una sola
 // accion sobre el robot ya colocado en la pista: nada de teclado, ni pantalla,
-// ni web, ni cable. Los pulsadores van al ESP32 (que es quien tiene los pines
-// libres y el bucle de 100 Hz) y su estado viaja a la Pi en la trama de
-// sensores; la Pi decide QUE significan.
+// ni web, ni cable. UN SOLO PULSADOR hace las dos cosas, como el start/stop de
+// un cronometro:
 //
-//   ARRANQUE  el "start" del reglamento. Lo interpreta la Pi.
-//   PARO      la parada de emergencia. La interpreta la Pi... y ADEMAS corta
-//             aqui mismo (ver mas abajo).
+//     pulsacion con el carro parado  ->  ARMA y arranca la ronda
+//     pulsacion con el carro armado  ->  DESARMA y para
 //
-// CABLEADO (dos cables por pulsador, ninguna resistencia):
+// El pulsador cuelga del ESP32 (que tiene los pines libres y el bucle de
+// 100 Hz) y su estado viaja a la Pi en la trama de sensores; la Pi es quien
+// decide, porque es quien sabe si el carro estaba armado.
 //
-//     GPIO13 ---[ pulsador ARRANQUE ]--- GND
-//     GPIO23 ---[ pulsador PARO     ]--- GND
+// CABLEADO (dos cables, ninguna resistencia):
+//
+//     GPIO13 ---[ pulsador ]--- GND
 //
 // con el pull-up interno: en reposo el pin lee ALTO y al pulsar cae a BAJO.
-// Los pines son constantes del firmware, como los del motor: no se configuran
-// desde la Pi. Se han elegido dos que no son de arranque (strapping) ni de
-// entrada-sola, para que un pulsador pisado al encender no impida el boot.
+// El pin es una constante del firmware, como los del motor: no se configura
+// desde la Pi. El 13 no es pin de arranque (strapping) ni de entrada-sola,
+// asi que un pulsador pisado al encender no impide el boot.
 //
 // POR QUE NIVEL Y NO CONTADOR (al reves que los cruces de linea)
 // Una linea se cruza en 40 ms a velocidad de carrera: si no se latchea y se
@@ -30,15 +31,26 @@
 // el carro AL RECONECTAR, solo. Con nivel, lo que se pierde no se ejecuta:
 // el fallo es "no pasa nada", que delante de un juez es el fallo bueno.
 //
-// EL PARO CORTA AQUI, NO EN LA PI
-// El resto del sistema tiene la emergencia a un viaje de ida y vuelta por el
-// serial (~50 ms) y depende de que el programa de la Pi este sano. Teniendo
-// el pulsador en el ESP32 seria absurdo no usarlo: al confirmarse la
-// pulsacion se enclava un corte local que para el motor en el siguiente tick
-// de 10 ms, aunque la Pi este colgada mandando "adelante". El enclavamiento
-// se suelta cuando la Pi acusa recibo mandando un mando DESARMADO, que es
-// justo lo que hace al enterarse del boton. Asi el operador no tiene que
-// hacer nada raro para volver a armar: pulsa ARRANQUE y ya.
+// LA EMERGENCIA CORTA AQUI, NO EN LA PI
+// Con un solo boton, el ESP32 no sabe que quiere decir una pulsacion... salvo
+// en el caso que importa: si el carro esta ARMADO, lo unico que puede
+// significar es PARAR. Nadie pulsa para armar un carro que ya va andando. Asi
+// que en ese caso se enclava un corte local y el motor se para en el
+// siguiente tick de 10 ms, sin esperar el viaje de ida y vuelta por el serial
+// (~50 ms) y aunque el programa de la Pi este colgado mandando "adelante".
+// El enclavamiento se suelta cuando la Pi acusa recibo (manda un mando
+// desarmado) y ademas el dedo ya no esta encima. Con el carro parado la
+// pulsacion no corta nada: es la de arrancar, y esa la interpreta la Pi.
+//
+// EL LED DE ESTADO (el azul de a bordo, GPIO2 en casi todas las placas)
+// Sin web es lo unico que dice desde fuera que esta pasando. Cuatro patrones
+// que se distinguen de un vistazo a dos metros:
+//
+//     fijo encendido      ARMADO: el carro puede salir corriendo AHORA
+//     un destello corto   listo y desarmado, con la Pi hablando
+//     parpadeo rapido     sin ordenes de la Pi (failsafe): programa caido,
+//                         cable suelto o Pi todavia arrancando
+//     dos destellos       cortado por el pulsador (emergencia enclavada)
 // ===========================================================================
 #ifndef BOTONES_H
 #define BOTONES_H
@@ -86,40 +98,51 @@ class Pulsador {
 };
 
 // --------------------------------------------------------------------------
-// Los dos pulsadores juntos, mas el enclavamiento del corte local de PARO.
+// El pulsador mas el enclavamiento del corte local.
 class Panel {
  public:
-  void iniciar(uint8_t pinArranque, uint8_t pinParo) {
-    arranque_.iniciar(pinArranque);
-    paro_.iniciar(pinParo);
+  void iniciar(uint8_t pin) {
+    puls_.iniciar(pin);
     corte_ = false;
-    paroPrevio_ = false;
+    previo_ = false;
   }
 
-  // Tick de 100 Hz. 'piDesarmada' = el ultimo mando recibido viene sin armar,
-  // o sea que la Pi ya se entero y no hace falta seguir cortando por nuestra
-  // cuenta. Devuelve true si el motor tiene que estar cortado por el boton.
-  bool paso(uint32_t ahora, bool piDesarmada) {
-    arranque_.paso(ahora);
-    const bool paro = paro_.paso(ahora);
-    if (paro && !paroPrevio_) corte_ = true;    // flanco de pulsacion: enclava
-    paroPrevio_ = paro;
-    // Se suelta cuando la Pi acusa recibo (manda desarmado) y ademas el dedo
-    // ya no esta encima: si no, soltarlo con el boton pisado dejaria el carro
-    // listo para salir en cuanto la Pi rearme.
-    if (corte_ && piDesarmada && !paro) corte_ = false;
+  // Tick de 100 Hz. 'piArmada' = el ultimo mando recibido viene armado, o sea
+  // que el carro puede estar moviendose. Devuelve true si el motor tiene que
+  // estar cortado por el boton.
+  bool paso(uint32_t ahora, bool piArmada) {
+    const bool pisado = puls_.paso(ahora);
+    // Flanco de pulsacion CON EL CARRO ARMADO: solo puede querer decir parar.
+    if (pisado && !previo_ && piArmada) corte_ = true;
+    previo_ = pisado;
+    // Se suelta cuando la Pi acusa recibo (desarma) y ademas el dedo ya no
+    // esta encima: soltarlo con el boton pisado dejaria el carro listo para
+    // salir en cuanto la Pi rearmara.
+    if (corte_ && !piArmada && !pisado) corte_ = false;
     return corte_;
   }
 
-  bool arranquePisado() const { return arranque_.pisado(); }
-  bool paroPisado() const { return paro_.pisado(); }
+  bool pisado() const { return puls_.pisado(); }
   bool cortando() const { return corte_; }
 
  private:
-  Pulsador arranque_, paro_;
+  Pulsador puls_;
   bool corte_ = false;
-  bool paroPrevio_ = false;
+  bool previo_ = false;
 };
+
+// --------------------------------------------------------------------------
+// LED de estado. Cada patron son 16 ranuras de 100 ms (ciclo de 1.6 s): el
+// bit N dice si el LED esta encendido en la ranura N. Se lee del reloj, sin
+// estado propio, asi que da igual quien lo llame y cada cuanto.
+static const uint16_t LED_ARMADO  = 0xFFFF;   // fijo encendido
+static const uint16_t LED_LISTO   = 0x0001;   // un destello de 100 ms
+static const uint16_t LED_SIN_PI  = 0x5555;   // parpadeo rapido (5 Hz)
+static const uint16_t LED_CORTE   = 0x0005;   // dos destellos y pausa
+
+inline bool ledEncendido(uint16_t patron, uint32_t ahora) {
+  return ((patron >> ((ahora / 100u) % 16u)) & 1u) != 0;
+}
 
 }  // namespace bot
 

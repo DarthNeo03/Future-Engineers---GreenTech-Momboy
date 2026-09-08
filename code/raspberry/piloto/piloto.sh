@@ -25,9 +25,10 @@
 # './piloto.sh web' y abre http://localhost:8080/.
 #
 # EN COMPETENCIA se corre 'arrancar' (o el servicio de systemd): sin web, sin
-# terminal y sin nadie mirando. El start y la emergencia son los DOS
-# PULSADORES, que cuelgan del ESP32 y llegan por la trama de sensores
-# (params: grupo 'botones'; ver src/botones.py y esp32_carro/botones.h).
+# terminal y sin nadie mirando. El start y la emergencia son EL MISMO
+# PULSADOR, que cuelga del ESP32 y llega por la trama de sensores; el LED azul
+# de la placa dice en que estado esta el carro (params: grupo 'botones'; ver
+# src/botones.py y esp32_carro/botones.h).
 #
 # Variables que se pueden exportar antes de llamar:
 #   PILOTO_PYTHON   python a usar (por defecto .venv/bin/python o python3)
@@ -221,7 +222,7 @@ KillSignal=SIGTERM
 TimeoutStopSec=15
 Restart=on-failure
 RestartSec=3
-# Puerto serie del ESP32 (por ahi llegan tambien los pulsadores) y camara USB.
+# Puerto serie del ESP32 (por ahi llega tambien el boton) y camara USB.
 SupplementaryGroups=dialout video
 StandardOutput=append:$LOG
 StandardError=append:$LOG
@@ -244,7 +245,9 @@ quitar_servicio() {
 }
 
 ayuda() {
-  sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  # El bloque de comentarios de la cabecera, sin los '#'. Se corta solo en la
+  # primera linea de codigo, asi que no hay que ajustar numeros al editarlo.
+  awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "${BASH_SOURCE[0]}"
 }
 
 # -- despacho ---------------------------------------------------------------

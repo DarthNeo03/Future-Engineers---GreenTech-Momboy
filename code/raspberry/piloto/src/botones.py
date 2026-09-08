@@ -1,26 +1,25 @@
 """
-botones.py — Los dos pulsadores de competencia, vistos desde la Pi.
+botones.py — El pulsador de competencia, visto desde la Pi.
 
 El reglamento WRO Future Engineers exige que la ronda EMPIECE con una sola
 accion sobre el robot ya colocado en la pista: nada de teclado, ni pantalla,
 ni web, ni cable. El boton ARMAR de la interfaz no sirve para eso.
 
-LOS PULSADORES CUELGAN DEL ESP32, NO DEL GPIO DE LA PI. El firmware
-(code/esp32_carro/botones.h) los lee a 100 Hz con antirrebote y manda su
-NIVEL en la trama de sensores, 40 veces por segundo. Este modulo solo decide
-QUE significan:
+UN SOLO PULSADOR hace las dos cosas, como el start/stop de un cronometro:
 
-  ARRANQUE   corta -> ARMA y arranca la ronda. Si ya corre, la para.
-             larga -> reinicia la ronda (cronometro, esquinas y maniobras a
-                      cero) SIN arrancar: deja el carro listo en la salida.
-  PARO       corta -> PARADA DE EMERGENCIA: desarma y corta el motor.
-             larga -> apaga la Pi entera, solo si botones.paro_apaga_pi esta
-                      encendido (para no quitarle la corriente con la SD
-                      montada al terminar la ronda).
+    pulsacion con el carro parado    ->  ARMA y arranca la ronda
+    pulsacion con el carro armado    ->  DESARMA y para (emergencia)
+    pulsacion LARGA (opcional)       ->  apaga la Pi, si botones.apagar_con_larga
 
-El de PARO ademas corta la traccion EN EL ESP32, en el tick siguiente, sin
-esperar a que la Pi conteste y aunque la Pi este colgada. Lo que se hace aqui
-al verlo es lo demas: desarmar, parar la carrera y dejarlo escrito en el log.
+CUELGA DEL ESP32, NO DEL GPIO DE LA PI. El firmware
+(code/esp32_carro/botones.h) lo lee a 100 Hz con antirrebote y manda su NIVEL
+en la trama de sensores, 40 veces por segundo. Este modulo solo decide que
+significa, porque es el lado que sabe si el carro estaba armado.
+
+Y el ESP32 ademas CORTA SOLO: si el carro esta armado, una pulsacion no puede
+querer decir otra cosa que parar, asi que enclava el corte y para el motor en
+el tick siguiente, sin esperar a la Pi. Lo que se hace aqui es lo demas:
+desarmar, parar la carrera y dejarlo escrito en el log.
 
 NIVEL Y NO CONTADOR (al reves que los cruces de linea, que si son contadores)
 Un dedo aguanta el pulsador 100-300 ms = 4-12 tramas: el nivel llega de
@@ -33,8 +32,8 @@ corriendo cuando nadie lo ha pedido):
   1. Un pulsador que ya esta pisado cuando este modulo empieza a mirarlo
      queda MUDO hasta que se le ve suelto una vez. Cubre el dedo apoyado, el
      cable al reves y el boton pegado.
-  2. Si el enlace con el ESP32 se cae, se OLVIDA el estado de los pulsadores.
-     Sin esto, un nivel viejo congelado en "pisado" seria una pulsacion larga
+  2. Si el enlace con el ESP32 se cae, se OLVIDA el estado del pulsador. Sin
+     esto, un nivel viejo congelado en "pisado" seria una pulsacion larga
      fantasma, y al reaparecer el enlace, una corta fantasma.
 
 Toda la logica fina (antirrebote y pulsacion larga) vive en Pulsador, que no
@@ -49,21 +48,19 @@ import threading
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
-# Los dos pulsadores, por nombre. Las acciones se registran como
-# "<nombre>_<tipo>": arranque_corta, arranque_larga, paro_corta, paro_larga.
-ARRANQUE = "arranque"
-PARO = "paro"
-NOMBRES = (ARRANQUE, PARO)
+# Solo hay un boton; el nombre es el de la orden de la web (?boton=corta).
+BOTON = "boton"
 
 CORTA = "corta"
 LARGA = "larga"
+TIPOS = (CORTA, LARGA)
 
 
 # ===========================================================================
 # La logica: antirrebote y pulsacion larga, sin enlace y sin hardware
 # ===========================================================================
 class Pulsador:
-    """Un pulsador. Se le da el nivel leido (True = pisado) y el reloj, y
+    """El pulsador. Se le da el nivel leido (True = pisado) y el reloj, y
     devuelve "" | CORTA | LARGA.
 
     La pulsacion CORTA se avisa al SOLTAR (hasta entonces no se sabe si iba a
@@ -71,14 +68,13 @@ class Pulsador:
     pisado, para que el operador note el efecto sin tener que adivinar cuando
     soltar.
 
-    El antirrebote de aqui se suma al del ESP32 (30 ms). No sobra: filtra el
-    frame suelto raro, y sobre todo permite subirlo desde la web si un
+    El antirrebote de aqui se suma al del ESP32 (30 ms). No sobra: filtra la
+    trama suelta rara, y sobre todo permite subirlo desde la web si el
     pulsador viene ruidoso, sin volver a compilar el firmware.
     """
 
-    def __init__(self, nombre: str, antirrebote_ms: float = 50.0,
-                 largo_ms: float = 1500.0):
-        self.nombre = nombre
+    def __init__(self, antirrebote_ms: float = 50.0,
+                 largo_ms: float = 3000.0):
         self.antirrebote_ms = float(antirrebote_ms)
         self.largo_ms = float(largo_ms)
         self.pulsado = False
@@ -135,17 +131,16 @@ class Pulsador:
 # El gestor: sondea el enlace, decide y llama a las acciones
 # ===========================================================================
 class GestorBotones:
-    """Lee el nivel de los pulsadores del ESP32 y llama a las acciones.
+    """Lee el nivel del pulsador del ESP32 y llama a las acciones.
 
-    enlace:   objeto con botones() -> (arranque, paro, corte_esp32, frescos).
-              Puede ser None para probar solo con pulsadores virtuales.
-    acciones: {"arranque_corta": fn, "arranque_larga": fn,
-               "paro_corta": fn,     "paro_larga": fn}
+    enlace:   objeto con boton() -> (pisado, corte_esp32, frescos). Puede ser
+              None para probar solo con pulsaciones virtuales.
+    acciones: {"corta": fn, "larga": fn}
 
     El hilo corre SIEMPRE, tambien con botones.activo apagado y tambien en
-    --simulado: los pulsadores VIRTUALES de la web
-    (/api/cmd?boton=arranque) entran por el mismo camino que los de verdad,
-    asi que la secuencia de competencia se ensaya entera en el PC.
+    --simulado: las pulsaciones VIRTUALES de la web (/api/cmd?boton=corta)
+    entran por el mismo camino que las de verdad, asi que la secuencia de
+    competencia se ensaya entera en el PC.
     """
 
     def __init__(self, cfg: Dict[str, Any], enlace: Any = None,
@@ -156,19 +151,17 @@ class GestorBotones:
         self.acciones = dict(acciones or {})
         self._log = al_log or (lambda t: None)
 
-        self.pulsadores = {
-            n: Pulsador(n, float(cfg.get("antirrebote_ms", 50)),
-                        float(cfg.get("largo_ms", 1500)))
-            for n in NOMBRES}
-        self.ultimo = ""                 # "arranque:corta", para la web
+        self.pulsador = Pulsador(float(cfg.get("antirrebote_ms", 50)),
+                                 float(cfg.get("largo_ms", 3000)))
+        self.ultimo = ""                 # "corta" | "larga", para la web
         self.t_ultimo = 0.0
         self.frescos = False             # hay tramas de sensores al dia
-        self.corte_esp32 = False         # el ESP32 tiene cortado por PARO
+        self.corte_esp32 = False         # el ESP32 tiene cortado por el boton
 
         self._hilo: Optional[threading.Thread] = None
         self._parar = threading.Event()
-        self._virtual = {n: 0.0 for n in NOMBRES}   # pulsaciones de la web
-        self._t_accion = {n: 0.0 for n in NOMBRES}
+        self._virtual = 0.0              # hasta cuando dura la pulsacion web
+        self._t_accion = 0.0
         self._aviso_corte = False
 
     # -- ciclo de vida ----------------------------------------------------
@@ -176,11 +169,10 @@ class GestorBotones:
         if self._hilo is not None:
             return
         if bool(self.cfg.get("activo", True)):
-            self._log("[botones] pulsadores del ESP32: ARRANQUE = start, "
-                      "PARO = emergencia")
+            self._log("[botones] pulsador del ESP32: arma y desarma")
         else:
-            self._log("[botones] pulsadores del ESP32 IGNORADOS "
-                      "(botones.activo): solo quedan los virtuales")
+            self._log("[botones] pulsador del ESP32 IGNORADO "
+                      "(botones.activo): solo quedan las pulsaciones de la web")
         self._parar.clear()
         self._hilo = threading.Thread(target=self._bucle, daemon=True,
                                       name="botones")
@@ -193,83 +185,80 @@ class GestorBotones:
             self._hilo = None
 
     # -- pulsacion desde la web (sin dedo y sin cable) ---------------------
-    def pulsar_virtual(self, nombre: str, tipo: str = CORTA) -> None:
-        if nombre not in NOMBRES:
-            raise ValueError(f"boton '{nombre}': solo hay {list(NOMBRES)}")
+    def pulsar_virtual(self, tipo: str = CORTA) -> None:
+        if tipo not in TIPOS:
+            raise ValueError(f"pulsacion '{tipo}': solo hay {list(TIPOS)}")
         anti = float(self.cfg.get("antirrebote_ms", 50)) / 1000.0
         if tipo == LARGA:
-            dura = float(self.cfg.get("largo_ms", 1500)) / 1000.0 + anti + 0.15
+            dura = float(self.cfg.get("largo_ms", 3000)) / 1000.0 + anti + 0.15
         else:
             dura = anti * 2.0 + 0.10
-        self._virtual[nombre] = time.monotonic() + dura
+        self._virtual = time.monotonic() + dura
 
     # -- bucle -------------------------------------------------------------
-    def _leer_enlace(self) -> Tuple[bool, bool, bool, bool]:
+    def _leer_enlace(self) -> Tuple[bool, bool, bool]:
         if self.enlace is None or not bool(self.cfg.get("activo", True)):
-            return (False, False, False, False)
+            return (False, False, False)
         try:
-            return self.enlace.botones()
+            return self.enlace.boton()
         except Exception as e:
             self._log(f"[botones] no se puede leer el enlace ({e})")
-            return (False, False, False, False)
+            return (False, False, False)
 
     def _bucle(self) -> None:
         while not self._parar.is_set():
             hz = max(20, min(200, int(self.cfg.get("hz", 50))))
             ahora = time.monotonic()
-            arranque, paro, corte, frescos = self._leer_enlace()
+            pisado, corte, frescos = self._leer_enlace()
 
             if frescos != self.frescos:
                 self.frescos = frescos
                 # Se olvida el estado en los DOS sentidos. Al caerse el
                 # enlace, para no leer un nivel viejo congelado. Y al VOLVER,
                 # para no tomar por pulsacion nueva un boton que ya estaba
-                # pisado cuando el enlace regreso: cada pulsador tiene que
-                # verse suelto otra vez antes de que se le haga caso.
-                for p in self.pulsadores.values():
-                    p.reiniciar()
+                # pisado cuando el enlace regreso: tiene que verse suelto otra
+                # vez antes de que se le haga caso.
+                self.pulsador.reiniciar()
             if not frescos:
-                arranque = paro = False
+                pisado = False
 
             if corte != self.corte_esp32:
                 self.corte_esp32 = corte
                 if corte and not self._aviso_corte:
                     self._aviso_corte = True
-                    self._log("[botones] el ESP32 corto la traccion por el "
-                              "pulsador de PARO")
+                    self._log("[botones] el ESP32 corto la traccion: se pulso "
+                              "con el carro armado")
                 elif not corte:
                     self._aviso_corte = False
 
-            niveles = {ARRANQUE: arranque, PARO: paro}
-            for nombre, puls in self.pulsadores.items():
-                # se releen en caliente: la web puede afinar el antirrebote y
-                # los tiempos con el carro encendido, sin reiniciar
-                puls.antirrebote_ms = float(self.cfg.get("antirrebote_ms", 50))
-                puls.largo_ms = float(self.cfg.get("largo_ms", 1500))
-                nivel = niveles[nombre] or (ahora < self._virtual[nombre])
-                evento = puls.paso(nivel, ahora)
-                if evento:
-                    self._disparar(nombre, evento, ahora)
+            # se releen en caliente: la web puede afinar el antirrebote y los
+            # tiempos con el carro encendido, sin reiniciar
+            self.pulsador.antirrebote_ms = float(self.cfg.get("antirrebote_ms", 50))
+            self.pulsador.largo_ms = float(self.cfg.get("largo_ms", 3000))
+            nivel = pisado or (ahora < self._virtual)
+            evento = self.pulsador.paso(nivel, ahora)
+            if evento:
+                self._disparar(evento, ahora)
             time.sleep(1.0 / hz)
 
-    def _disparar(self, nombre: str, tipo: str, ahora: float) -> None:
+    def _disparar(self, tipo: str, ahora: float) -> None:
         muerto = float(self.cfg.get("repeticion_ms", 800)) / 1000.0
-        if ahora - self._t_accion[nombre] < muerto:
+        if ahora - self._t_accion < muerto:
             # Un doble toque involuntario justo despues del start pararia la
             # ronda recien empezada: para eso existe este tiempo muerto.
-            self._log(f"[botones] {nombre} {tipo} ignorado (tiempo muerto)")
+            self._log(f"[botones] pulsacion {tipo} ignorada (tiempo muerto)")
             return
-        self._t_accion[nombre] = ahora
-        self.ultimo = f"{nombre}:{tipo}"
+        self._t_accion = ahora
+        self.ultimo = tipo
         self.t_ultimo = time.time()
-        self._log(f"[boton] {nombre.upper()} pulsacion {tipo}")
-        fn = self.acciones.get(f"{nombre}_{tipo}")
+        self._log(f"[boton] pulsacion {tipo}")
+        fn = self.acciones.get(tipo)
         if fn is None:
             return
         try:
             fn()
         except Exception as e:
-            self._log(f"[botones] la accion {nombre}_{tipo} fallo: "
+            self._log(f"[botones] la accion {tipo} fallo: "
                       f"{type(e).__name__}: {e}")
 
     # -- lectura para la web ----------------------------------------------
@@ -279,7 +268,7 @@ class GestorBotones:
             "fuente": "esp32",
             "frescos": self.frescos,
             "corte_esp32": self.corte_esp32,
-            "pulsado": {n: p.pulsado for n, p in self.pulsadores.items()},
+            "pulsado": self.pulsador.pulsado,
             "ultimo": self.ultimo,
             "hace_s": (round(time.time() - self.t_ultimo, 1)
                        if self.t_ultimo else None),
@@ -287,7 +276,7 @@ class GestorBotones:
 
 
 # ===========================================================================
-# Apagado de la Pi (pulsacion larga de PARO, si esta permitido)
+# Apagado de la Pi (pulsacion larga, si esta permitido)
 # ===========================================================================
 def apagar_pi(al_log: Optional[Callable[[str], None]] = None) -> bool:
     """Apaga la Pi ordenadamente. Quitarle la corriente con la tarjeta SD
