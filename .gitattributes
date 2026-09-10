@@ -1,0 +1,13 @@
+# Normaliza finales de linea: en el repo siempre LF, en Windows lo que toque.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.stl binary
+*.3mf binary
+*.f3d binary
+*.step binary
+*.stp binary
