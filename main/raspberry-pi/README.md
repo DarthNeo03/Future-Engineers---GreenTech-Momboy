@@ -393,6 +393,57 @@ Comprobacion aparte, que el codigo no puede hacer por ti: si en la web
 por color ignora las azules y gira a la derecha en cada naranja, que en
 antihorario es la linea de SALIDA de la curva. Dejalo en AUTO salvo en pruebas.
 
+## Cuatro cosas que hacian que el carro se quedara pegado en la curva
+
+Todas salen del mismo sitio —**que pasa cuando la curva no sale perfecta**— y
+se alimentaban entre ellas.
+
+**1. El timeout se tomaba por meta cumplida.** Al vencer `esquina_color.max_ms`
+el codigo hacia:
+
+```python
+if vencido:
+    self.rumbo_objetivo = yaw       # "doy por buena la curva a medias"
+```
+
+Si la curva iba por 50 de los 90 grados, el carro salia **40 grados cruzado** y
+el giroscopio se dedicaba a MANTENER ese rumbo, derecho contra la pared de
+enfrente. Y como `rumbo_recta` si se habia avanzado los 90 al empezar la curva,
+el desvio quedaba en −40: ni re-anclaje (pide +65) ni rescate (pide 110), asi
+que nadie lo corregia. Ahora el objetivo sigue siendo la recta nueva y lo que
+falte lo termina el control de rumbo en recta, acotado por `yaw_max`. En la web
+sale `giros_vencidos`: si sube, la curva no cabe en `max_ms`.
+
+**2. La curva no cabia en el tiempo que tenia.** `max_ms` estaba en 3500 ms.
+Con `dir_pct` 75 el radio sale de unos 424 mm, o sea 666 mm de arco para los
+90 grados; a `vel_min_pct` 22 (187 mm/s, que es lo que se usa con el muro
+encima) eso son **3,6 s**. Vencia casi siempre. Ahora `dir_pct` 90 (radio
+~350 mm, 550 mm de arco) y `max_ms` 5000.
+
+**3. Al salir de la curva, la vision abria otra en el acto.** Terminado el
+giro, el carro sigue metido en la geometria de la esquina: el pasillo todavia
+mide menos que `girar_bajo_mm`, asi que la vision disparaba una esquina nueva
+inmediatamente. Eso avanzaba `rumbo_recta` **otros 90 grados**, el carro se
+ponia a doblar 180 en el mismo sitio, y cada uno de esos giros de mas contaba
+una esquina. `min_recto_ms` (700 ms, unos 24 cm) no daba ni de lejos para
+salir de la curva. Ahora hay `navegacion.tras_giro_ms` (1200 ms) durante los
+cuales **la vision** no puede abrir otra esquina; **la linea del piso si**,
+porque esa es un hecho fisico y trae su propio refractario.
+
+**4. Y aunque la abriera, no puede sumar otros 90.** Si la curva anterior
+acabo por tiempo con grados pendientes, `_apuntar_a_la_recta_siguiente` ya no
+avanza la referencia: termina la que estaba. El aviso es un **hecho
+registrado** (`_giro_incompleto`), no un umbral de angulo, porque entrar
+torcido en contra —esquivando un pilar hacia el muro exterior— se parece mucho
+y ahi la referencia SI tiene que avanzar.
+
+Ademas, `giro_tolerancia_deg` estaba en **14,1 grados**: la curva se daba por
+hecha hasta 14 grados corta, que en un metro de recta son 25 cm de deriva
+contra la pared. Vuelve al 8 de siempre. Y `apertura_pct` baja de 25 a 8: ese
+"giro abierto de camion" empuja al carro **contra la pared externa** justo al
+entrar en la curva, y con 307 mm de radio minimo en un carril de 1000 mm no
+hace ninguna falta.
+
 ## La reversa del escape tiene que mirar hacia donde dobla la ronda
 
 Sintoma en pista, en antihorario: el carro llega a la esquina, no cabe,
@@ -888,6 +939,9 @@ Detalles que importan:
 | `esquina_color.refractario_ms` | Ventana en la que la misma linea pisada otra vez no cuenta. |
 | `esquina_color.contar_giro_sin_linea` | Que el giro de 90 cuente la esquina que el TCS no vio. Dejalo encendido: sin el, una linea perdida deja la ronda sin parada en meta. |
 | `navegacion.linea_dispara_esquina` | **Encendido siempre en modo color.** Es lo que hace que la linea GIRE y no solo cuente. Apagado, el carro cruza la linea y sigue de largo hasta la pared. |
+| `navegacion.tras_giro_ms` | Tiempo tras una curva en el que la vision no puede abrir otra. Subelo si el carro encadena dos giros en la misma esquina. |
+| `esquina_color.max_ms` / `dir_pct` | Cuanto tiempo tiene la curva y cuanto volante puede meter. Si `giros_vencidos` sube en la web, la curva no cabe: mas `max_ms` o mas `dir_pct`. |
+| `navegacion.apertura_pct` | Cuanto se abre hacia la pared EXTERNA antes de doblar. Con radio de sobra en el carril, dejalo bajo. |
 | `esquina_color.ignoradas_para_invertir` | Lineas del otro color ignoradas, sin contar ni una esquina, antes de aceptar que el sentido salio al reves y corregirlo. |
 | `carrera.vueltas` / `autostop` | 3 y encendido para una ronda de verdad. Revisalos antes de cada tanda: un perfil de pruebas con 1 vuelta o con el autostop apagado parece "el carro no para". |
 | `tcs.c_min` | Claro minimo para clasificar. **Tiene que quedar por debajo del claro de la LINEA**, no del piso: es la trampa que dejo al carro sin ver las azules. |

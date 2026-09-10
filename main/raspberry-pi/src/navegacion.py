@@ -178,6 +178,13 @@ class Navegador:
         self._t_reanclar = 0.0        # desde cuando se ve la esquina sin registrar
         self._t_ultimo_reanclaje = 0.0
         self.reanclajes = 0
+        ### cuando acabo la ultima curva: durante tras_giro_ms la VISION no
+        ### puede abrir otra (ver el bloque de disparo)
+        self._t_fin_giro = 0.0
+        ### la ultima curva acabo por TIEMPO con grados pendientes: hasta que
+        ### el carro alcance la recta nueva no se puede apuntar otra esquina
+        self._giro_incompleto = False
+        self.giros_vencidos = 0
 
     # ------------------------------------------------------------------
     def reiniciar(self):
@@ -196,6 +203,8 @@ class Navegador:
         self._color_apuntado = False
         self._t_pilar_fuera = 0.0
         self._apuntado = True
+        self._t_fin_giro = 0.0
+        self._giro_incompleto = False
         self._t_reanclar = 0.0
 
     @property
@@ -297,6 +306,14 @@ class Navegador:
             self._vel_cierre = 0.7 * self._vel_cierre + 0.3 * inst
         self._pasillo_prev = pasillo
         self._t_pasillo = ahora
+
+        # La curva que acabo por tiempo deja grados pendientes: en cuanto el
+        # carro alcanza la recta nueva, la deuda esta pagada y ya se puede
+        # apuntar la esquina siguiente.
+        if (self._giro_incompleto and usar_yaw and self.rumbo_recta is not None
+                and abs(_norm_ang(self.rumbo_recta - yaw))
+                < float(cfg.get("giro_tolerancia_deg", 8.0))):
+            self._giro_incompleto = False
 
         aviso_interna = self.detector_interna.paso(p, cfg)
 
@@ -426,9 +443,15 @@ class Navegador:
             if usar_yaw and self.rumbo_objetivo is not None:
                 err = _norm_ang(self.rumbo_objetivo - yaw)
                 if abs(err) < float(cfg.get("giro_tolerancia_deg", 8.0)) or venc:
-                    if venc:
-                        self.rumbo_objetivo = yaw
-                    self._terminar_giro()
+                    ### EL TIMEOUT NO ES UNA META ALCANZADA. Antes, al vencer
+                    ### el tiempo se hacia rumbo_objetivo = yaw, o sea "doy
+                    ### por bueno el rumbo a medias": si la curva iba por 50
+                    ### de los 90, el carro salia 40 grados cruzado y el
+                    ### giroscopio se dedicaba a MANTENER ese rumbo, derecho
+                    ### contra la pared de enfrente. Ahora el objetivo sigue
+                    ### siendo la recta nueva y lo que falte lo termina el
+                    ### control de rumbo en recta, acotado por yaw_max.
+                    self._terminar_giro(motivo_venc=venc)
                 else:
                     d = _lim(err * float(cfg.get("yaw_kp", 1.6)) * 3.0,
                              -dir_max, dir_max)
@@ -479,6 +502,21 @@ class Navegador:
                     self.reanclajes += 1
                     self._t_ultimo_reanclaje = ahora
                     self._t_reanclar = 0.0
+                    self._t_fin_giro = ahora
+                    ### ESTO FUE UNA ESQUINA, y hasta ahora no se contaba: el
+                    ### re-anclaje sabia que el carro habia doblado una curva
+                    ### que el codigo no registro -lo dice el giroscopio, 90
+                    ### grados EN EL SENTIDO DE LA RONDA sostenidos- y se
+                    ### limitaba a corregir el rumbo. Es el tercer testigo de
+                    ### la esquina, ademas de la linea y del giro ejecutado, y
+                    ### el unico que sigue hablando cuando el TCS se pierde la
+                    ### linea Y la curva se tomo sola por el hueco del muro
+                    ### interno. El conteo lo filtra por su cuenta (una esquina
+                    ### se cuenta una sola vez).
+                    try:
+                        self.al_completar_giro(sentido)
+                    except Exception:
+                        pass
                     desvio = _norm_ang(yaw - self.rumbo_recta)
             else:
                 self._t_reanclar = 0.0
@@ -500,6 +538,20 @@ class Navegador:
 
         recto_estable = (ahora - self.t_estado) * 1000 >= float(
             cfg.get("min_recto_ms", 700))
+        ### UNA CURVA, UNA ESQUINA — Y NO DOS SEGUIDAS.
+        ### Al terminar el giro el carro sigue metido en la geometria de la
+        ### curva: el pasillo todavia mide menos que girar_bajo_mm, asi que la
+        ### vision disparaba OTRA esquina en el acto. Eso avanzaba el rumbo de
+        ### referencia otros 90 grados, el carro se ponia a doblar 180 en el
+        ### mismo sitio y se quedaba pegado en la esquina; ademas cada uno de
+        ### esos giros de mas contaba una esquina y descuadraba las vueltas.
+        ### min_recto_ms (700 ms) era demasiado corto para eso: a 340 mm/s son
+        ### 24 cm, y salir de una curva cuesta bastante mas. Durante
+        ### tras_giro_ms la VISION no puede abrir otra esquina; la LINEA del
+        ### piso si, porque esa es un hecho fisico y trae su propio refractario.
+        recien_girado = (self._t_fin_giro > 0.0 and
+                         (ahora - self._t_fin_giro) * 1000 < float(
+                             cfg.get("tras_giro_ms", 1200)))
         ### en modo color la vision puede quedarse sin voto para DISPARAR
         ### (esquina_color.vision_dispara); frenar y escapar siguen igual
         vision_dispara = (not self.modo_color
@@ -515,7 +567,7 @@ class Navegador:
             disparo = "linea del piso: dentro de la esquina"
         elif en_esquina and self._esquina_atendida:
             pass                     # curva ya girada: a esperar la salida
-        elif recto_estable and vision_dispara:
+        elif recto_estable and vision_dispara and not recien_girado:
             frontal = p.frontal_mm if bool(cfg.get("usar_rectas", True)) else None
             if frontal is not None and frontal < float(cfg.get("girar_bajo_mm", 650.0)):
                 # pared cruzada delante: esto es una esquina identificada, no
@@ -754,9 +806,9 @@ class Navegador:
         if usar_yaw and self.rumbo_objetivo is not None:
             err = _norm_ang(self.rumbo_objetivo - yaw)
             if abs(err) < float(cfg.get("giro_tolerancia_deg", 8.0)) or vencido:
-                if vencido:
-                    self.rumbo_objetivo = yaw
-                self._terminar_giro()
+                ### igual que en el giro normal: al vencer el tiempo NO se
+                ### adopta el rumbo a medias como bueno (ver ahi el porque)
+                self._terminar_giro(motivo_venc=vencido)
                 return None
             ### misma ley que el giro normal (P sobre el error de rumbo),
             ### pero topada en dir_pct: asi va soltando volante al final
@@ -851,20 +903,40 @@ class Navegador:
                 base = _norm_ang(base + lado * grados)
                 self.reanclajes += 1
                 self._t_ultimo_reanclaje = time.time()
+        if self._giro_incompleto:
+            ### LA CURVA ANTERIOR NO SE TERMINO (acabo por tiempo y el carro
+            ### todavia le debe grados a la recta nueva). El rumbo de
+            ### referencia YA esta avanzado para esta esquina: sumarle otros 90
+            ### lo pondria a doblar 180 en el mismo sitio, que es exactamente
+            ### como se quedaba pegado en la curva. Se termina la que estaba.
+            ### No vale un umbral de angulo aqui: entrar torcido en contra
+            ### (esquivando un pilar hacia el muro exterior) se parece mucho, y
+            ### ahi la referencia SI tiene que avanzar. Por eso el aviso es un
+            ### hecho registrado, no una medida.
+            self.rumbo_objetivo = self.rumbo_recta
+            return
         self.rumbo_recta = _norm_ang(base + lado * grados)
         self.rumbo_objetivo = self.rumbo_recta
 
     def _terminar_giro(self, yaw: Optional[float] = None,
-                       reanclar: bool = False):
+                       reanclar: bool = False, motivo_venc: bool = False):
         """reanclar: fijar el rumbo de la recta nueva al yaw actual. Se usa al
         salir del giro de dos tiempos (que mide angulo acumulado y no lleva
         rumbo objetivo). En el giro normal por yaw NO se reancla: ese rumbo
         objetivo ya es exactamente 'el de antes mas 90', y sustituirlo por el
-        yaw real meteria el error de cada giro en la referencia siguiente."""
+        yaw real meteria el error de cada giro en la referencia siguiente.
+
+        motivo_venc: la curva se acabo por TIEMPO, no por haber clavado el
+        rumbo. No cambia nada aqui (el objetivo sigue siendo la recta nueva y
+        lo que falte lo termina el control de rumbo en recta); solo queda
+        anotado para la web."""
         lado = self.lado_giro
         rescate = self._giro_es_rescate
         self._giro_es_rescate = False
         self._apuntado = True
+        self._t_fin_giro = time.time()
+        self._giro_incompleto = bool(motivo_venc)
+        self.giros_vencidos += int(bool(motivo_venc))
         self._cambiar(RECTO)
         self.pd.reiniciar()
         if reanclar:
@@ -948,4 +1020,9 @@ class Navegador:
                 m["rumbo_recta"] = round(self.rumbo_recta, 1)
         if self.reanclajes:
             m["reanclajes"] = self.reanclajes
+        ### curvas que acabaron por TIEMPO en vez de por clavar el rumbo. Si
+        ### esto sube, la curva no cabe en esquina_color.max_ms: o va muy
+        ### despacio (vel_min_pct) o el volante esta muy abierto (dir_pct).
+        if self.giros_vencidos:
+            m["giros_vencidos"] = self.giros_vencidos
         return m

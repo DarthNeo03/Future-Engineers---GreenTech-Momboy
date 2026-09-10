@@ -912,6 +912,85 @@ prueba("color: nunca retrocede", all(t[1] >= 0 for t in tr1))
 prueba("color: no usa el giro normal ni el 2T",
        GIRO not in est1 and GIRO_2T not in est1, str(set(est1)))
 
+# --- la curva que se acaba por TIEMPO no da por bueno el rumbo a medias ---
+### Se quedaba pegado en la esquina por esto: al vencer max_ms se hacia
+### rumbo_objetivo = yaw, o sea "doy por buena la curva a medias". Con 50 de
+### los 90 hechos, el carro salia 40 grados cruzado y el giroscopio se dedicaba
+### a MANTENER ese rumbo, derecho contra la pared de enfrente.
+n_v, g_v, _ = nav_color(max_ms=1)          # vence en el primer tick
+g_v.evento_tcs("naranja")
+g_v.tomar_disparo(); n_v.rearmar_esquina()
+n_v.paso(p_libre, 0.0, 1, en_esquina=True)              # PRE_GIRO
+n_v.paso(p_libre, 0.0, 1, en_esquina=True)              # GIRO_COLOR
+time.sleep(0.01)
+d_v = n_v.paso(p_libre, 20.0, 1, en_esquina=True)       # vence con 20/90 hechos
+prueba("curva vencida: no adopta el rumbo a medias como bueno",
+       n_v.estado == RECTO and abs(_norm(n_v.rumbo_objetivo - 90.0)) < 1e-6,
+       f"{n_v.estado} obj={n_v.rumbo_objetivo}")
+prueba("curva vencida: queda anotada", n_v.giros_vencidos == 1,
+       str(n_v.giros_vencidos))
+d_v2 = n_v.paso(p_libre, 20.0, 1)
+prueba("curva vencida: en recta el volante SIGUE cerrando la curva",
+       d_v2.direccion > 20, f"dir={d_v2.direccion}")
+
+# ...y esa curva a medias no puede avanzar el rumbo otros 90 grados
+n_v.rearmar_esquina()
+n_v.paso(p_libre, 20.0, 1, en_esquina=True)
+n_v.paso(p_libre, 20.0, 1, en_esquina=True)
+prueba("curva a medias: la esquina siguiente no suma otros 90 (nada de 180)",
+       abs(_norm(n_v.rumbo_recta - 90.0)) < 1e-6, f"recta={n_v.rumbo_recta}")
+# pagada la deuda, la referencia vuelve a avanzar normalmente
+n_v.paso(p_libre, 90.0, 1)
+prueba("curva a medias: alcanzada la recta, se puede apuntar la siguiente",
+       n_v._giro_incompleto is False)
+
+# --- una curva, una esquina: la vision no puede abrir otra al salir -------
+### Al terminar el giro el carro sigue dentro de la geometria de la curva y el
+### pasillo aun mide menos que girar_bajo_mm, asi que la vision disparaba OTRA
+### esquina en el acto: 180 grados en el mismo sitio y una esquina de mas en el
+### marcador. min_recto_ms (700 ms) no daba para salir de la curva.
+v_tg = params_mod.valores_por_defecto()
+v_tg["navegacion"].update(min_recto_ms=0, retardo_giro_ms=0, tras_giro_ms=1000)
+n_tg = Navegador(v_tg["navegacion"], v_tg["limites"], v_tg["escape"])
+n_tg._t_fin_giro = time.time()                 # acaba de salir de una curva
+d_tg = n_tg.paso(p_mitad, 0.0, 1)              # pasillo cerrado: la vision querria girar
+prueba("tras la curva la vision no abre otra esquina",
+       n_tg.estado == RECTO, f"{n_tg.estado} {d_tg.motivo}")
+n_tg2 = Navegador(dict(v_tg["navegacion"], tras_giro_ms=0),
+                  v_tg["limites"], v_tg["escape"])
+n_tg2._t_fin_giro = time.time()
+n_tg2.paso(p_mitad, 0.0, 1)
+prueba("(control) con tras_giro_ms en 0 si la abre",
+       n_tg2.estado in (PRE_GIRO, GIRO), n_tg2.estado)
+# la LINEA del piso si puede: es un hecho fisico, no una interpretacion
+n_tg3 = Navegador(v_tg["navegacion"], v_tg["limites"], v_tg["escape"])
+n_tg3._t_fin_giro = time.time()
+n_tg3.paso(p_libre, 0.0, 1, en_esquina=True)
+prueba("pero la linea del piso si abre esquina dentro de esa ventana",
+       n_tg3.estado in (PRE_GIRO, GIRO), n_tg3.estado)
+
+# --- la esquina que nadie registro tambien cuenta -------------------------
+### El re-anclaje ya sabia que el carro habia doblado una curva que el codigo
+### no registro (90 grados de giroscopio en el sentido de la ronda,
+### sostenidos) y se limitaba a corregir el rumbo. Ahora ademas la cuenta: es
+### el tercer testigo de la esquina, y el unico que habla cuando el TCS pierde
+### la linea Y la curva se toma sola por el hueco del muro interno.
+v_ra = params_mod.valores_por_defecto()
+v_ra["navegacion"].update(min_recto_ms=0, reanclar_ms=0)
+g_ra = GestorLineas(dict(lcfg, esquina_max_ms=60000),
+                    cfg_color=dict(v_ra["esquina_color"], activo=True))
+g_ra.sentido = HORARIO
+n_ra = Navegador(v_ra["navegacion"], v_ra["limites"], v_ra["escape"],
+                 al_completar_giro=g_ra.giro_completado,
+                 cfg_color=dict(v_ra["esquina_color"], activo=True))
+n_ra.paso(p_libre, 0.0, 1)            # recta a 0
+n_ra.paso(p_libre, 90.0, 1)           # 90 girados sin que nadie lo registrara
+n_ra.paso(p_libre, 90.0, 1)
+prueba("esquina sin registrar: el re-anclaje la detecta",
+       n_ra.reanclajes == 1, str(n_ra.reanclajes))
+prueba("esquina sin registrar: y ahora tambien la cuenta",
+       g_ra.esquinas == 1, f"{g_ra.esquinas} {g_ra.ultimo_evento}")
+
 # aunque el 2T este encendido, en modo color no se usa
 n2t, g2tc, _ = nav_color()
 n2t.g2t["activo"] = True

@@ -64,10 +64,10 @@
      "ttc_min_s": 0.16,
      "dir_giro": 85.0,
      "retardo_giro_ms": 220,
-     "apertura_pct": 25.0,
+     "apertura_pct": 8.0,
      "apertura_min_libre_mm": 400.0,
      "giro_grados": 90.0,
-     "giro_tolerancia_deg": 14.096,
+     "giro_tolerancia_deg": 8.0,
      "giro_max_ms": 3000,
      "min_recto_ms": 700,
      "cobertura_esquina": 0.22,
@@ -83,7 +83,8 @@
      "reanclar_rumbo": true,
      "reanclar_desde_deg": 65.0,
      "reanclar_max_deg": 135.0,
-     "reanclar_ms": 400
+     "reanclar_ms": 400,
+     "tras_giro_ms": 1200
     },
     "giro2t": {
      "activo": false,
@@ -100,10 +101,10 @@
     },
     "esquina_color": {
      "activo": true,
-     "dir_pct": 75.0,
+     "dir_pct": 90.0,
      "vel_max_pct": 40,
      "vel_min_pct": 22,
-     "max_ms": 3500,
+     "max_ms": 5000,
      "ceder_al_pilar": true,
      "reanudar": true,
      "reanudar_tras_ms": 400,
@@ -149,7 +150,7 @@
      "gain": 2
     },
     "carrera": {
-     "vueltas": 1,
+     "vueltas": 3,
      "esquinas_por_vuelta": 4,
      "sentido": "auto",
      "parada_ms": 1400,

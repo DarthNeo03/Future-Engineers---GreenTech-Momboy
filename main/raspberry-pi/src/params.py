@@ -159,6 +159,7 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "giro_grados": _p("float", 90.0, "Grados de cada giro de esquina (la pista es cuadrada).", 30.0, 120.0),
         "giro_tolerancia_deg": _p("float", 8.0, "(con giroscopio) error de rumbo con el que se da el giro por terminado.", 2.0, 30.0),
         "giro_max_ms": _p("int", 3000, "Tiempo maximo dentro de un giro antes de rendirse y seguir.", 500, 8000),
+        "tras_giro_ms": _p("int", 1200, "Tras terminar una curva, tiempo durante el cual la VISION no puede abrir otra esquina. Al salir del giro el carro sigue dentro de la geometria de la curva y el pasillo aun mide menos que girar_bajo_mm: sin esto se disparaba una segunda esquina en el acto, el rumbo de referencia avanzaba otros 90 grados y el carro se ponia a doblar 180 en el mismo sitio (y contaba esquinas de mas). La LINEA del piso si puede disparar dentro de esta ventana: esa es un hecho fisico.", 0, 5000),
         "min_recto_ms": _p("int", 700, "Tiempo minimo en recto antes de admitir OTRA esquina (evita encadenar giros sobre si mismo).", 0, 4000),
         "cobertura_esquina": _p("float", 0.22, "Si la banda del lado interno pasa de ver muro a ver menos que esta fraccion, se dispara la esquina (el muro interno desaparece en cada esquina).", 0.05, 0.8),
         "giro_por_linea": _p("bool", True, "Permitir que el cruce de linea del piso (TCS/camara) tambien dispare el giro cuando el pasillo ya se esta cerrando."),
