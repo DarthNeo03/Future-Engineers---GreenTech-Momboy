@@ -1,18 +1,18 @@
 """
-servidor.py — Lo que ve el carro, en el movil, en carrito.local:8080
+servidor.py — La web de depuracion en http://carrito.local:8080/
 
-Solo biblioteca estandar (http.server) + OpenCV para el JPEG: nada de Flask.
-Menos cosas que instalar en la Pi y menos que se rompa el dia de la competencia.
+Solo biblioteca estandar (http.server) + OpenCV para el JPEG. La pagina vive
+en src/web/index.html y se sirve desde disco (editar y F5, sin reiniciar).
 
-Rutas
-    /                pagina de control (movil primero)
-    /stream.mjpg     video anotado: detecciones, perfil del muro, ruedas, decision
-    /mascara.mjpg    la mascara binaria del muro, para depurar la calibracion
-    /api/estado      JSON con todo el estado
-    /api/cmd?...     ordenes (armar, modo, vmax, ganancias, manual...)
-
-El stream es MJPEG multipart: funciona en cualquier navegador con un <img>,
-sin JavaScript ni WebRTC, y si la red se corta se reengancha solo.
+Rutas:
+    /                    la pagina
+    /stream.mjpg         video: ?vista=normal|cruda|piso|mascara&color=rojo
+    /api/estado          estado completo (JSON)
+    /api/esquema         esquema de parametros (la web arma los sliders sola)
+    /api/valores         valores actuales de todos los parametros
+    /api/color?color=x   parametros del color x
+    /api/registro        ultimas lineas del log
+    /api/cmd?...         TODAS las ordenes (ver _cmd)
 """
 
 from __future__ import annotations
@@ -22,159 +22,22 @@ import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import cv2
-import numpy as np
 
-PAGINA = """<!DOCTYPE html>
-<html lang="es"><head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-<title>Carrito WRO</title>
-<style>
- *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
- body{margin:0;background:#0f1115;color:#e8eaed;font:14px system-ui,Arial;padding:10px}
- h1{font-size:1em;margin:0 0 8px;color:#9aa0a6;font-weight:600}
- img{width:100%;border-radius:10px;background:#000;display:block}
- .fila{display:flex;gap:8px;margin:10px 0}
- button{flex:1;padding:16px 8px;font-size:1em;font-weight:700;border:0;border-radius:10px;
-        background:#2b5cd9;color:#fff;touch-action:manipulation}
- button.off{background:#2a2f3a;color:#aab}
- #btnArmar.on{background:#1a7f37}
- #btnStop{background:#c62828}
- .caja{background:#171a21;border-radius:10px;padding:10px;margin:10px 0}
- .et{display:flex;justify-content:space-between;color:#9aa0a6;font-size:.85em;margin-bottom:2px}
- input[type=range]{width:100%;height:34px}
- table{width:100%;font-size:.85em;border-collapse:collapse}
- td{padding:2px 0;color:#c8ccd2} td:first-child{color:#8b9199;width:45%}
- .ok{color:#4ade80} .mal{color:#f87171} .avi{color:#fbbf24}
- .tabs{display:flex;gap:6px;margin-bottom:8px}
- .tabs button{padding:8px;font-size:.85em}
-</style></head><body>
-<h1>Carrito WRO &mdash; Futuros Ingenieros</h1>
-<img id="cam" src="/stream.mjpg" alt="camara">
+from . import color_config as cc
+from . import params as params_mod
 
-<div class="fila">
-  <button id="btnArmar" onclick="cmd('armar','1')">ARMAR</button>
-  <button id="btnStop" onclick="cmd('emergencia','1')">PARAR</button>
-</div>
-
-<div class="tabs">
-  <button onclick="cmd('modo','auto')" id="mAuto">AUTO</button>
-  <button onclick="cmd('modo','manual')" id="mManual" class="off">MANUAL</button>
-  <button onclick="verMascara()" id="mMask" class="off">MASCARA</button>
-</div>
-
-<div class="caja">
-  <div class="et"><span>Velocidad maxima (PWM tope del ESP32)</span><span id="vVmax">-</span></div>
-  <input type="range" id="vmax" min="0" max="255" oninput="lz('vmax',this.value)">
-  <div class="et"><span>Velocidad de crucero</span><span id="vCru">-</span>
-  </div><input type="range" id="crucero" min="0" max="100" oninput="lz('vel_crucero',this.value)">
-  <div class="et"><span>Velocidad en giro</span><span id="vGir">-</span></div>
-  <input type="range" id="giro" min="0" max="100" oninput="lz('vel_giro',this.value)">
-</div>
-
-<div class="caja">
-  <div class="et"><span>Estrategia</span><span id="vEst">-</span></div>
-  <div class="fila">
-    <button onclick="cmd('estrategia','centrado')">Centrado</button>
-    <button onclick="cmd('estrategia','pared')">Seguir pared</button>
-  </div>
-  <div class="et"><span>Kp</span><span id="vKp">-</span></div>
-  <input type="range" id="kp" min="0" max="300" oninput="lz('kp',this.value)">
-  <div class="et"><span>Kd</span><span id="vKd">-</span></div>
-  <input type="range" id="kd" min="0" max="200" oninput="lz('kd',this.value)">
-  <div class="et"><span>Umbral de giro</span><span id="vGb">-</span></div>
-  <input type="range" id="girar" min="0" max="100" oninput="lz('girar_bajo',this.value/100)">
-</div>
-
-<div class="caja" id="cajaManual" style="display:none">
-  <div class="et"><span>Manual: velocidad</span><span id="vMv">0</span></div>
-  <input type="range" id="mv" min="-60" max="60" value="0" oninput="man()"
-         onchange="this.value=0;man()">
-  <div class="et"><span>Manual: direccion</span><span id="vMd">0</span></div>
-  <input type="range" id="md" min="-100" max="100" value="0" oninput="man()"
-         onchange="this.value=0;man()">
-</div>
-
-<div class="caja"><table id="tel"></table></div>
-<div class="fila">
-  <button onclick="cmd('calibrar_imu','1')" class="off">Calibrar giroscopio</button>
-  <button onclick="cmd('guardar','1')" class="off">Guardar ajustes</button>
-</div>
-
-<script>
-let ultimo = 0, tocando = 0;
-function cmd(k,v){ fetch('/api/cmd?'+k+'='+encodeURIComponent(v)).then(estado); }
-function lz(k,v){ tocando = Date.now(); cmd(k,v); }
-function man(){
-  const v = +document.getElementById('mv').value, d = +document.getElementById('md').value;
-  document.getElementById('vMv').textContent = v;
-  document.getElementById('vMd').textContent = d;
-  tocando = Date.now();
-  fetch('/api/cmd?manual='+v+','+d);
-}
-function verMascara(){
-  const img = document.getElementById('cam');
-  img.src = img.src.indexOf('mascara')>0 ? '/stream.mjpg' : '/mascara.mjpg';
-}
-function fila(t,k,v,c){ t.innerHTML += '<tr><td>'+k+'</td><td class="'+(c||'')+'">'+v+'</td></tr>'; }
-function estado(){
-  fetch('/api/estado').then(r=>r.json()).then(s=>{
-    document.getElementById('btnArmar').className = s.armado ? 'on' : '';
-    document.getElementById('btnArmar').textContent = s.armado ? 'ARMADO (pulsa para soltar)' : 'ARMAR';
-    document.getElementById('btnArmar').setAttribute('onclick',
-       "cmd('armar','"+(s.armado?'0':'1')+"')");
-    document.getElementById('mAuto').className   = s.modo=='auto'   ? '' : 'off';
-    document.getElementById('mManual').className = s.modo=='manual' ? '' : 'off';
-    document.getElementById('cajaManual').style.display = s.modo=='manual' ? '' : 'none';
-
-    if (Date.now() - tocando > 1500) {
-      document.getElementById('vmax').value    = s.limites.vmax;
-      document.getElementById('crucero').value = s.limites.vel_crucero;
-      document.getElementById('giro').value    = s.limites.vel_giro;
-      document.getElementById('kp').value      = s.navegacion.kp;
-      document.getElementById('kd').value      = s.navegacion.kd;
-      document.getElementById('girar').value   = Math.round(s.navegacion.girar_bajo*100);
-    }
-    document.getElementById('vVmax').textContent = s.limites.vmax;
-    document.getElementById('vCru').textContent  = s.limites.vel_crucero+'%';
-    document.getElementById('vGir').textContent  = s.limites.vel_giro+'%';
-    document.getElementById('vKp').textContent   = s.navegacion.kp;
-    document.getElementById('vKd').textContent   = s.navegacion.kd;
-    document.getElementById('vGb').textContent   = s.navegacion.girar_bajo.toFixed(2);
-    document.getElementById('vEst').textContent  = s.navegacion.estrategia;
-
-    const t = document.getElementById('tel'); t.innerHTML='';
-    const e = s.enlace, m = s.decision.metricas;
-    fila(t,'ESP32', e.conectado ? (e.puerto+'  '+e.latencia_ms+' ms') : e.motivo,
-         e.conectado?'ok':'mal');
-    if (e.conectado) {
-      fila(t,'PWM / angulo', e.tele.pwm+'  /  '+e.tele.angulo+'&deg;');
-      fila(t,'Failsafe', e.tele.failsafe?'SI':'no', e.tele.failsafe?'avi':'ok');
-      fila(t,'Tramas malas', e.tele.tramas_malas, e.tele.tramas_malas>0?'avi':'');
-    }
-    fila(t,'Estado', s.decision.estado+' &mdash; '+s.decision.motivo);
-    fila(t,'vel / dir', s.decision.vel+'%  /  '+s.decision.dir+'%');
-    fila(t,'Libre izq/pas/der',
-         (m.izq!==undefined?m.izq:'-')+'  '+(m.pasillo!==undefined?m.pasillo:'-')+
-         '  '+(m.der!==undefined?m.der:'-'));
-    fila(t,'Giroscopio', s.imu.disponible ? ('yaw '+s.imu.yaw+'&deg;  '+s.imu.hz+' Hz')
-                                          : s.imu.motivo, s.imu.disponible?'ok':'avi');
-    fila(t,'FPS vision', s.fps);
-    fila(t,'Perfil de color', s.perfil_color);
-  }).catch(()=>{});
-}
-setInterval(estado, 400); estado();
-</script></body></html>"""
+RUTA_WEB = Path(__file__).resolve().parent / "web"
 
 
 class _Handler(BaseHTTPRequestHandler):
-    servidor_ref = None          # se rellena al construir Servidor
+    servidor_ref: "Servidor" = None
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, *a):   # silencio: el registro va al log del robot
+    def log_message(self, *a):
         pass
 
     # -- utilidades -------------------------------------------------------
@@ -187,26 +50,30 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(cuerpo)
 
-    def _stream(self, mascara: bool):
+    def _json(self, obj: Any, codigo: int = 200):
+        self._enviar(json.dumps(obj).encode("utf-8"),
+                     "application/json", codigo)
+
+    def _stream(self, args: Dict[str, str]):
         srv = self.servidor_ref
+        vista = args.get("vista", "normal")
+        color = args.get("color", "negro")
         self.send_response(200)
         self.send_header("Age", "0")
         self.send_header("Cache-Control", "no-cache, private")
-        self.send_header("Pragma", "no-cache")
-        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=FRAME")
+        self.send_header("Content-Type",
+                         "multipart/x-mixed-replace; boundary=FRAME")
         self.end_headers()
-        calidad = int(srv.cfg.get("calidad_jpeg", 70))
-        ancho = int(srv.cfg.get("ancho_stream", 640))
-        periodo = 1.0 / max(1, int(srv.cfg.get("fps_stream", 15)))
+        red = srv.robot.p["red"]
         try:
             while not srv.parado.is_set():
-                anotado, masc = srv.robot.instantanea()
-                img = masc if mascara else anotado
+                calidad = int(red.get("calidad_jpeg", 70))
+                ancho = int(red.get("ancho_stream", 640))
+                periodo = 1.0 / max(2, int(red.get("fps_stream", 15)))
+                img = srv.robot.instantanea(vista, color)
                 if img is None:
                     time.sleep(0.1)
                     continue
-                if mascara:
-                    img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
                 if ancho and img.shape[1] != ancho:
                     esc = ancho / img.shape[1]
                     img = cv2.resize(img, None, fx=esc, fy=esc,
@@ -223,36 +90,67 @@ class _Handler(BaseHTTPRequestHandler):
                 self.wfile.write(datos)
                 self.wfile.write(b"\r\n")
                 time.sleep(periodo)
-        except (BrokenPipeError, ConnectionResetError):
-            pass          # el movil cerro la pestaña; normal
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     # -- rutas ------------------------------------------------------------
     def do_GET(self):
         partes = urllib.parse.urlparse(self.path)
         ruta = partes.path
+        args = {k: v[0] for k, v in urllib.parse.parse_qs(partes.query).items()}
         srv = self.servidor_ref
-        if ruta == "/":
-            self._enviar(PAGINA.encode("utf-8"))
-        elif ruta == "/stream.mjpg":
-            self._stream(False)
-        elif ruta == "/mascara.mjpg":
-            self._stream(True)
-        elif ruta == "/api/estado":
-            self._enviar(json.dumps(srv.robot.estado()).encode(), "application/json")
-        elif ruta == "/api/registro":
-            self._enviar(json.dumps(srv.robot.registro[-60:]).encode(), "application/json")
-        elif ruta == "/api/cmd":
-            args = urllib.parse.parse_qs(partes.query)
-            res = srv.ejecutar({k: v[0] for k, v in args.items()})
-            self._enviar(json.dumps(res).encode(), "application/json")
-        else:
-            self._enviar(b"no existe", "text/plain", 404)
+        r = srv.robot
+        try:
+            if ruta == "/":
+                pagina = (RUTA_WEB / "index.html").read_bytes()
+                self._enviar(pagina)
+            elif ruta == "/stream.mjpg":
+                self._stream(args)
+            elif ruta == "/api/estado":
+                est = r.estado()
+                est["categorias"] = params_mod.CATEGORIAS
+                est["perfiles_color"] = {
+                    "activo": r.datos_colores.get("activo"),
+                    "lista": [{"nombre": p["nombre"],
+                               "categoria": p.get("categoria", "open")}
+                              for p in r.datos_colores["perfiles"]],
+                }
+                est["perfiles_params"] = {
+                    "activo": r.datos_params.get("activo"),
+                    "lista": [{"nombre": p["nombre"],
+                               "categoria": p.get("categoria", "open")}
+                              for p in r.datos_params["perfiles"]],
+                }
+                self._json(est)
+            elif ruta == "/api/esquema":
+                self._json(params_mod.esquema_para_web())
+            elif ruta == "/api/valores":
+                self._json(r.p)
+            elif ruta == "/api/color":
+                nombre = args.get("color", "negro")
+                c = r.perfil_color["colores"].get(nombre)
+                if c is None:
+                    self._json({"error": f"no existe el color {nombre}"}, 404)
+                else:
+                    self._json({"color": nombre, "params": c})
+            elif ruta == "/api/registro":
+                self._json(r.registro[-80:])
+            elif ruta == "/api/cmd":
+                self._json(srv.ejecutar(args))
+            else:
+                self._enviar(b"no existe", "text/plain", 404)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+        except Exception as e:
+            try:
+                self._json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+            except Exception:
+                pass
 
 
 class Servidor:
-    def __init__(self, robot, cfg: Dict[str, Any]):
+    def __init__(self, robot):
         self.robot = robot
-        self.cfg = cfg
         self.parado = threading.Event()
         self._srv: Optional[ThreadingHTTPServer] = None
         self._hilo: Optional[threading.Thread] = None
@@ -260,10 +158,9 @@ class Servidor:
     # -- ordenes ----------------------------------------------------------
     def ejecutar(self, args: Dict[str, str]) -> Dict[str, Any]:
         r = self.robot
-        nav_cfg = r.cfg["navegacion"]
-        lim = r.cfg["limites"]
-        for k, v in args.items():
-            try:
+        respuesta: Dict[str, Any] = {"ok": True}
+        try:
+            for k, v in args.items():
                 if k == "armar":
                     r.armar(v not in ("0", "false", ""))
                 elif k == "emergencia":
@@ -273,48 +170,79 @@ class Servidor:
                 elif k == "manual":
                     a, b = v.split(",")
                     r.mando_manual(int(float(a)), int(float(b)))
-                elif k in ("vmax", "vel_crucero", "vel_giro", "dir_max"):
-                    lim[k] = int(float(v))
-                    r.aplicar_config()
-                elif k == "estrategia":
-                    nav_cfg["estrategia"] = "pared" if v.startswith("par") else "centrado"
-                    r.navegador.reiniciar()
-                elif k == "lado_pared":
-                    nav_cfg["lado_pared"] = "izq" if v.startswith("i") else "der"
-                elif k in ("kp", "kd", "kp_pared", "kd_pared", "pared_objetivo",
-                           "girar_bajo", "frenar_bajo", "parar_bajo",
-                           "salir_giro_sobre", "dir_giro", "yaw_kp",
-                           "ruedas_izq", "ruedas_der", "banda_lateral",
-                           "ignorar_abajo"):
-                    nav_cfg[k] = float(v)
-                elif k in ("px_min_columna", "suavizado", "giro_max_ms", "min_recto_ms"):
-                    nav_cfg[k] = int(float(v))
-                elif k == "usar_yaw":
-                    nav_cfg["usar_yaw"] = v not in ("0", "false")
-                elif k == "calibrar_imu":
-                    threading.Thread(target=r.imu.calibrar, daemon=True).start()
+                elif k == "set":
+                    grupo, clave = v.split(".", 1)
+                    respuesta["valor"] = r.fijar_param(grupo, clave,
+                                                       args.get("val", ""))
+                elif k == "perfil_params_guardar":
+                    r.guardar_perfil_params(v, args.get("categoria", ""))
+                elif k == "categoria":
+                    r.categoria = params_mod.categoria_valida(v)
+                elif k == "perfil_params_cargar":
+                    r.cargar_perfil_params(v)
+                elif k == "perfil_color_guardar":
+                    r.guardar_perfil_colores(v, args.get("categoria", ""))
+                elif k == "perfil_color_cargar":
+                    r.cargar_perfil_colores(v)
+                elif k == "color_set":
+                    r.fijar_color(args.get("color", ""), v,
+                                  json.loads(args.get("val", "null")))
+                elif k == "color_clic":
+                    rangos = r.clic_color(args.get("color", "negro"),
+                                          float(args.get("x", 0)),
+                                          float(args.get("y", 0)),
+                                          args.get("acumular", "0") == "1")
+                    respuesta["rangos"] = rangos
+                elif k == "calibrar_giro":
+                    r.calibrar_giro()
                 elif k == "cero_yaw":
-                    r.imu.poner_cero()
-                    r.navegador.rumbo_objetivo = 0.0
-                elif k == "guardar":
-                    r.guardar_config()
-                elif k == "perfil_color":
-                    r.recargar_colores(v)
-            except Exception as e:
-                return {"ok": False, "error": f"{k}: {e}"}
-        return {"ok": True}
+                    r.cero_yaw()
+                elif k == "redetectar":
+                    r.redetectar_i2c()
+                elif k == "tcs_muestrear":
+                    respuesta["tcs"] = r.muestrear_tcs(v)
+                elif k == "cal_fy":
+                    respuesta["fy"] = r.calibrar_fy(
+                        float(args.get("y", 0)), float(args.get("dist", 0)))
+                elif k == "cal_fx":
+                    respuesta["fx"] = r.calibrar_fx(
+                        float(args.get("x", 0)), float(args.get("y", 0)),
+                        float(args.get("lat", 0)))
+                elif k == "reiniciar_carrera":
+                    r.carrera.reiniciar()
+                    if r.armado and r.modo == "auto":
+                        r.carrera.arrancar()
+                elif k == "probar_linea":
+                    # Inyecta un cruce de linea como si lo hubiera visto el
+                    # TCS. Sirve para probar la maniobra de esquina en el
+                    # banco, sin tener que empujar el carro sobre la linea.
+                    color = v if v in ("naranja", "azul") else "naranja"
+                    r.lineas.evento_tcs(color)
+                    r.t_linea_reciente = time.time()
+                    r.log(f"[prueba] cruce de linea {color} inyectado")
+                elif k == "boton":
+                    # Pulsacion VIRTUAL del boton de competencia: entra por el
+                    # mismo camino que la fisica (antirrebote, tiempo largo,
+                    # tiempo muerto), asi que sirve para ensayar la secuencia
+                    # sin cablear nada. ?boton=corta (o ?boton=larga)
+                    r.pulsar_boton(v if v in ("corta", "larga") else "corta")
+                elif k in ("val", "color", "x", "y", "dist", "lat", "acumular",
+                           "categoria"):
+                    pass          # argumentos de otras ordenes
+        except Exception as e:
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        return respuesta
 
     # -- ciclo de vida ----------------------------------------------------
     def iniciar(self) -> str:
         _Handler.servidor_ref = self
-        puerto = int(self.cfg.get("puerto_http", 8080))
+        puerto = int(self.robot.p["red"].get("puerto_http", 8080))
         self._srv = ThreadingHTTPServer(("0.0.0.0", puerto), _Handler)
         self._srv.daemon_threads = True
         self._hilo = threading.Thread(target=self._srv.serve_forever,
                                       daemon=True, name="http")
         self._hilo.start()
-        host = self.cfg.get("hostname", "carrito")
-        return f"http://{host}.local:{puerto}/"
+        return f"http://carrito.local:{puerto}/"
 
     def cerrar(self):
         self.parado.set()

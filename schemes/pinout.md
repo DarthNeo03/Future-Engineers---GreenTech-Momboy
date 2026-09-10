@@ -1,7 +1,7 @@
 # Pinout and bus map
 
 Everything here was read straight out of the firmware we actually flash
-(`nuevaspruebas/firmware/esp32/esp32_carro.ino`, identical to `main/`'s), so it matches the car on the
+(`main/firmware/esp32/esp32_carro.ino`, identical to `fallback/`'s), so it matches the car on the
 table, not a plan we never built.
 
 ## ESP32 (hardware controller)

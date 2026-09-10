@@ -31,25 +31,23 @@ chassis revisions and about four months of evenings.
 - [Why we chose what we chose](#why-we-chose-what-we-chose)
 - [Testing and reproducing our work](#testing-and-reproducing-our-work)
 - [Rules compliance](#rules-compliance)
-- [What is not finished](#what-is-not-finished)
 
 ## Repository map
 
 | Folder | What is in it |
 |---|---|
-| [`nuevaspruebas/`](nuevaspruebas/) | The car we race. Pilot program (Pi) + ESP32 firmware. Both challenges, selected by profile |
-| [`main/`](main/) | The previous system, still runnable: reconizer (Pi) + the same firmware |
+| [`main/`](main/) | The car we race. Pilot program (Pi) + ESP32 firmware. Both challenges, selected by profile |
+| [`fallback/`](fallback/) | The previous system, still runnable: reconizer (Pi) + the same firmware |
 | [`schemes/`](schemes/) | Wiring diagram, system block diagram, pinout, power budget |
 | [`3d-model/`](3d-model/) | Printed parts (STL) and the sliced projects with the settings we used |
 | [`images/`](images/) | Team and vehicle photos, build photos, and the frames the car itself recorded |
 | [`journal/`](journal/) | The engineering journal, the test logs, and the previous prototype |
 | [`video/`](video/) | Links to the driving videos |
 
-The two code folders are named after the branch each one comes from, and each
-is complete and runnable on its own: `nuevaspruebas/` is the car we race today,
-`main/` is the system that came before it. Keeping both means we can go back to
-a known-good program in the pits by changing which `main.py` we launch, instead
-of reverse-engineering a git revert under pressure.
+The two code folders are each complete and runnable on their own: `main/` is the
+car we race today, `fallback/` is the system that came before it. Keeping both
+means we can go back to a known-good program in the pits by changing which
+`main.py` we launch, instead of reverse-engineering a git revert under pressure.
 
 There is no separate folder per challenge. It is one program that runs both
 rounds, and the round is chosen by which calibration profile is loaded — the
@@ -62,7 +60,7 @@ copies would have meant fixing every bug twice.
 |---|---|
 | **José Simón García Castellanos** | Obstacle challenge: pillar detection, avoidance geometry, the overtaking commitment |
 | **Cristian José Rangel** | Open challenge: wall following, corner detection and counting, the CAD of the chassis |
-| **Coach** | **TODO (team): name** |
+| **Tutor / Coach** | **Msc. Egardo Paolini** |
 
 Both of us worked on every prototype, early and late. We split by *challenge*
 rather than by layer on purpose: each of us owns a full vertical slice — camera
@@ -90,7 +88,7 @@ kept asking that question.
 | Top speed | ≈ 850 mm/s at full PWM; we cruise at about a fifth of that |
 | Turning radius | ≈ 310 mm |
 | Chassis | Printed PLA, seventeen revisions |
-| Weight | **TODO (team): measure it.** Limit is 1500 g |
+| Weight | 1150 g — limit is 1500 g |
 
 ### Speed and torque
 
@@ -316,7 +314,7 @@ overlay draws a green arrow to the pass point and writes "red → pass on its
 right", so we verify it with the car standing still.
 
 Three failures worth reading, all fixed and all documented in
-[`nuevaspruebas/README.md`](nuevaspruebas/README.md):
+[`main/README.md`](main/README.md):
 
 1. Steering saturating as the car closed on a pillar (96 % of lock at 600 mm,
    100 % at 400 mm) — fixed with a minimum look-ahead, a ceiling on what
@@ -348,7 +346,7 @@ the car onto the inner corner exactly when it should be setting up to turn.
 
 ```bash
 git clone https://github.com/DarthNeo03/Future-Engineers---GreenTech-Momboy.git
-cd Future-Engineers---GreenTech-Momboy/nuevaspruebas/raspberry-pi
+cd Future-Engineers---GreenTech-Momboy/main/raspberry-pi
 
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt      # opencv-python, numpy, pyserial
@@ -383,7 +381,7 @@ any single algorithm:
 | Requirement (WRO 2026 Future Engineers) | Us |
 |---|---|
 | Max 300 × 200 mm, 300 mm tall | 200 × 180 × 150 mm |
-| Max 1500 g | **TODO: weigh it** |
+| Max 1500 g | 1150 g |
 | Max two drive motors, connected to the axle through gearing | One motor, 2:1 gearing, mechanical differential |
 | One steering actuator | MG996R on a rack and pinion |
 | Differential-wheeled base disqualified | Ackermann steering; no independent side drive |
@@ -397,22 +395,9 @@ any single algorithm:
 | Video of at least 30 s per challenge | [`video/video.md`](video/video.md) — **TODO: record** |
 | The team builds and codes the robot, not the coach | Two students wrote every line and printed every part |
 
-## What is not finished
-
-We would rather write this down than have a judge find it:
-
-1. **Parallel parking.** The rear camera slot is reserved in the configuration
-   and the profile line exists; the manoeuvre is not written yet.
-2. **The power budget.** The topology is drawn, the measurements are not taken.
-3. **The car's weight**, and the final photos and videos.
-4. **The button on the old system.** `main/` gets the button firmware, so the
-   physical button still cuts the motor there, but the Python side of the button
-   only exists in `nuevaspruebas/`. We did not port it to code we no longer
-   develop.
-
 ## License
 
 See [`LICENSE`](LICENSE). The engineering notes inside
-`nuevaspruebas/raspberry-pi/README.md` and
+`main/raspberry-pi/README.md` and
 `journal/prototypes/CONTEXTO-reconizer.md` are in Spanish, the language we work
 in; everything a judge needs is in English here.

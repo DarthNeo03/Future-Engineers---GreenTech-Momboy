@@ -27,9 +27,7 @@ runs today.
 | Steering | MG996R on a rack and pinion, Ackermann geometry, ≈26° at full lock |
 | Camera | 125 mm above the floor, tilted 7.5° down |
 | Material | PLA |
-
-> **TODO (team):** weigh the finished car and write the number here. It is the
-> one figure in this table we have not measured, and the limit is 1500 g.
+| Weight | 1150 g (limit is 1500 g) |
 
 ## Why it got smaller instead of prettier
 

@@ -1,24 +1,30 @@
 #!/usr/bin/env python3
 """
-main.py — Programa principal del carro WRO Future Engineers.
+main.py — Piloto WRO 2026 (Open Challenge + deteccion de obstaculos).
 
-    python3 main.py                     # camara + ESP32 + web + panel
-    python3 main.py --sin-panel         # tipico en la Pi sin monitor
-    python3 main.py --sin-web
-    python3 main.py --simulado          # en el PC, sin ESP32 conectado
+    python3 main.py                     # camara + ESP32 + web
+    python3 main.py --simulado          # en el PC, sin ESP32
     python3 main.py --imagen foto.png   # sin camara, sobre una foto
-    python3 main.py --perfil calib_0819_1501
-    python3 main.py --vmax 90           # tope de velocidad para esta prueba
+    python3 main.py --vmax 90           # tope de PWM solo para esta prueba
+    python3 main.py --puerto COM7       # forzar el puerto serie
+    python3 main.py --perfil pista_casa # perfil de parametros a cargar
+    python3 main.py --sin-web           # COMPETENCIA: solo los pulsadores
+    ./piloto.sh arrancar                # lo mismo, como demonio (SSH/VNC)
 
-Objetivo de esta fase: dar vueltas a la pista vacia sin tocar los muros.
+Web de depuracion: http://carrito.local:8080/ (o la IP de la Pi).
 
 SEGURIDAD, en orden de quien reacciona antes:
   1. El navegador frena solo si el pasillo se cierra (ve venir el muro).
   2. Si el lazo de vision se atasca >250 ms, el enlace manda velocidad 0.
   3. Si el serial se calla >300 ms, el ESP32 corta el motor y centra el servo.
-  4. Si la tarea de control del ESP32 se cuelga >200 ms, su vigilante corta el
-     PWM directamente sobre el hardware.
-  5. Ctrl+C o cerrar la ventana manda parada de emergencia antes de salir.
+  4. Si la tarea de control del ESP32 se cuelga >200 ms, su vigilante corta.
+  5. Ctrl+C manda parada de emergencia antes de salir.
+El carro ARRANCA DESARMADO. Se arma con el pulsador de competencia (el start
+del reglamento) o con el boton ARMAR de la web. El pulsador es UNO SOLO y
+hace las dos cosas: pulsar con el carro parado arma, pulsar con el carro
+andando desarma. Cuelga del ESP32, y el ESP32 corta la traccion en el acto
+cuando se pulsa con el carro armado. Con --sin-web es el UNICO mando:
+comprueba botones.activo antes de la ronda.
 """
 
 from __future__ import annotations
@@ -33,43 +39,58 @@ RAIZ = Path(__file__).resolve().parent
 if str(RAIZ) not in sys.path:
     sys.path.insert(0, str(RAIZ))
 
-from src import color_config as cc, robot_config, robot as robot_mod  # noqa: E402
+from src import color_config as cc          # noqa: E402
+from src import params as params_mod        # noqa: E402
+from src import robot as robot_mod          # noqa: E402
+from src import servidor as srv_mod         # noqa: E402
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Carro WRO Future Engineers")
-    ap.add_argument("--config", default=None, help="ruta de robot.json")
-    ap.add_argument("--perfil", default=None, help="perfil de color a usar")
-    ap.add_argument("--imagen", default=None, help="usar una foto en vez de la camara")
-    ap.add_argument("--simulado", action="store_true",
-                    help="no abrir el puerto serie (pruebas en el PC)")
+    ap = argparse.ArgumentParser(description="Piloto WRO 2026")
+    ap.add_argument("--perfil", default=None, help="perfil de parametros")
+    ap.add_argument("--perfil-color", default=None, help="perfil de color")
+    ap.add_argument("--imagen", default=None, help="foto fija en vez de camara")
+    ap.add_argument("--simulado", action="store_true", help="sin ESP32")
     ap.add_argument("--sin-web", action="store_true")
-    ap.add_argument("--sin-panel", action="store_true")
-    ap.add_argument("--vmax", type=int, default=None,
-                    help="tope de PWM 0-255 solo para esta ejecucion")
-    ap.add_argument("--puerto", default=None, help="forzar el puerto serie")
+    ap.add_argument("--vmax", type=int, default=None)
+    ap.add_argument("--puerto", default=None)
     args = ap.parse_args()
 
-    cfg = robot_config.cargar(args.config)
+    datos_params = params_mod.cargar()
+    if args.perfil:
+        datos_params["activo"] = args.perfil
+    datos_colores = cc.cargar()
+    if args.perfil_color:
+        cc.fijar_activo(datos_colores, args.perfil_color)
+
+    r = robot_mod.Robot(datos_params, datos_colores,
+                        simulado=args.simulado, fuente_imagen=args.imagen)
     if args.vmax is not None:
-        cfg["limites"]["vmax"] = max(0, min(255, args.vmax))
+        r.p["limites"]["vmax"] = max(0, min(255, args.vmax))
     if args.puerto:
-        cfg["enlace"]["puerto"] = args.puerto
+        r.p["enlace"]["puerto"] = args.puerto
 
-    perfil_color = cc.obtener(cc.cargar(), args.perfil)
-    print(f"[main] perfil de color: {perfil_color['nombre']}")
-    print(f"[main] vmax = {cfg['limites']['vmax']} (tope duro en el ESP32)")
-
-    r = robot_mod.Robot(cfg, perfil_color, simulado=args.simulado,
-                        fuente_imagen=args.imagen)
+    print(f"[main] perfil params: {datos_params.get('activo')} | "
+          f"colores: {r.perfil_color['nombre']} | vmax={r.p['limites']['vmax']}")
     r.iniciar()
 
     servidor = None
     if not args.sin_web:
-        from src import servidor as srv_mod
-        servidor = srv_mod.Servidor(r, cfg["red"])
+        servidor = srv_mod.Servidor(r)
         url = servidor.iniciar()
-        r.log(f"[web] {url}   (o http://<ip-de-la-pi>:{cfg['red']['puerto_http']}/)")
+        r.log(f"[web] {url} (o http://<ip-de-la-pi>:{r.p['red']['puerto_http']}/)")
+    else:
+        # Modo competencia: sin web el unico mando son los pulsadores, asi
+        # que si estan apagados el carro se queda mudo y mas vale decirlo
+        # aqui que descubrirlo con el juez delante.
+        b = r.p["botones"]
+        if bool(b.get("activo")):
+            r.log("[main] sin web: manda el pulsador del ESP32 "
+                  "(la misma pulsacion arma y desarma)")
+        else:
+            r.log("[main] AVISO: --sin-web con botones.activo APAGADO: el "
+                  "carro se queda sin ningun mando. Enciende botones.activo "
+                  "o arranca sin --sin-web.")
 
     cerrando = {"si": False}
 
@@ -98,16 +119,6 @@ def main() -> int:
         signal.signal(signal.SIGTERM, lambda *a: (apagar(), sys.exit(0)))
     except Exception:
         pass
-
-    if not args.sin_panel:
-        try:
-            sys.path.insert(0, str(RAIZ / "tools"))
-            import panel
-            panel.Panel(r).ejecutar()      # bloquea hasta cerrar la ventana
-            apagar()
-            return 0
-        except Exception as e:
-            r.log(f"[main] sin panel grafico ({e}); sigo solo con la web")
 
     try:
         while True:

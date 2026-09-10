@@ -1,20 +1,17 @@
 """
-enlace.py — Hilo que habla con el ESP32 por serial.
+enlace.py — Hilo que habla con el ESP32 por serial (USB o GPIO).
 
-Autodeteccion del puerto: se prueban los candidatos en orden, se manda un PING
-y se espera respuesta. Como el firmware contesta por la boca por la que recibio
-la ultima trama valida, el PING sirve a la vez de "hola" y de "contesta por
-aqui". Asi el mismo codigo funciona con el cable en los GPIO o en el USB, y en
-Windows con COMx, sin tocar nada.
-
-Orden de busqueda:
-    Linux : /dev/serial0, /dev/ttyAMA0, /dev/ttyAMA1, /dev/ttyS0,
-            /dev/ttyUSB*, /dev/ttyACM*
-    Windows: COM1..COM32 (o lo que liste pyserial)
+Autodeteccion del puerto: se prueban los candidatos, se manda un PING y se
+espera respuesta. El firmware contesta por la boca por la que recibio la
+ultima trama valida, asi que el mismo codigo funciona por USB o por GPIO.
 
 El hilo manda un mando cada 20 ms (50 Hz) pase lo que pase. Si el lazo de
-control de arriba deja de refrescar la orden, se manda velocidad 0: el
-failsafe del ESP32 es la ultima red, no la primera.
+vision se atasca >250 ms se manda velocidad CERO, no la ultima orden:
+repetir una orden vieja es exactamente lo que empotra un carro en la pared.
+
+NUEVO (v2): el ESP32 ahora manda la trama de SENSORES (yaw del MPU6050 +
+color del TCS34725 + contadores de cruce de linea). Aqui se convierten los
+contadores en EVENTOS con hora local: los consume lineas.py.
 """
 
 from __future__ import annotations
@@ -23,7 +20,8 @@ import glob
 import platform
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional
+from collections import deque
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import protocolo as P
 
@@ -54,8 +52,6 @@ def candidatos(preferido: str = "") -> List[str]:
 
 
 class Enlace:
-    """Envio periodico + recepcion de telemetria, en un hilo aparte."""
-
     def __init__(self, cfg: Dict[str, Any], simulado: bool = False,
                  al_log: Optional[Callable[[str], None]] = None):
         self.cfg = cfg or {}
@@ -65,13 +61,18 @@ class Enlace:
         self.conectado = False
         self.puerto: str = ""
         self.motivo = "sin iniciar"
-        self.buscando = False
         self.telemetria = P.Telemetria()
+        self.sensores = P.Sensores()
         self.ultima_tele = 0.0
+        self.ultimos_sensores = 0.0
         self.latencia_ms = 0.0
         self.enviados = 0
         self.recibidos = 0
         self.errores_crc = 0
+        self.historial_tcs: deque = deque(maxlen=60)   # (c,r,g,b) para calibrar
+
+        self._eventos_linea: deque = deque(maxlen=32)  # (color, t)
+        self._cnt_prev: Optional[Tuple[int, int]] = None
 
         self._ser = None
         self._lector = P.Lector()
@@ -87,7 +88,7 @@ class Enlace:
         self._parada = False
         self._centrar = False
         self._t_mando = 0.0
-        self._config_pendiente: Optional[bytes] = None
+        self._pendientes: List[bytes] = []      # config/cal por mandar
         self._ping_t: Dict[int, float] = {}
 
     # -- API para el lazo de control --------------------------------------
@@ -110,19 +111,55 @@ class Enlace:
             self._parada = False
 
     def fijar_vmax(self, vmax: int) -> None:
-        """Tope absoluto de PWM. Viaja en cada trama, asi que el ESP32 lo aplica
-        aunque la Pi se reinicie a mitad de prueba."""
         with self._lock:
             self._vmax = int(max(0, min(255, vmax)))
 
-    def centrar_servo(self, activo: bool = True) -> None:
+    def enviar_config_servo(self, centro: int, izq: int, der: int,
+                            rampa: int, grados_s: int) -> None:
         with self._lock:
-            self._centrar = bool(activo)
+            self._pendientes.append(
+                P.empaquetar_config(centro, izq, der, rampa, grados_s))
 
-    def enviar_config(self, centro: int, izq: int, der: int,
-                      rampa: int, grados_s: int) -> None:
+    def enviar_cfg_tcs(self, tcs: Dict[str, Any]) -> None:
+        """tcs: el grupo 'tcs' de params.py tal cual."""
         with self._lock:
-            self._config_pendiente = P.empaquetar_config(centro, izq, der, rampa, grados_s)
+            self._pendientes.append(P.empaquetar_cfg_tcs(
+                int(tcs.get("c_min", 80)),
+                int(tcs.get("naranja_r_min", 120)), int(tcs.get("naranja_b_max", 60)),
+                int(tcs.get("azul_b_min", 110)), int(tcs.get("azul_r_max", 70)),
+                int(tcs.get("muestras_min", 1)), int(tcs.get("refractario_ds", 3)),
+                int(tcs.get("atime", 246)), int(tcs.get("gain", 2)),
+                int(tcs.get("naranja_dif_min", 30)),
+                int(tcs.get("azul_dif_min", 18)),
+                int(tcs.get("int_umbral_pct", 55))))
+
+    def enviar_cal(self, cmd: int) -> None:
+        with self._lock:
+            self._pendientes.append(P.empaquetar_cal(cmd))
+
+    def eventos_linea(self) -> List[Tuple[str, float]]:
+        """Drena los cruces de linea detectados por el TCS desde la ultima
+        llamada. Cada uno es ('naranja'|'azul', tiempo_local)."""
+        salida = []
+        while self._eventos_linea:
+            salida.append(self._eventos_linea.popleft())
+        return salida
+
+    def boton(self) -> Tuple[bool, bool, bool]:
+        """El pulsador de competencia, que cuelga del ESP32:
+
+            (pisado, cortado_por_boton, frescos)
+
+        Es NIVEL, no evento: quien decide que significa es src/botones.py.
+        'frescos' dice si el dato vale; sin el, un nivel viejo congelado en
+        "pisado" al caerse el enlace seria una pulsacion fantasma. Cuando es
+        False hay que OLVIDAR el estado del pulsador, no interpretarlo."""
+        s = self.sensores
+        frescos = (self.conectado and not self.simulado
+                   and (time.time() - self.ultimos_sensores) < 0.4)
+        if not frescos:
+            return (False, False, False)
+        return (s.boton, s.corte_por_boton, True)
 
     # -- ciclo de vida ----------------------------------------------------
     def iniciar(self) -> None:
@@ -139,7 +176,6 @@ class Enlace:
     def _cerrar_puerto(self):
         if self._ser is not None:
             try:
-                # Ultimo mando: todo a cero, por si el ESP32 sigue vivo
                 self._ser.write(P.Mando(seq=self._seq, vel=0, direccion=0,
                                         vmax=0, armado=False).a_bytes())
                 self._ser.flush()
@@ -161,7 +197,6 @@ class Enlace:
             return False
 
         baud = int(self.cfg.get("baudios", 115200))
-        self.buscando = True
         self.motivo = "buscando el ESP32..."
         for puerto in candidatos(str(self.cfg.get("puerto", ""))):
             try:
@@ -169,9 +204,7 @@ class Enlace:
             except Exception:
                 continue
             try:
-                # Solo los puertos USB reinician el ESP32 al abrirse (DTR/RTS);
-                # esperar 350 ms en CADA candidato haria que la busqueda tardara
-                # una eternidad cuando hay varios ttyS/ttyAMA sueltos.
+                # Los puertos USB reinician el ESP32 al abrirse (DTR/RTS)
                 if "USB" in puerto.upper() or "ACM" in puerto.upper() or \
                         puerto.upper().startswith("COM"):
                     time.sleep(0.35)
@@ -185,7 +218,8 @@ class Enlace:
                         datos = s.read(256)
                         if datos:
                             for tipo, _pl in lector.alimentar(datos):
-                                if tipo in (P.TIPO_PONG, P.TIPO_TELE, P.TIPO_LOG):
+                                if tipo in (P.TIPO_PONG, P.TIPO_TELE,
+                                            P.TIPO_LOG, P.TIPO_SENSORES):
                                     visto = True
                                     break
                         if visto:
@@ -206,13 +240,12 @@ class Enlace:
             self._ser = s
             self.puerto = puerto
             self.conectado = True
-            self.buscando = False
             self.motivo = f"conectado a {puerto} @ {baud}"
             self._lector = P.Lector()
+            self._cnt_prev = None
             self.al_log(f"[enlace] {self.motivo}")
             return True
 
-        self.buscando = False
         self.motivo = "no se encontro el ESP32 en ningun puerto"
         return False
 
@@ -247,9 +280,6 @@ class Enlace:
             try:
                 with self._lock:
                     edad = time.time() - self._t_mando
-                    # Si el lazo de arriba se durmio, no repetimos su ultima
-                    # orden: mandamos cero. Repetir una orden vieja es lo que
-                    # hace que un carro siga a fondo contra la pared.
                     vencido = edad > 0.25
                     m = P.Mando(
                         seq=self._seq,
@@ -260,11 +290,11 @@ class Enlace:
                         parada=self._parada,
                         centrar=self._centrar,
                     )
-                    cfg_pend = self._config_pendiente
-                    self._config_pendiente = None
+                    pendientes = self._pendientes
+                    self._pendientes = []
                 self._seq = (self._seq + 1) & 0xFF
-                if cfg_pend:
-                    self._ser.write(cfg_pend)
+                for tr in pendientes:
+                    self._ser.write(tr)
                 self._ser.write(m.a_bytes())
                 self.enviados += 1
 
@@ -282,7 +312,7 @@ class Enlace:
 
             # ---- recibir --------------------------------------------------
             try:
-                datos = self._ser.read(512)
+                datos = self._ser.read(1024)
             except Exception as e:
                 self.al_log(f"[enlace] error leyendo: {e}")
                 self._cerrar_puerto()
@@ -293,6 +323,9 @@ class Enlace:
                     self.recibidos += 1
                     if tipo == P.TIPO_TELE and len(pl) >= 8:
                         self.telemetria = P.Telemetria.desde_payload(pl)
+                        self.ultima_tele = time.time()
+                    elif tipo == P.TIPO_SENSORES and len(pl) >= 14:
+                        self._procesar_sensores(P.Sensores.desde_payload(pl))
                         self.ultima_tele = time.time()
                     elif tipo == P.TIPO_PONG and pl:
                         t = self._ping_t.pop(pl[0], None)
@@ -311,9 +344,39 @@ class Enlace:
             if resto > 0:
                 time.sleep(resto)
 
-    # -- info -------------------------------------------------------------
+    def _procesar_sensores(self, s: P.Sensores) -> None:
+        self.sensores = s
+        self.ultimos_sensores = time.time()
+        if s.tcs_ok:
+            self.historial_tcs.append((s.c, s.r, s.g, s.b))
+        # contadores -> eventos (aguantan perdida de tramas: son mod 16)
+        if self._cnt_prev is None:
+            self._cnt_prev = (s.cnt_naranja, s.cnt_azul)
+            return
+        pn, pa = self._cnt_prev
+        dn = (s.cnt_naranja - pn) & 0x0F
+        da = (s.cnt_azul - pa) & 0x0F
+        ahora = time.time()
+        for _ in range(dn):
+            self._eventos_linea.append(("naranja", ahora))
+        for _ in range(da):
+            self._eventos_linea.append(("azul", ahora))
+        self._cnt_prev = (s.cnt_naranja, s.cnt_azul)
+
+    # -- lecturas ----------------------------------------------------------
+    def yaw(self) -> Optional[float]:
+        """Yaw utilizable, o None si no hay MPU o esta calibrando o los datos
+        son viejos (mas de 0.4 s)."""
+        s = self.sensores
+        if self.simulado or not s.mpu_ok or s.calibrando:
+            return None
+        if time.time() - self.ultimos_sensores > 0.4:
+            return None
+        return s.yaw
+
     def estado(self) -> Dict[str, Any]:
         t = self.telemetria
+        s = self.sensores
         return {
             "conectado": bool(self.conectado),
             "puerto": self.puerto,
@@ -325,7 +388,22 @@ class Enlace:
             "tele": {
                 "armado": t.armado, "motor": t.motor, "failsafe": t.failsafe,
                 "servo_tope": t.servo_en_tope, "pwm": t.pwm, "angulo": t.angulo,
-                "ms_desde_mando": t.ms_desde_mando, "tramas_malas": t.tramas_malas,
-                "version": t.version,
+                "ms_desde_mando": t.ms_desde_mando,
+                "tramas_malas": t.tramas_malas, "version": t.version,
+            },
+            "sensores": {
+                "mpu_ok": s.mpu_ok, "tcs_ok": s.tcs_ok,
+                "mpu_int": s.mpu_int, "tcs_int": s.tcs_int,
+                "calibrando": s.calibrando,
+                "yaw": round(s.yaw, 1),
+                "gz": round(s.gz_deci / 10.0, 1),
+                "c": s.c, "r": s.r, "g": s.g, "b": s.b,
+                "ratio_r": round(s.r * 255.0 / s.c, 0) if s.c else 0,
+                "ratio_b": round(s.b * 255.0 / s.c, 0) if s.c else 0,
+                "clase": {0: "-", 1: "naranja", 2: "azul"}.get(s.clase_linea, "-"),
+                "cnt_naranja": s.cnt_naranja, "cnt_azul": s.cnt_azul,
+                "boton": s.boton,
+                "corte_por_boton": s.corte_por_boton,
+                "frescos": time.time() - self.ultimos_sensores < 0.4,
             },
         }

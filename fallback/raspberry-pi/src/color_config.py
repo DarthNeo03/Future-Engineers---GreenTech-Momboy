@@ -30,42 +30,7 @@ from typing import Any, Dict, List, Optional, Union
 RAIZ_PROYECTO = Path(__file__).resolve().parent.parent
 RUTA_CONFIG_POR_DEFECTO = RAIZ_PROYECTO / "config" / "colors.json"
 
-MAX_PERFILES = 20
-# ===========================================================================
-# TRES LINEAS DE CALIBRACION
-# Cada reto necesita ajustes distintos y no se pueden mezclar: para el Open
-# Challenge interesa correr, para obstaculos interesa ver los pilares pronto y
-# esquivar con holgura, y para estacionar hace falta ademas todo lo del cajon.
-# Por eso los perfiles van etiquetados, cada linea guarda hasta
-# MAX_POR_CATEGORIA y al cambiar de reto se elige la lista que toca sin
-# arriesgar la calibracion buena de los otros dos.
-# ===========================================================================
-CATEGORIAS = {
-    "open": "Open Challenge",
-    "obstaculos": "Esquivar obstaculos",
-    "estacionar": "Obstaculos + estacionar",
-}
-CAT_POR_DEFECTO = "open"
-MAX_POR_CATEGORIA = 20
-
-
-def categoria_valida(cat) -> str:
-    cat = str(cat or "").strip()
-    return cat if cat in CATEGORIAS else CAT_POR_DEFECTO
-
-
-def _recortar_por_categoria(perfiles, maximo=MAX_POR_CATEGORIA):
-    """Deja como mucho 'maximo' perfiles de CADA linea, conservando el orden
-    (el mas reciente va primero)."""
-    cuenta = {}
-    salida = []
-    for p in perfiles:
-        c = categoria_valida(p.get("categoria"))
-        cuenta[c] = cuenta.get(c, 0) + 1
-        if cuenta[c] <= maximo:
-            salida.append(p)
-    return salida
-
+MAX_PERFILES = 5
 VERSION_ESQUEMA = 2
 
 # --------------------------------------------------------------------------
@@ -119,13 +84,12 @@ def _color(**cambios: Any) -> Dict[str, Any]:
 
 
 def colores_por_defecto() -> Dict[str, Dict[str, Any]]:
-    """Punto de partida: los valores que el equipo ya calibro en su pista
-    (perfil calib_0830_1136 del programa viejo). Se afinan desde la web."""
+    """Punto de partida razonable; se afina con el calibrador."""
     return {
         "rojo": _color(
             rangos=[
-                [[150, 100, 6], [179, 255, 255]],
-                [[0, 104, 6], [10, 255, 255]],
+                [[0, 110, 70], [8, 255, 255]],
+                [[168, 110, 70], [179, 255, 255]],
             ],
             area_min=350,
             llenado_min=0.55,
@@ -136,7 +100,7 @@ def colores_por_defecto() -> Dict[str, Dict[str, Any]]:
             color_dibujo=[0, 0, 255],
         ),
         "verde": _color(
-            rangos=[[[40, 70, 50], [93, 255, 255]]],
+            rangos=[[[45, 70, 50], [85, 255, 255]]],
             area_min=350,
             llenado_min=0.55,
             aspecto_min=0.6,
@@ -148,7 +112,7 @@ def colores_por_defecto() -> Dict[str, Dict[str, Any]]:
         # Paredes: negro = saturacion y valor bajos, el tono no importa.
         # Filtros de forma relajados porque una pared no es un rectangulo.
         "negro": _color(
-            rangos=[[[0, 0, 0], [179, 255, 88]]],
+            rangos=[[[0, 0, 0], [179, 90, 65]]],
             desenfoque=3,
             abrir=3,
             cerrar=7,
@@ -166,24 +130,6 @@ def colores_por_defecto() -> Dict[str, Dict[str, Any]]:
             max_objetos=3,
             color_dibujo=[255, 0, 255],
         ),
-        # Piso blanco: es la base del detector de muros nuevo. El muro se
-        # encuentra buscando, columna a columna y desde abajo, la primera
-        # transicion piso -> no-piso. Asi el brillo de la pared negra no
-        # importa: basta con que la pared NO parezca piso blanco.
-        "blanco": _color(
-            rangos=[[[0, 0, 130], [179, 70, 255]]],
-            desenfoque=0,
-            abrir=0,
-            cerrar=0,
-            unir_huecos=0,
-            area_min=0,
-            llenado_min=0.0,
-            usar_aspecto=False,
-            roi_arriba=0.0,
-            roi_abajo=1.0,
-            max_objetos=1,
-            color_dibujo=[200, 200, 200],
-        ),
         # ---- Todavia sin usar, listos para cuando toquen ------------------
         # Magenta: muros del estacionamiento del reto de obstaculos.
         "magenta": _color(
@@ -198,13 +144,8 @@ def colores_por_defecto() -> Dict[str, Dict[str, Any]]:
         # Naranja: una de las dos lineas del piso (cuenta de vueltas y esquinas).
         # Va pegada al suelo, por eso la ROI mira solo la mitad de abajo y el
         # filtro de aspecto esta apagado (es una franja ancha y fina).
-        # Nota de pista: si el piso blanco sale QUEMADO (V > 235) las lineas
-        # pierden casi toda su saturacion y no hay umbral que las salve; se
-        # arregla bajando la exposicion (camara.exposicion), no aqui. El
-        # minimo de S se deja en 60: muy por encima del piso (S ~ 6-15) y
-        # suficientemente bajo para luz de pabellon.
         "naranja": _color(
-            rangos=[[[8, 60, 90], [24, 255, 255]]],
+            rangos=[[[8, 120, 90], [24, 255, 255]]],
             desenfoque=3,
             abrir=3,
             cerrar=5,
@@ -219,7 +160,7 @@ def colores_por_defecto() -> Dict[str, Dict[str, Any]]:
         ),
         # Azul: la otra linea del piso.
         "azul": _color(
-            rangos=[[[95, 60, 60], [125, 255, 255]]],
+            rangos=[[[95, 90, 60], [125, 255, 255]]],
             desenfoque=3,
             abrir=3,
             cerrar=5,
@@ -331,7 +272,6 @@ def normalizar_perfil(perfil: Any, nombre_alt: str = "sin_nombre") -> Dict[str, 
     return {
         "nombre": str(perfil.get("nombre") or nombre_alt),
         "fecha": str(perfil.get("fecha") or _ahora()),
-        "categoria": categoria_valida(perfil.get("categoria")),
         "notas": str(perfil.get("notas") or ""),
         "camara": camara,
         "colores": colores,
@@ -386,7 +326,7 @@ def cargar(ruta: Optional[Union[str, Path]] = None,
     if not isinstance(perfiles, list) or not perfiles:
         perfiles = [perfil_nuevo("base")]
     perfiles = [normalizar_perfil(p, f"perfil_{i}") for i, p in enumerate(perfiles)]
-    perfiles = _recortar_por_categoria(perfiles)
+    perfiles = perfiles[:MAX_PERFILES]
 
     activo = datos.get("activo")
     nombres = [p["nombre"] for p in perfiles]
@@ -404,8 +344,7 @@ def guardar(datos: Dict[str, Any],
     datos = {
         "version": VERSION_ESQUEMA,
         "activo": datos.get("activo"),
-        "perfiles": _recortar_por_categoria(
-            [normalizar_perfil(p) for p in datos.get("perfiles", [])]),
+        "perfiles": [normalizar_perfil(p) for p in datos.get("perfiles", [])][:MAX_PERFILES],
     }
     nombres = [p["nombre"] for p in datos["perfiles"]]
     if datos["activo"] not in nombres:
@@ -430,17 +369,8 @@ def guardar(datos: Dict[str, Any],
 # --------------------------------------------------------------------------
 # Operaciones sobre perfiles
 # --------------------------------------------------------------------------
-def listar(datos: Dict[str, Any],
-           categoria: Optional[str] = None) -> List[str]:
-    return [p["nombre"] for p in datos.get("perfiles", [])
-            if categoria is None or categoria_valida(p.get("categoria")) == categoria]
-
-
-def categoria_de(datos: Dict[str, Any], nombre: str) -> str:
-    for p in datos.get("perfiles", []):
-        if p["nombre"] == nombre:
-            return categoria_valida(p.get("categoria"))
-    return CAT_POR_DEFECTO
+def listar(datos: Dict[str, Any]) -> List[str]:
+    return [p["nombre"] for p in datos.get("perfiles", [])]
 
 
 def obtener(datos: Dict[str, Any],
@@ -470,22 +400,20 @@ def guardar_perfil(datos: Dict[str, Any],
                    colores: Dict[str, Any],
                    camara: Optional[Dict[str, Any]] = None,
                    notas: str = "",
-                   hacer_activo: bool = True,
-                   categoria: str = CAT_POR_DEFECTO) -> Dict[str, Any]:
+                   hacer_activo: bool = True) -> Dict[str, Any]:
     """Inserta el perfil de primero. Si el nombre ya existe lo reemplaza en el
     sitio (no gasta cupo). Si no, empuja y descarta el mas viejo pasado de 5."""
     nombre = (nombre or "").strip() or _dt.datetime.now().strftime("calib_%m%d_%H%M")
     nuevo = normalizar_perfil({
         "nombre": nombre,
         "fecha": _ahora(),
-        "categoria": categoria,
         "notas": notas,
         "camara": camara or {},
         "colores": colores,
     })
     perfiles = [p for p in datos.get("perfiles", []) if p["nombre"] != nombre]
     perfiles.insert(0, nuevo)
-    datos["perfiles"] = _recortar_por_categoria(perfiles)
+    datos["perfiles"] = perfiles[:MAX_PERFILES]
     if hacer_activo:
         datos["activo"] = nombre
     elif datos.get("activo") not in listar(datos):

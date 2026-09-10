@@ -14,7 +14,7 @@ How this car was actually built, in the order it happened.
 ## Why the old system is still here
 
 The code of the previous system is not in this folder — it is in
-[`../main/`](../main/), still runnable, because that is where the branch it comes
+[`../fallback/`](../fallback/), still runnable, because that is where the branch it comes
 from put it. What lives here are its documents.
 
 They are in the repository on purpose: they are the reason we know that measuring

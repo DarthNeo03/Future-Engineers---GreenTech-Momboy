@@ -201,9 +201,8 @@ suite went from 295 to 323 checks with it.
 
 **8 Sept — one repository instead of four branches.** Chassis **WRO CAR XVII**
 closed as final, and the repository unified: the pilot and the button branch
-merged, the documentation written, and the code split into `nuevaspruebas/` (what
-we race) and `main/` (the system before it), each named after the branch it came
-from and each runnable on its own. The point is being able to fall back to a
+merged, the documentation written, and the code split into `main/` (what we
+race) and `fallback/` (the system before it), each runnable on its own. The point is being able to fall back to a
 known-good program in the pits by changing which `main.py` we launch, instead of
 reverse-engineering a git revert under pressure.
 
@@ -211,7 +210,7 @@ reverse-engineering a git revert under pressure.
 
 ## Our coach
 
-> **TODO (team):** the coach's name goes here.
+Our tutor and coach is **Msc. Egardo Paolini**.
 
 The rules are explicit that a coach may not build or program the robot, and ours
 did not. What our coach did do was harder to write in a commit: made sure a

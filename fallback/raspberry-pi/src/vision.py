@@ -256,35 +256,6 @@ class Vision:
             masks[nombre] = m
         return dets, masks
 
-    def solo_mascaras(self, hsv: np.ndarray,
-                      colores: Sequence[str]) -> Dict[str, np.ndarray]:
-        """Camino rapido: solo la mascara binaria, sin buscar objetos.
-        Para los colores que alimentan el perfil del muro (blanco, negro,
-        magenta) no hacen falta bounding boxes y esto ahorra varios ms."""
-        masks: Dict[str, np.ndarray] = {}
-        for nombre in colores:
-            det = self.detectores.get(nombre)
-            if det is None:
-                continue
-            masks[nombre] = det.construir_mascara(hsv)
-        return masks
-
-    def detectar_en(self, hsv: np.ndarray, colores: Sequence[str],
-                    con_contorno: bool = False
-                    ) -> Tuple[Dict[str, List[Deteccion]], Dict[str, np.ndarray]]:
-        """Como procesar() pero recibiendo el HSV ya convertido (una sola
-        conversion por frame, compartida con solo_mascaras)."""
-        dets: Dict[str, List[Deteccion]] = {}
-        masks: Dict[str, np.ndarray] = {}
-        for nombre in colores:
-            det = self.detectores.get(nombre)
-            if det is None:
-                continue
-            d, m = det.detectar(hsv, con_contorno=con_contorno)
-            dets[nombre] = d
-            masks[nombre] = m
-        return dets, masks
-
 
 # --------------------------------------------------------------------------
 # Dibujo

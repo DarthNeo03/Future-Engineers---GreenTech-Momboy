@@ -2,7 +2,7 @@
   <rect x="0" y="0" width="1120" height="780" fill="#ffffff"/>
 
   <text x="30" y="38" font-size="22" font-weight="bold" fill="#111827">GreenTech Momboy — WRO 2026 Future Engineers</text>
-  <text x="30" y="60" font-size="14" fill="#4b5563">Wiring diagram. Pin numbers read from the firmware we flash (nuevaspruebas/firmware/esp32, identical to main/).</text>
+  <text x="30" y="60" font-size="14" fill="#4b5563">Wiring diagram. Pin numbers read from the firmware we flash (main/firmware/esp32, identical to fallback/).</text>
 
   <!-- legend -->
   <g font-size="12" fill="#374151">

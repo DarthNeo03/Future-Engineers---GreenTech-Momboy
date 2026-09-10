@@ -1,56 +1,89 @@
 """
-protocolo.py — Trama binaria entre la Raspberry Pi y el ESP32.
+protocolo.py — Trama binaria entre la Raspberry Pi y el ESP32 (version 2).
 
-Formato (identico en firmware/esp32_carro/protocolo.h):
+Formato (identico en code/esp32_carro/protocolo.h):
 
     A5 5A | LEN | TIPO | payload (LEN bytes) | CRC8
      sync    1      1        0..16               1
 
   * LEN y TIPO entran en el CRC; los dos bytes de sync no.
-  * CRC8 poly 0x07, init 0x00 (CRC-8/ATM). Sin tabla en el ESP32, con tabla
-    aqui porque en Python la tabla si compensa.
+  * CRC8 poly 0x07, init 0x00 (CRC-8/ATM).
   * Si el CRC falla se descarta la trama y el lector busca el siguiente A5 5A.
-    No hay reenvio: a 50 Hz una trama perdida se sustituye sola en 20 ms, y un
-    reenvio tardio seria peor que nada (el carro obedeceria una orden vieja).
 
-El mando ocupa 11 bytes en total. A 115200 baudios eso es ~1 ms de linea.
+Cambios de la version 2 (compatible hacia atras: las tramas viejas no cambian):
 
-Por que no texto: un "M D 200 \n" obliga a parsear en el ESP32 mientras el
-motor espera, y un byte de ruido puede convertir "A95" en "A9" (el servo se va
-a 9 grados). Con LEN + CRC, una trama con ruido simplemente no existe.
+  TIPO_SENSORES (0x84, ESP32 -> Pi): el MPU6050 y el TCS34725 ahora cuelgan
+  del I2C del ESP32, asi que el ESP32 integra el yaw y clasifica las lineas
+  del piso, y manda el resultado aqui. Los cruces de linea viajan como
+  CONTADORES (no banderas): aunque se pierdan tramas, la Pi ve el contador
+  avanzar y no se le escapa ningun cruce.
+
+  TIPO_CFG_TCS (0x05, Pi -> ESP32): umbrales de clasificacion naranja/azul
+  calibrables desde la web, mas tiempo de integracion y ganancia del TCS.
+
+  TIPO_CMD_CAL (0x06, Pi -> ESP32): calibrar giroscopio / cero de yaw /
+  reintentar la deteccion I2C.
 """
 
 from __future__ import annotations
 
 import struct
-from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Tuple
 
 SYNC1 = 0xA5
 SYNC2 = 0x5A
 MAX_PAYLOAD = 16
-VERSION_PROTOCOLO = 1
+VERSION_PROTOCOLO = 2
 
 # --- tipos de trama --------------------------------------------------------
-TIPO_MANDO = 0x01     # Pi -> ESP32 (6 bytes)
-TIPO_PING = 0x02      # Pi -> ESP32 (1 byte: seq)
-TIPO_CONFIG = 0x03    # Pi -> ESP32 (6 bytes) ajustes en caliente
-TIPO_TELE = 0x81      # ESP32 -> Pi (8 bytes)
-TIPO_LOG = 0x82       # ESP32 -> Pi (texto)
-TIPO_PONG = 0x83      # ESP32 -> Pi (1 byte: seq eco)
+TIPO_MANDO = 0x01      # Pi -> ESP32 (6 bytes)
+TIPO_PING = 0x02       # Pi -> ESP32 (1 byte: seq)
+TIPO_CONFIG = 0x03     # Pi -> ESP32 (6 bytes) servo/motor en caliente
+TIPO_CFG_TCS = 0x05    # Pi -> ESP32 (10 bytes) umbrales de linea + TCS
+TIPO_CMD_CAL = 0x06    # Pi -> ESP32 (1 byte) calibraciones
+TIPO_TELE = 0x81       # ESP32 -> Pi (8 bytes)
+TIPO_LOG = 0x82        # ESP32 -> Pi (texto)
+TIPO_PONG = 0x83       # ESP32 -> Pi (1 byte: seq eco)
+TIPO_SENSORES = 0x84   # ESP32 -> Pi (14 bytes) yaw + TCS + eventos de linea
 
 # --- banderas del mando ----------------------------------------------------
-F_ARMADO = 0x01       # sin esto el ESP32 no mueve el motor pase lo que pase
-F_PARADA = 0x02       # parada de emergencia: ignora vel
-F_CENTRAR = 0x04      # lleva el servo al centro
-F_LIMPIAR = 0x08      # reinicia los contadores de error
+F_ARMADO = 0x01
+F_PARADA = 0x02
+F_CENTRAR = 0x04
+F_LIMPIAR = 0x08
 
 # --- bits de estado en la telemetria --------------------------------------
 E_ARMADO = 0x01
 E_MOTOR = 0x02
-E_FAILSAFE = 0x04     # el ESP32 paro solo por silencio en el serial
-E_SERVO_TOPE = 0x08   # se pidio un angulo fuera de limite y se recorto
-E_INV_BLOQUEADA = 0x10  # se pidio invertir el giro sin pasar por cero
+E_FAILSAFE = 0x04
+E_SERVO_TOPE = 0x08
+E_INV_BLOQUEADA = 0x10
+
+# --- bits de estado en la trama de sensores -------------------------------
+S_MPU_OK = 0x01        # el MPU6050 responde
+S_TCS_OK = 0x02        # el TCS34725 responde
+S_CALIBRANDO = 0x04    # giroscopio calibrando: yaw congelado, NO MOVER
+S_SOBRE_LINEA = 0x08   # ahora mismo el TCS ve una linea (la de 'clase')
+S_MPU_INT = 0x10       # la pata INT del MPU esta dando flancos (dt exacto)
+S_TCS_INT = 0x20       # la pata INT del TCS esta cableada (borde por hardware)
+
+# clase de linea (2 bits altos del byte de estado de sensores)
+LINEA_NADA = 0
+LINEA_NARANJA = 1
+LINEA_AZUL = 2
+
+# --- bits del byte de botones (byte 14 de la trama de sensores, version 3) --
+# El pulsador de armar/desarmar cuelga del ESP32, no del GPIO de la Pi: aqui
+# llega su NIVEL ya con antirrebote, no un evento. Ver src/botones.py.
+B_BOTON = 0x01         # pulsador pisado
+B_CORTE = 0x02         # el ESP32 corto la traccion por el boton (se pulso
+                       # con el carro armado, que solo puede querer decir parar)
+
+# --- comandos de calibracion ----------------------------------------------
+CAL_GIRO = 1           # medir sesgo del giroscopio (carro QUIETO) y cero yaw
+CAL_CERO_YAW = 2       # solo poner el yaw a cero
+CAL_REDETECTAR = 3     # volver a sondear el bus I2C ya mismo
 
 
 # ---------------------------------------------------------------------------
@@ -81,22 +114,15 @@ def empaquetar(tipo: int, payload: bytes = b"") -> bytes:
     return bytes((SYNC1, SYNC2)) + cuerpo + bytes((crc8(cuerpo),))
 
 
-# ---------------------------------------------------------------------------
 def _lim(v: int, lo: int, hi: int) -> int:
     return lo if v < lo else (hi if v > hi else v)
 
 
+# ---------------------------------------------------------------------------
 @dataclass
 class Mando:
-    """Lo que la Pi le pide al ESP32, ya normalizado.
-
-    vel y direccion van en PORCENTAJE con signo, no en unidades de hardware.
-    Asi la Pi no necesita saber nada del servo ni del puente H: el mapeo a
-    grados y a PWM lo hace el firmware, que es quien tiene los limites fisicos.
-      vel:  -100 (reversa a fondo) .. 0 (parado) .. +100 (avance a fondo)
-      dir:  -100 (izquierda a fondo) .. 0 (recto) .. +100 (derecha a fondo)
-      vmax: tope absoluto de PWM 0..255 que el firmware nunca supera
-    """
+    """Lo que la Pi le pide al ESP32. vel y direccion en % con signo: el
+    firmware es el unico que conoce grados de servo y PWM."""
     seq: int = 0
     vel: int = 0
     direccion: int = 0
@@ -179,29 +205,163 @@ class Telemetria:
         return Telemetria(seq, estado, pwm, ang, ms, malas, ver)
 
 
+# ---------------------------------------------------------------------------
+@dataclass
+class Sensores:
+    """Trama 0x84. 15 bytes de payload:
+
+        yaw_deci   int16   yaw en decimas de grado, -1800..1800
+        gz_deci    int16   velocidad de giro en decimas de grado/s
+        c,r,g,b    uint16  lectura cruda del TCS34725 (canal claro + RGB)
+        estado     uint8   bits S_* + (clase de linea << 6)
+        cnt_lineas uint8   contador naranja (4 bits bajos) y azul (4 altos).
+                           Avanza en cada CRUCE detectado y envuelve en 16:
+                           la Pi compara con el ultimo valor visto, asi que
+                           perder tramas no pierde cruces.
+        botones    uint8   bits B_*: NIVEL del pulsador de armar/desarmar (ya
+                           con antirrebote) y si el ESP32 corto la traccion
+                           por el. Nivel y no contador a proposito: un
+                           contador guardaria pulsaciones pendientes y podria
+                           arrancar el carro al reconectar. Ver
+                           esp32_carro/botones.h.
+
+    El byte de botones llego con la version 3 del mensaje. Un ESP32 con
+    firmware viejo manda 14 bytes y se lee igual: sin botones.
+    """
+    yaw_deci: int = 0
+    gz_deci: int = 0
+    c: int = 0
+    r: int = 0
+    g: int = 0
+    b: int = 0
+    estado: int = 0
+    cnt_lineas: int = 0
+    botones: int = 0
+
+    @property
+    def yaw(self) -> float:
+        return self.yaw_deci / 10.0
+
+    @property
+    def mpu_ok(self) -> bool:
+        return bool(self.estado & S_MPU_OK)
+
+    @property
+    def tcs_ok(self) -> bool:
+        return bool(self.estado & S_TCS_OK)
+
+    @property
+    def calibrando(self) -> bool:
+        return bool(self.estado & S_CALIBRANDO)
+
+    @property
+    def sobre_linea(self) -> bool:
+        return bool(self.estado & S_SOBRE_LINEA)
+
+    @property
+    def mpu_int(self) -> bool:
+        return bool(self.estado & S_MPU_INT)
+
+    @property
+    def tcs_int(self) -> bool:
+        return bool(self.estado & S_TCS_INT)
+
+    @property
+    def clase_linea(self) -> int:
+        return (self.estado >> 6) & 0x03
+
+    @property
+    def cnt_naranja(self) -> int:
+        return self.cnt_lineas & 0x0F
+
+    @property
+    def cnt_azul(self) -> int:
+        return (self.cnt_lineas >> 4) & 0x0F
+
+    @property
+    def boton(self) -> bool:
+        """Nivel del pulsador de armar/desarmar (ya con antirrebote)."""
+        return bool(self.botones & B_BOTON)
+
+    @property
+    def corte_por_boton(self) -> bool:
+        """El ESP32 tiene la traccion cortada porque se pulso el boton con el
+        carro armado."""
+        return bool(self.botones & B_CORTE)
+
+    def a_bytes(self) -> bytes:
+        return empaquetar(TIPO_SENSORES, struct.pack(
+            "<hhHHHHBBB",
+            _lim(self.yaw_deci, -32768, 32767),
+            _lim(self.gz_deci, -32768, 32767),
+            _lim(self.c, 0, 65535), _lim(self.r, 0, 65535),
+            _lim(self.g, 0, 65535), _lim(self.b, 0, 65535),
+            self.estado & 0xFF, self.cnt_lineas & 0xFF,
+            self.botones & 0xFF))
+
+    @staticmethod
+    def desde_payload(payload: bytes) -> "Sensores":
+        (yaw, gz, c, r, g, b, est, cnt) = struct.unpack("<hhHHHHBB", payload[:14])
+        # 15 bytes = firmware con botones; 14 = firmware viejo, sin ellos
+        bot = payload[14] if len(payload) >= 15 else 0
+        return Sensores(yaw, gz, c, r, g, b, est, cnt, bot)
+
+
+# ---------------------------------------------------------------------------
 def empaquetar_config(servo_centro: int, servo_min: int, servo_max: int,
                       rampa_pwm: int, servo_grados_s: int) -> bytes:
-    """Ajustes en caliente. El firmware los vuelve a recortar contra sus
-    propios topes de compilacion: nada que llegue por el cable puede ampliar
-    el rango fisico del servo, solo estrecharlo."""
+    """Ajustes de servo/motor en caliente. El firmware los recorta contra sus
+    topes de compilacion: nada que llegue por el cable amplia el rango fisico."""
     return empaquetar(TIPO_CONFIG, struct.pack(
         "<BBBBBB", _lim(servo_centro, 0, 255), _lim(servo_min, 0, 255),
         _lim(servo_max, 0, 255), _lim(rampa_pwm, 1, 255),
         _lim(servo_grados_s // 10, 1, 255), 0))
 
 
+def empaquetar_cfg_tcs(c_min: int,
+                       naranja_r_min: int, naranja_b_max: int,
+                       azul_b_min: int, azul_r_max: int,
+                       muestras_min: int, refractario_ds: int,
+                       atime: int, gain: int,
+                       naranja_dif_min: int = 30,
+                       azul_dif_min: int = 18,
+                       int_umbral_pct: int = 55) -> bytes:
+    """Umbrales del clasificador de lineas del ESP32.
+
+    El clasificador trabaja con RATIOS normalizados r*255/c y b*255/c, que casi
+    no dependen de la luz:
+      naranja: ratio_r >= naranja_r_min  Y  ratio_b <= naranja_b_max
+      azul:    ratio_b >= azul_b_min     Y  ratio_r <= azul_r_max
+    ademas el canal claro c debe superar c_min (si no, es sombra/borde).
+
+    muestras_min: lecturas seguidas iguales antes de dar el cruce por bueno.
+    refractario_ds: decimas de segundo sin admitir OTRO cruce del mismo color
+                    (una linea de 20 mm se cruza una vez, no tres).
+    atime/gain: registros crudos del TCS34725 (0xF6 = 24 ms; gain 2 = x16).
+    """
+    return empaquetar(TIPO_CFG_TCS, struct.pack(
+        "<HBBBBBBBBBBB", _lim(c_min, 0, 65535),
+        _lim(naranja_r_min, 0, 255), _lim(naranja_b_max, 0, 255),
+        _lim(azul_b_min, 0, 255), _lim(azul_r_max, 0, 255),
+        _lim(muestras_min, 1, 10), _lim(refractario_ds, 1, 255),
+        _lim(atime, 0, 255), _lim(gain, 0, 3),
+        _lim(naranja_dif_min, 0, 255), _lim(azul_dif_min, 0, 255),
+        _lim(int_umbral_pct, 5, 95)))
+
+
+def empaquetar_cal(cmd: int) -> bytes:
+    return empaquetar(TIPO_CMD_CAL, bytes((_lim(cmd, 0, 255),)))
+
+
 # ---------------------------------------------------------------------------
 class Lector:
     """Lector con reintento hacia atras. Gemelo de proto::Lector en C++.
 
-    Acumula los bytes que llegan del puerto y reescanea el buffer. Un lector
-    "de una pasada" tiene un agujero: si llega una trama truncada, se traga los
-    bytes de la SIGUIENTE creyendo que son su payload y pierde las dos. Aqui,
-    si el CRC falla, se avanza un solo byte y se vuelve a buscar el sync, asi
-    que una trama buena escondida detras de basura se recupera igual.
+    Si el CRC falla se avanza UN byte y se vuelve a buscar el sync: una trama
+    buena escondida detras de basura se recupera igual.
     """
 
-    CAP = 256          # en Python podemos permitirnos mas holgura que en el ESP32
+    CAP = 256
 
     def __init__(self):
         self.reiniciar()
@@ -222,7 +382,6 @@ class Lector:
         salida: List[Tuple[int, bytes]] = []
         buf = self._buf
         while True:
-            # tirar lo que no puede ser el arranque de una trama
             while buf and buf[0] != SYNC1:
                 del buf[0]
                 self.descartados += 1
