@@ -305,6 +305,15 @@ pisar la linea, mucho mas que `refractario_ms`, asi que con el refractario
 como unico guardia la misma curva se contaba dos veces. Ademas el giro tiene
 que ir hacia el lado de la ronda.
 
+**La linea es la que dispara el giro, y eso vive en `navegacion.linea_dispara_esquina`.**
+Es el parametro mas facil de dejar apagado sin darse cuenta y el que mas caro
+sale: con el apagado la linea del piso **solo cuenta**, no gira, y el carro
+sigue de largo por la esquina hasta que la vision se asusta a `girar_bajo_mm`
+de la pared — que es demasiado tarde para doblar, asi que acaba en escape. El
+sintoma exacto es "cruza la linea y no gira". El selftest lo comprueba ahora
+sobre el perfil activo: si `esquina_color.activo` esta encendido,
+`linea_dispara_esquina` tiene que estarlo tambien.
+
 Ojo con el **sentido**: si el TCS se pierde la primera linea, la siguiente que
 pisa es la del OTRO color — la de salida de la curva — y esa declara el
 sentido contrario para toda la ronda. Es exactamente lo que pasaba en
@@ -318,6 +327,19 @@ aunque `lineas.usar_camara` este apagado, porque sugerir no es contar: la
 camara no cuenta esquinas ni marca cruces, solo dice hacia donde va la ronda.
 Con `carrera.sentido` forzado desde la web tampoco pasa, y ahi cuenta el color
 de ese sentido aunque la primera linea vista fuera la otra.
+
+Y por si aun asi el sentido sale al reves —la camara puede votar mal, o el TCS
+puede sencillamente no ver ese color—, hay una **red de ultima instancia**: si
+el sentido esta invertido, todas las lineas que el carro pisa son "la otra",
+se ignoran una tras otra y el marcador de esquinas **no se mueve nunca**. Eso
+no es mala suerte, es que el color que estamos esperando no va a llegar. A las
+`ignoradas_para_invertir` (2) lineas ignoradas **sin una sola esquina
+contada**, se adopta el color que el sensor si esta viendo y la ronda se
+salva. Con una esquina ya contada no vuelve a dispararse nunca, asi que la
+segunda linea de cada curva —que se ignora siempre, y con razon— no puede
+invertir nada; y con el sentido forzado desde la web no se toca. En la web
+sale como *inversiones* en la fila de lineas: si ahi hay algo distinto de 0,
+el sentido automatico fallo y hay que mirar el TCS.
 
 En banco: pestaña Carrera, boton **Esquina por color**, luego *Probar esquina
 (linea naranja)* -> debe girar a la derecha; *Simular linea azul* -> debe salir
@@ -370,6 +392,42 @@ Comprobacion aparte, que el codigo no puede hacer por ti: si en la web
 `carrera.sentido` esta forzado a "horario" y corres en antihorario, el modo
 por color ignora las azules y gira a la derecha en cada naranja, que en
 antihorario es la linea de SALIDA de la curva. Dejalo en AUTO salvo en pruebas.
+
+## La reversa del escape tiene que mirar hacia donde dobla la ronda
+
+Sintoma en pista, en antihorario: el carro llega a la esquina, no cabe,
+**retrocede girando hacia el lado contrario del que hace falta** y se queda
+encajado en la curva, intento tras intento.
+
+El volante de la reversa se elegia siempre por geometria:
+
+```python
+lado_muro = -1 if p.izq < p.der else 1      # "donde se ve mas hueco"
+```
+
+y a menos de `parar_bajo_mm` de la pared, con el muro llenando el cuadro, esa
+diferencia **es ruido**: las dos bandas laterales leen practicamente lo mismo y
+el signo sale a cara o cruz. La mitad de las veces el carro retrocedia girando
+al reves. Es la misma leccion que ya estaba escrita diez lineas mas arriba,
+para el giro de rescate — *"elegir donde haya mas hueco es lo que podia dejar
+al carro encarado hacia atras"* — y que a la marcha atras no se le habia
+aplicado.
+
+Dentro de una esquina el lado **no hay que mirarlo**: la ronda dobla siempre
+hacia el mismo sitio. Y con direccion Ackermann, reversa + volante a un lado
+rota el morro hacia el lado *contrario* (la misma geometria que usa el giro de
+dos tiempos), asi que el volante correcto es `-sentido`:
+
+| Ronda | Volante en la reversa | Que hace el morro |
+|---|---|---|
+| horario (`+1`) | izquierda | rota a la derecha, hacia la curva |
+| antihorario (`-1`) | **derecha** | rota a la izquierda, hacia la curva |
+
+Fuera de la esquina sigue mandando la vista: ahi el muro de delante suele ser
+una pared lateral porque el carro va cruzado, y girar "hacia la ronda" lo
+meteria mas contra ella. En la web el motivo de la decision dice cual de las
+dos reglas se aplico: *escape #N pasillo=... (hacia la curva)* o
+*(separandose del muro)*.
 
 ## Freno ante linea (que el TCS no se la salte)
 
@@ -829,6 +887,8 @@ Detalles que importan:
 | `esquina_color.dir_pct` / `vel_max_pct` / `vel_min_pct` | Cuanto dobla hacia adentro y a que velocidad (variable con el pasillo). |
 | `esquina_color.refractario_ms` | Ventana en la que la misma linea pisada otra vez no cuenta. |
 | `esquina_color.contar_giro_sin_linea` | Que el giro de 90 cuente la esquina que el TCS no vio. Dejalo encendido: sin el, una linea perdida deja la ronda sin parada en meta. |
+| `navegacion.linea_dispara_esquina` | **Encendido siempre en modo color.** Es lo que hace que la linea GIRE y no solo cuente. Apagado, el carro cruza la linea y sigue de largo hasta la pared. |
+| `esquina_color.ignoradas_para_invertir` | Lineas del otro color ignoradas, sin contar ni una esquina, antes de aceptar que el sentido salio al reves y corregirlo. |
 | `carrera.vueltas` / `autostop` | 3 y encendido para una ronda de verdad. Revisalos antes de cada tanda: un perfil de pruebas con 1 vuelta o con el autostop apagado parece "el carro no para". |
 | `tcs.c_min` | Claro minimo para clasificar. **Tiene que quedar por debajo del claro de la LINEA**, no del piso: es la trampa que dejo al carro sin ver las azules. |
 | `tcs.azul_dif_min` / `azul_b_min` | Lo que decide el azul con el carro en marcha, cuando la muestra mezcla linea y piso. |

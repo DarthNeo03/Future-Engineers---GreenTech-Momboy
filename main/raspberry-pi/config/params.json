@@ -71,8 +71,8 @@
      "giro_max_ms": 3000,
      "min_recto_ms": 700,
      "cobertura_esquina": 0.22,
-     "giro_por_linea": false,
-     "linea_dispara_esquina": false,
+     "giro_por_linea": true,
+     "linea_dispara_esquina": true,
      "bloqueo_esquina": true,
      "usar_rectas": true,
      "usar_yaw": true,
@@ -109,7 +109,8 @@
      "reanudar_tras_ms": 400,
      "refractario_ms": 2000,
      "vision_dispara": true,
-     "contar_giro_sin_linea": true
+     "contar_giro_sin_linea": true,
+     "ignoradas_para_invertir": 2
     },
     "escape": {
      "escape_min_ms": 771,

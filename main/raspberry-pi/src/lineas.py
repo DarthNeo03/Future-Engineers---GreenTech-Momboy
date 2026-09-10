@@ -182,6 +182,7 @@ class GestorLineas:
         self.sentido_forzado = "auto"
         self.ignoradas = 0                  # lineas del otro color (modo color)
         self.rebotes = 0                    # misma linea repetida (modo color)
+        self.inversiones = 0                # veces que se corrigio el sentido
         self._disparo_pendiente = False     # linea buena sin atender aun
         ### freno ante linea: la camara mide la distancia a la linea mas
         ### cercana SIEMPRE (aunque usar_camara este apagado, que solo manda
@@ -454,8 +455,31 @@ class GestorLineas:
         objetivo = self.color_objetivo()
         if color != objetivo:
             self.ignoradas += 1
-            self.ultimo_evento = f"{color} ({fuente}) ignorada: cuentan las {objetivo}"
-            return False
+            ### CONTRADICCION FISICA, y la red que faltaba: si el sentido salio
+            ### al reves -o el TCS sencillamente no ve ese color- entonces
+            ### TODAS las lineas que el carro pisa son "la otra", se ignoran una
+            ### tras otra y el marcador de esquinas no se mueve NUNCA. Dos asi
+            ### seguidas sin haber contado una sola esquina no es mala suerte:
+            ### es que el color que estamos esperando no va a llegar. Se adopta
+            ### el color que el sensor SI esta viendo y la ronda se salva.
+            ### Con el sentido forzado desde la web no se toca: ahi manda el
+            ### humano. Y en cuanto haya UNA esquina contada esto no vuelve a
+            ### dispararse, asi que la segunda linea de cada curva -que se
+            ### ignora siempre, y con razon- no puede invertir nada.
+            if (self.sentido_forzado == "auto" and self.esquinas == 0
+                    and self.ignoradas >= int(self.cfg_color.get(
+                        "ignoradas_para_invertir", 2))):
+                self.sentido = self._sentido_de(color)
+                self.inversiones += 1
+                objetivo = color
+                self.ultimo_evento = (
+                    f"{color} ({fuente}): {self.ignoradas} lineas ignoradas y "
+                    f"0 esquinas -> SENTIDO INVERTIDO a "
+                    f"{'horario' if self.sentido == HORARIO else 'antihorario'}")
+            else:
+                self.ultimo_evento = (f"{color} ({fuente}) ignorada: "
+                                      f"cuentan las {objetivo}")
+                return False
         refract = float(self.cfg_color.get("refractario_ms", 2000)) / 1000.0
         if ahora - self._t_esquina < refract:
             ### misma linea pisada otra vez (rebote del sensor o el carro que
@@ -617,6 +641,7 @@ class GestorLineas:
             "color_objetivo": self.color_objetivo() if self.modo_color else "",
             "ignoradas": self.ignoradas,
             "rebotes": self.rebotes,
+            "inversiones": self.inversiones,
             "linea_vista_mm": (None if self.dist_linea_vista is None
                                else round(self.dist_linea_vista)),
             "freno": round(self.freno_linea(), 2),

@@ -563,6 +563,39 @@ if nav4.estado in ("pre_giro", "giro"):
 else:
     prueba("con a pared a un lado navega o gira", d4.vel != 0, d4.estado)
 
+# --- la reversa del escape mira hacia donde dobla la ronda -----------------
+### Sintoma en pista, en antihorario: el carro llega a la esquina, no cabe,
+### retrocede... y retrocede girando al lado contrario del que hace falta, asi
+### que se queda encajado en la curva. El volante de la reversa se elegia
+### SIEMPRE por "donde se ve mas hueco", y a menos de parar_bajo_mm de la
+### pared, con el muro llenando el cuadro, esa diferencia es ruido. Dentro de
+### una esquina el lado se sabe sin mirar: lo dice el sentido de la ronda.
+### (Reversa + volante a un lado rota el morro al lado CONTRARIO, misma
+### geometria Ackermann que el giro de dos tiempos: volante -sentido.)
+n_esc_a = Navegador(ncfg["navegacion"], ncfg["limites"], ncfg["escape"])
+d_esc_a = n_esc_a.paso(p_cerca, None, ANTIHORARIO, en_esquina=True)
+prueba("escape en antihorario y dentro de la esquina: volante a la DERECHA",
+       d_esc_a.estado == ESCAPE and d_esc_a.vel < 0 and d_esc_a.direccion > 0,
+       f"{d_esc_a.estado} vel={d_esc_a.vel} dir={d_esc_a.direccion}")
+n_esc_h = Navegador(ncfg["navegacion"], ncfg["limites"], ncfg["escape"])
+d_esc_h = n_esc_h.paso(p_cerca, None, HORARIO, en_esquina=True)
+prueba("escape en horario y dentro de la esquina: volante a la IZQUIERDA",
+       d_esc_h.estado == ESCAPE and d_esc_h.direccion < 0,
+       f"vel={d_esc_h.vel} dir={d_esc_h.direccion}")
+prueba("escape: los dos sentidos dan volantes opuestos",
+       d_esc_a.direccion == -d_esc_h.direccion,
+       f"{d_esc_a.direccion} vs {d_esc_h.direccion}")
+# fuera de la esquina manda la geometria: el muro de delante puede ser una
+# pared lateral por ir cruzado, y girar "hacia la ronda" lo metería contra ella
+n_esc_r = Navegador(ncfg["navegacion"], ncfg["limites"], ncfg["escape"])
+lado_vista, regla_vista = n_esc_r._lado_escape(p_mitad, ANTIHORARIO, False)
+prueba("escape en recta: sigue mandando la vista (muro a la izq -> volante izq)",
+       lado_vista == -1 and regla_vista == "separandose del muro",
+       f"{lado_vista} {regla_vista}")
+lado_ciego, _ = n_esc_r._lado_escape(p_mitad, 0, True)
+prueba("escape sin sentido conocido: tambien manda la vista", lado_ciego == -1,
+       str(lado_ciego))
+
 # ===========================================================================
 print("== esquinas: bucle y giro de dos tiempos ==")
 
@@ -1096,6 +1129,46 @@ gsin.evento_tcs("naranja")
 prueba("sentido: sin sugerencia sigue mandando la primera linea pisada",
        gsin.sentido == HORARIO and gsin.esquinas == 1)
 
+# --- y si aun asi el sentido sale al reves, se corrige solo ---------------
+### La red de ultima instancia. Si el sentido quedo invertido -o el TCS
+### sencillamente no ve ese color- TODAS las lineas que pisa el carro son "la
+### otra": se ignoran una tras otra y el marcador de esquinas no se mueve
+### nunca. Eso no es mala suerte, es que el color que esperamos no va a
+### llegar.
+ginv = GestorLineas(lin_red, cfg_color=dict(cfg_red, ignoradas_para_invertir=2))
+ginv.sentido = ANTIHORARIO                     # p.ej. la camara voto mal
+prueba("inversion: la 1a linea del otro color solo se ignora",
+       ginv.evento_tcs("naranja") is False and ginv.esquinas == 0
+       and ginv.ignoradas == 1, ginv.ultimo_evento)
+time.sleep(0.35)
+prueba("inversion: la 2a sin ninguna esquina contada invierte el sentido",
+       ginv.evento_tcs("naranja") is True and ginv.sentido == HORARIO
+       and ginv.esquinas == 1 and ginv.inversiones == 1, ginv.ultimo_evento)
+time.sleep(0.35)
+ginv.evento_tcs("azul")
+prueba("inversion: y desde ahi cuenta el color bueno, ignorando el otro",
+       ginv.esquinas == 1 and ginv.inversiones == 1, ginv.ultimo_evento)
+
+# con una esquina ya contada NO puede volver a dispararse: la segunda linea de
+# cada curva se ignora siempre, y con razon
+gno = GestorLineas(lin_red, cfg_color=dict(cfg_red, ignoradas_para_invertir=2))
+gno.evento_tcs("naranja")                      # horario, cuenta 1
+for _ in range(4):
+    time.sleep(0.35)
+    gno.evento_tcs("azul")                     # las azules de salida de cada curva
+prueba("inversion: con esquinas ya contadas, las del otro color no invierten",
+       gno.sentido == HORARIO and gno.inversiones == 0 and gno.ignoradas == 4,
+       f"{gno.sentido} inv={gno.inversiones}")
+
+# con el sentido forzado desde la web manda el humano, pase lo que pase
+gfz = GestorLineas(lin_red, cfg_color=dict(cfg_red, ignoradas_para_invertir=2))
+gfz.sentido_forzado = "antihorario"
+for _ in range(3):
+    gfz.evento_tcs("naranja")
+    time.sleep(0.35)
+prueba("inversion: con el sentido forzado no se invierte nada",
+       gfz.inversiones == 0 and gfz.esquinas == 0, gfz.ultimo_evento)
+
 # --- el cronometro del reglamento no depende del autostop ------------------
 gt = GestorLineas(lin_red, cfg_color=cfg_red)
 cart = Carrera({"vueltas": 3, "esquinas_por_vuelta": 4, "parada_ms": 0,
@@ -1121,6 +1194,15 @@ _BLANCO_PISTA = (3368, 1120, 1120, 1128)
 _pj = _json.loads((RAIZ / "config" / "params.json").read_text(encoding="utf-8"))
 _act = [x for x in _pj["perfiles"] if x["nombre"] == _pj["activo"]][0]
 _tcs_activo = _act["valores"]["tcs"]
+### Y la otra trampa de perfil, la que dejo al carro sin girar en la esquina:
+### en modo color la linea del piso es LA que dispara el giro ("cuenta una
+### esquina y dispara el giro hacia adentro"). Con linea_dispara_esquina
+### apagado la linea solo cuenta, y el carro sigue de largo hasta que la
+### vision se asusta a girar_bajo_mm de la pared.
+if _act["valores"]["esquina_color"]["activo"]:
+    prueba("perfil activo: en modo color la linea del piso dispara el giro",
+           _act["valores"]["navegacion"]["linea_dispara_esquina"] is True,
+           "linea_dispara_esquina apagado con esquina_color encendido")
 prueba("perfil activo: la linea azul medida en pista se clasifica azul",
        _clase_tcs(*_AZUL_PISTA, _tcs_activo) == "azul",
        f"c_min={_tcs_activo['c_min']} -> {_clase_tcs(*_AZUL_PISTA, _tcs_activo)}")

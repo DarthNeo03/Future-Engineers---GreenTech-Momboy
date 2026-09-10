@@ -25,8 +25,11 @@ Maquina de estados:
   * ESCAPE     el pasillo se cerro de verdad: marcha atras COMPROMETIDA
                (minimo + extra segun el deficit). Ir y venir cada 500 ms
                frente a un muro es exactamente como se choca; el compromiso
-               es la cura. La direccion va HACIA el muro para que el morro
-               se separe, como al salir de un estacionamiento.
+               es la cura. El volante va HACIA el muro para que el morro se
+               separe, como al salir de un estacionamiento; pero DENTRO de una
+               esquina no se pregunta a la vision: se mete -sentido, que con
+               marcha atras rota el morro hacia adentro de la curva
+               (_lado_escape).
   * GIRO_COLOR (esquina_color.activo) giro hacia ADENTRO de la pista con
                velocidad variable segun el pasillo, que se SUELTA en el acto
                si aparece un pilar (manda el esquive, en RECTO) y se retoma
@@ -199,6 +202,35 @@ class Navegador:
     def modo_color(self) -> bool:
         return bool(self.gc.get("activo", False))
 
+    def _lado_escape(self, p: PerfilMuro, sentido: int,
+                     en_esquina: bool) -> Tuple[int, str]:
+        """Hacia que lado va el volante durante la REVERSA del escape.
+
+        Con direccion Ackermann, reversa + volante a un lado hace rotar el
+        MORRO hacia el lado contrario (es la misma geometria que usa el giro
+        de dos tiempos: "avance con el volante hacia el giro y reversa con el
+        volante al contrario rotan el carro igual"). Asi que para que el morro
+        acabe apuntando hacia ADENTRO de la curva hay que meter volante
+        -sentido: en antihorario, volante a la DERECHA.
+
+        DENTRO DE UNA ESQUINA eso se sabe sin mirar nada, porque la ronda
+        dobla siempre hacia el mismo lado. Antes se decidia tambien aqui por
+        "donde se ve mas hueco", y a menos de parar_bajo_mm de la pared, con
+        el muro llenando el cuadro, esa diferencia es ruido: salia al reves
+        muy a menudo, el carro retrocedia girando hacia el lado equivocado y
+        se quedaba encajado en la curva. Es exactamente la leccion que ya
+        estaba escrita unas lineas mas arriba para el giro de rescate ("elegir
+        donde haya mas hueco es lo que podia dejar al carro encarado hacia
+        atras") y que a la reversa no se le habia aplicado.
+
+        FUERA de la esquina sigue mandando la geometria: ahi el muro de
+        delante suele ser una pared lateral porque el carro va cruzado, y
+        girar "hacia la ronda" lo meteria mas contra ella.
+        """
+        if sentido != 0 and en_esquina:
+            return -sentido, "hacia la curva"
+        return (-1 if p.izq < p.der else 1), "separandose del muro"
+
     def rearmar_esquina(self) -> None:
         """(modo color) Acaba de pisarse una linea buena. Si el carro esta en
         recta y sin giro a medias, la esquina se atiende aunque la zona de la
@@ -325,12 +357,13 @@ class Navegador:
                     self._t_fin_escape = ahora + comp / 1000.0
                     self._escape_intentos += 1
             if self.estado == ESCAPE:
-                lado_muro = -1 if p.izq < p.der else 1   # donde esta el muro
+                lado, regla = self._lado_escape(p, sentido, en_esquina)
                 return self._salida(
                     -float(lim.get("vel_reversa", 35)),
-                    lado_muro * float(esc.get("escape_dir", 80.0)),
+                    lado * float(esc.get("escape_dir", 80.0)),
                     p, yaw, sentido,
-                    f"escape #{self._escape_intentos} pasillo={pasillo:.0f}mm")
+                    f"escape #{self._escape_intentos} pasillo={pasillo:.0f}mm "
+                    f"({regla})")
 
         # =================== PRE_GIRO =====================================
         if self.estado == PRE_GIRO:
