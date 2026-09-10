@@ -77,7 +77,9 @@ carro; el programa se lanza como demonio con `./piloto.sh arrancar`. Ver
    ignora, y el giro se suelta al ver un pilar. Ver su seccion mas abajo.
 5. **Parada final**: tras la esquina 12 avanza `carrera.parada_ms` para meter
    el carro ENTERO en la seccion de meta y se detiene solo (bono del
-   reglamento). Tope de 3 minutos.
+   reglamento). El tope de 3 minutos (`carrera.tiempo_max_s`) es del
+   reglamento y va por delante de todo: `carrera.autostop` apaga la parada por
+   vueltas para pruebas de resistencia, **nunca el cronometro**.
 
 **Obstaculos (basico, apagado por defecto)**: `obstaculos.activo` en la web.
 Pilar rojo se pasa por la derecha, verde por la izquierda; el punto de paso se
@@ -287,16 +289,35 @@ hecha. Si un escape interrumpe el giro, al volver tambien se retoma.
 Con el modo encendido no se usan ni el par de lineas ni el giro de dos
 tiempos. La esquina se cuenta al **pisar** la linea (antes de girar), asi que
 la carrera espera a salir de la zona de esquina antes de arrancar la parada
-en meta. El giro de 90 completado ya no cuenta esquina (salvo
-`contar_giro_sin_linea`): si el TCS se pierde una linea, esa esquina no suma;
-mejor perder una que sumar una. La vision (pasillo cerrandose, pared de
-frente) sigue pudiendo disparar este mismo giro por si el TCS falla
-(`vision_dispara`); tambien se le puede quitar el voto.
+en meta. La vision (pasillo cerrandose, pared de frente) sigue pudiendo
+disparar este mismo giro por si el TCS falla (`vision_dispara`); tambien se le
+puede quitar el voto.
 
-Ojo: si el TCS se pierde la primera naranja y ve la azul, el sentido sale al
-reves toda la ronda. Es el precio de usar solo el TCS; con
-`carrera.sentido` forzado desde la web no pasa, y ahi cuenta el color de ese
-sentido aunque la primera linea vista fuera la otra.
+**Y el giro de 90 completado cuenta la esquina que la linea no conto**
+(`contar_giro_sin_linea`, encendido). Esto empezo apagado con el argumento de
+"mejor perder una que sumar una", y en pista salio carisimo: en modo color la
+carrera no llega a la meta de esquinas si el TCS se pierde UNA sola linea en
+toda la ronda, asi que el autostop no dispara nunca y el carro sigue dando
+vueltas hasta que se acaba el tiempo — sin parada en meta y sin bonificacion.
+Contar por giro no duplica porque el guardia es **`_contada`** (esta curva ya
+la conto una linea), no el refractario: el giro termina *segundos despues* de
+pisar la linea, mucho mas que `refractario_ms`, asi que con el refractario
+como unico guardia la misma curva se contaba dos veces. Ademas el giro tiene
+que ir hacia el lado de la ronda.
+
+Ojo con el **sentido**: si el TCS se pierde la primera linea, la siguiente que
+pisa es la del OTRO color — la de salida de la curva — y esa declara el
+sentido contrario para toda la ronda. Es exactamente lo que pasaba en
+antihorario mientras el `c_min` se comia las azules: el carro tomaba la
+naranja de salida como "horario" y doblaba a la derecha en cada esquina, o
+sea contra la curva, sin poder salir de ella. Por eso ahora **la camara vota
+el sentido antes de pisar nada**: si ve las dos lineas del piso delante, la
+mas cercana es la que se cruzara primero, y con `sugerencia_votos` cuadros
+seguidos de acuerdo esa sugerencia **manda sobre la linea pisada**. Funciona
+aunque `lineas.usar_camara` este apagado, porque sugerir no es contar: la
+camara no cuenta esquinas ni marca cruces, solo dice hacia donde va la ronda.
+Con `carrera.sentido` forzado desde la web tampoco pasa, y ahi cuenta el color
+de ese sentido aunque la primera linea vista fuera la otra.
 
 En banco: pestaña Carrera, boton **Esquina por color**, luego *Probar esquina
 (linea naranja)* -> debe girar a la derecha; *Simular linea azul* -> debe salir
@@ -570,6 +591,33 @@ Habia dos causas, y la segunda es la que de verdad mordia:
    el 8 %, y **muestrear una linea baja el `c_min`** si hace falta para que esa
    linea entre.
 
+3. **Arreglar el codigo no arregla los perfiles ya guardados.** Los dos puntos
+   de arriba se corrigieron en la regla de calibracion, pero los perfiles del
+   8 de septiembre seguian llevando `c_min=842` dentro, porque un perfil
+   guardado es una foto de los numeros de aquel dia: mientras no se vuelva a
+   muestrear, el carro sale a pista con el valor viejo. Por eso el selftest
+   comprueba ahora **el perfil ACTIVO de `config/params.json`**, no solo la
+   funcion: la lectura real de la linea azul tiene que clasificarse como azul
+   con los umbrales que el carro va a usar de verdad.
+
+4. **La muestra a medio borde, que es la unica que hay con el carro andando.**
+   El sensor integra 24 ms y en ese rato el borde de la linea se mueve, asi
+   que la ventana mezcla linea y piso. Y la mezcla no es mitad y mitad en los
+   ratios: el piso blanco devuelve cinco veces mas luz que la linea azul, asi
+   que **domina la lectura y aplasta la diferencia b-r**. Con la ventana un
+   75 % sobre la linea, esa diferencia cae de 36 a 14 puntos: con
+   `azul_dif_min` en 18 la muestra se perdia aunque el sensor estuviera encima
+   de la linea. De ahi el "no ve el azul en movimiento" y de ahi que las rejas
+   absolutas (`azul_b_min`) tengan que quedar POR DEBAJO del nivel del blanco
+   (~85) y no por encima. El naranja aguantaba porque su diferencia de partida
+   es mucho mayor, y por eso el mismo fallo no se notaba en horario.
+
+   Los tres remedios, por orden de coste: bajar `azul_dif_min` y las rejas
+   (gratis), encender `lineas.frenar_ante_linea` para llegar mas despacio a la
+   linea (gratis, la camara ya la ve venir) y bajar `tcs.atime` para tener mas
+   muestras por linea (obliga a repetir la calibracion del TCS, porque cambian
+   todos los valores absolutos, `c_min` incluido).
+
 En la pestaña Calibrar se ve la diferencia b-r, lo que dice el ESP32 y **lo
 que diria la Pi con los umbrales de ahora**. Si no coinciden, el ESP32 tiene
 firmware viejo: vuelve a subir `code/esp32_carro`.
@@ -771,6 +819,10 @@ Detalles que importan:
 | `esquina_color.activo` | Modo de esquina por color: un solo color cuenta y el giro cede al pilar. |
 | `esquina_color.dir_pct` / `vel_max_pct` / `vel_min_pct` | Cuanto dobla hacia adentro y a que velocidad (variable con el pasillo). |
 | `esquina_color.refractario_ms` | Ventana en la que la misma linea pisada otra vez no cuenta. |
+| `esquina_color.contar_giro_sin_linea` | Que el giro de 90 cuente la esquina que el TCS no vio. Dejalo encendido: sin el, una linea perdida deja la ronda sin parada en meta. |
+| `carrera.vueltas` / `autostop` | 3 y encendido para una ronda de verdad. Revisalos antes de cada tanda: un perfil de pruebas con 1 vuelta o con el autostop apagado parece "el carro no para". |
+| `tcs.c_min` | Claro minimo para clasificar. **Tiene que quedar por debajo del claro de la LINEA**, no del piso: es la trampa que dejo al carro sin ver las azules. |
+| `tcs.azul_dif_min` / `azul_b_min` | Lo que decide el azul con el carro en marcha, cuando la muestra mezcla linea y piso. |
 | `navegacion.reanclar_rumbo` | Adopta la recta real cuando el carro doblo una esquina que el codigo no registro. Dejalo encendido. |
 | `lineas.frenar_desde_mm` / `vel_linea_pct` / `frenar_tras_ms` | Freno ante linea vista por la camara, para que el TCS no se la salte. |
 

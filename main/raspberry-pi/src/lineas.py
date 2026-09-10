@@ -67,9 +67,20 @@ color es mas simple a proposito y el TCS solo hace dos cosas:
 
 Con eso la azul que llega tarde no puede disparar nada, y "la misma linea
 pisada dos veces" se resuelve con un refractario propio (refractario_ms). El
-giro de 90 completado aqui solo SACA de la zona; no cuenta (salvo
-contar_giro_sin_linea). Si el sentido viene forzado desde la web, se cuenta
-el color de ese sentido aunque la primera linea vista fuera la otra.
+giro de 90 completado SACA de la zona y, con contar_giro_sin_linea, cuenta la
+esquina que el TCS no vio: sin esa red una sola linea perdida deja la carrera
+sin alcanzar la meta de esquinas y el carro no se para nunca. Si el sentido
+viene forzado desde la web, se cuenta el color de ese sentido aunque la
+primera linea vista fuera la otra.
+
+QUIEN FIJA EL SENTIDO (y por que no basta la primera linea pisada)
+En modo color el sentido lo fija la primera linea... salvo que la camara ya
+haya votado. Si el TCS se pierde la primera linea de la ronda -la azul en
+antihorario- la siguiente que pisa es la naranja de SALIDA de la curva, que
+declara "horario", y a partir de ahi el carro dobla a la derecha en todas las
+esquinas: en antihorario eso es girar contra la curva y no poder salir de
+ella. La camara ve el par entero delante antes de cruzar nada, asi que su voto
+(estable durante varios cuadros) manda sobre la linea suelta.
 """
 
 from __future__ import annotations
@@ -180,6 +191,10 @@ class GestorLineas:
         self._t_linea_cerca = 0.0           # ultima vez que se vio a tiro
         self._t_tcs = 0.0                   # ultimo aviso del TCS, cuente o no
         self.sugerencia = DESCONOCIDO       # lo que la camara cree ver delante
+        ### la sugerencia se VOTA: un solo cuadro malo justo cuando se pisa la
+        ### primera linea invertiria el sentido de toda la ronda
+        self._sug_ultima = DESCONOCIDO
+        self._sug_votos = 0
         self.esquinas = 0
         self.orden_observado: List[str] = []   # colores 1a y 2a de la ultima esquina
         self._t_esquina = 0.0               # cuando se conto la ultima esquina
@@ -277,18 +292,26 @@ class GestorLineas:
                 <= float(self.cfg.get("frenar_desde_mm", 500.0))):
             self._t_linea_cerca = time.time()
 
+        # SUGERENCIA DE SENTIDO: si se ven las dos lineas, la mas cercana es la
+        # que se cruzara primero. Se calcula SIEMPRE, tambien con usar_camara
+        # apagado, porque mirar no es contar: es el unico dato que el carro
+        # tiene ANTES de pisar la primera linea, y es lo que salva la ronda
+        # cuando el TCS se pierde justo esa (ver _evento_color). Se vota
+        # durante varios cuadros: un solo cuadro raro no puede invertir la
+        # ronda entera.
+        if len(distancias) == 2:
+            dn, da = distancias["naranja"], distancias["azul"]
+            if abs(dn - da) > 80.0:
+                s = self._sentido_de("naranja" if dn < da else "azul")
+                self._sug_votos = (self._sug_votos + 1
+                                   if s == self._sug_ultima else 1)
+                self._sug_ultima = s
+                if self._sug_votos >= int(self.cfg.get("sugerencia_votos", 3)):
+                    self.sugerencia = s
+
         if not bool(self.cfg.get("usar_camara", True)):
             return
         self.dist_lineas = distancias
-
-        # sugerencia de sentido: si se ven las dos lineas, la mas cercana es
-        # la que se cruzara primero
-        if len(self.dist_lineas) == 2:
-            dn = self.dist_lineas["naranja"]
-            da = self.dist_lineas["azul"]
-            if abs(dn - da) > 80.0:
-                primera = "naranja" if dn < da else "azul"
-                self.sugerencia = self._sentido_de(primera)
 
         # cruce por camara: la linea llego al morro
         umbral = float(self.cfg.get("umbral_cruce_mm", 260.0))
@@ -311,15 +334,27 @@ class GestorLineas:
             self.sentido = HORARIO if lado > 0 else ANTIHORARIO
         self.salir_de_esquina("giro de 90 completado")
         if self.modo_color:
-            ### aqui el giro solo cierra la zona: la cuenta la llevan las
-            ### lineas del color. Probe a dejar que el giro contara "si no
-            ### habia linea" y con un TCS que rebota se colaban esquinas de
-            ### mas; mejor perder una que sumar una.
+            ### La cuenta la llevan las lineas del color; el giro es la RED DE
+            ### SEGURIDAD (contar_giro_sin_linea): una curva doblada de verdad
+            ### que el TCS no vio igual suma. Sin ella, una sola linea perdida
+            ### en toda la ronda deja la carrera sin llegar nunca a la meta de
+            ### esquinas, el autostop no dispara y el carro sigue dando vueltas
+            ### hasta que se acaba el tiempo. Eso es exactamente lo que pasaba.
+            ###
+            ### EL GUARDIA ES _contada, NO EL REFRACTARIO. El giro termina
+            ### segundos DESPUES de pisar la linea (mas que refractario_ms), asi
+            ### que con el refractario como unico guardia la MISMA curva se
+            ### contaba dos veces: linea + giro. Se cuenta solo si esta curva
+            ### no la conto ya una linea, y al acabarla se rearma para la
+            ### siguiente. El refractario se queda como reja contra giros
+            ### encadenados, y el lado tiene que ser el de la ronda.
             if (bool(self.cfg_color.get("contar_giro_sin_linea", False))
+                    and not self._contada
+                    and (self.sentido == DESCONOCIDO or lado == self.sentido)
                     and (ahora - self._t_esquina) * 1000 >= float(
                         self.cfg_color.get("refractario_ms", 2000))):
-                self._contada = False
                 self._contar_esquina(ahora, "esquina por giro (sin linea)")
+            self._contada = False
             return
         if self._esquina_abierta:
             # La curva la abrio una linea: se da por contada aunque la segunda
@@ -406,10 +441,16 @@ class GestorLineas:
         """Modo por color. La primera linea fija el sentido; desde ahi solo
         existe el color de ese sentido. Devuelve True si la linea cuenta."""
         if self.sentido == DESCONOCIDO:
-            ### OJO: si el TCS se pierde la primera naranja y ve la azul,
-            ### el sentido sale al reves toda la ronda. Es el precio de usar
-            ### solo el TCS; con carrera.sentido forzado no pasa.
-            self.sentido = self._sentido_de(color)
+            ### La primera linea PISADA fija el sentido... salvo que la camara
+            ### ya haya votado otra cosa mirando el par de lineas de delante.
+            ### Ese matiz es toda la ronda antihoraria: si el TCS se pierde la
+            ### azul de ENTRADA (que es lo que pasaba con c_min demasiado
+            ### alto), la naranja de SALIDA de la curva declaraba "horario" y
+            ### el carro doblaba a la derecha en cada esquina el resto de la
+            ### ronda, sin poder salir de ninguna. Con carrera.sentido forzado
+            ### no se llega hasta aqui.
+            self.sentido = (self.sugerencia if self.sugerencia != DESCONOCIDO
+                            else self._sentido_de(color))
         objetivo = self.color_objetivo()
         if color != objetivo:
             self.ignoradas += 1

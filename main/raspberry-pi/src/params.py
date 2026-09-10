@@ -216,7 +216,7 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "reanudar_tras_ms": _p("int", 400, "Cuanto tiene que llevar el pilar fuera de juego antes de retomar el giro. Sin esta espera el carro alterna cada frame entre 'girar adentro' y 'esquivar' cuando el pilar entra y sale del cuadro por el propio giro.", 0, 3000),
         "refractario_ms": _p("int", 2000, "Tras contar una linea del color del sentido, otra del MISMO color dentro de este tiempo es la misma linea (rebote, o el carro que la vuelve a pisar al maniobrar) y no cuenta ni gira. Tiene que ser mas corto que el tiempo entre dos esquinas: a media velocidad, con secciones de 600 mm, van unos 3 s.", 300, 8000),
         "vision_dispara": _p("bool", True, "Dejar que la vision (pasillo cerrandose, pared de frente, muro interno que desaparece) tambien dispare este giro cuando el TCS no vio la linea. El giro sigue siendo interrumpible por pilar. Apagado: solo giran las lineas del piso; la vision se limita a frenar y escapar."),
-        "contar_giro_sin_linea": _p("bool", False, "Contar tambien la esquina cuando el giro nacio de la vision sin haber pisado la linea del color. Apagado: en este modo solo cuentan las lineas, que es la regla; si el TCS se pierde una, esa esquina no suma."),
+        "contar_giro_sin_linea": _p("bool", True, "Contar tambien la esquina cuando el giro de 90 se completo sin haber pisado la linea del color (el TCS se la perdio). Es la red que hace que la parada en meta llegue: la esquina que ya conto una linea NUNCA se cuenta dos veces, y el giro tiene que ir hacia el lado de la ronda. Apagado, solo cuentan las lineas: una sola perdida y la carrera no alcanza la meta de esquinas, no se para, y se acaba el tiempo."),
     },
 
     "escape": {
@@ -231,6 +231,7 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "usar_tcs": _p("bool", True, "Contar lineas con el TCS34725 del ESP32 (el metodo casi infalible)."),
         "usar_camara": _p("bool", True, "Contar/anticipar lineas tambien con la camara (redundancia y deteccion de sentido antes de cruzar)."),
         "umbral_cruce_mm": _p("float", 260.0, "(camara) una linea del piso a menos de esta distancia del morro cuenta como cruzada.", 50.0, 800.0),
+        "sugerencia_votos": _p("int", 3, "Cuadros seguidos viendo el par de lineas con el mismo orden antes de que la camara SUGIERA el sentido de la ronda. Esa sugerencia manda sobre la primera linea pisada (si el TCS se pierde la de entrada, la de salida diria el sentido contrario). Funciona aunque usar_camara este apagado: sugerir no es contar.", 1, 20),
         "ventana_par_ms": _p("int", 2500, "Las dos lineas de una misma esquina llegan dentro de esta ventana; lo que caiga dentro es LA MISMA esquina, no dos.", 500, 6000),
         "refractario_esquina_ms": _p("int", 3000, "Tras contar una esquina no se admite otra (venga del sensor que venga) durante este tiempo.", 500, 10000),
         "pares_para_invertir": _p("int", 2, "Cuantos pares de lineas seguidos en el orden CONTRARIO hacen falta para aceptar que el carro va de verdad al reves (y no que fue una lectura suelta). Con 2, un par raro se descarta sin contar; dos seguidos invierten el sentido.", 1, 5),
@@ -267,7 +268,7 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "esquinas_por_vuelta": _p("int", 4, "Esquinas que cierran una vuelta (la pista es cuadrada).", 3, 8),
         "sentido": _p("str", "auto", "Sentido de la ronda. 'auto': el carro lo deduce solo (lineas del piso / geometria). Forzarlo sirve para probar.", opciones=["auto", "horario", "antihorario"]),
         "parada_ms": _p("int", 1400, "Tras la ultima esquina, avanzar este tiempo para quedar BIEN DENTRO de la seccion de meta y detenerse (la proyeccion completa del carro debe quedar dentro).", 0, 6000),
-        "autostop": _p("bool", True, "Detenerse solo al completar las vueltas. Apagalo para pruebas de resistencia."),
+        "autostop": _p("bool", True, "Detenerse solo al completar las vueltas. Apagalo para pruebas de resistencia; el tope de tiempo_max_s sigue valiendo igual."),
         "tiempo_max_s": _p("int", 180, "Duracion maxima de la ronda (el reglamento da 3 minutos).", 10, 600),
     },
 

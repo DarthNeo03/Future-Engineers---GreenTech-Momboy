@@ -109,7 +109,7 @@
      "reanudar_tras_ms": 400,
      "refractario_ms": 2000,
      "vision_dispara": true,
-     "contar_giro_sin_linea": false
+     "contar_giro_sin_linea": true
     },
     "escape": {
      "escape_min_ms": 771,
@@ -127,18 +127,19 @@
      "pares_para_invertir": 2,
      "cierre_max_ms": 6000,
      "esquina_max_ms": 6000,
-     "frenar_ante_linea": false,
+     "frenar_ante_linea": true,
      "frenar_desde_mm": 500.0,
      "vel_linea_pct": 60,
-     "frenar_tras_ms": 1500
+     "frenar_tras_ms": 1500,
+     "sugerencia_votos": 3
     },
     "tcs": {
-     "c_min": 842,
+     "c_min": 250,
      "naranja_dif_min": 30,
-     "azul_dif_min": 18,
-     "naranja_r_min": 130,
-     "naranja_b_max": 85,
-     "azul_b_min": 90,
+     "azul_dif_min": 12,
+     "naranja_r_min": 105,
+     "naranja_b_max": 95,
+     "azul_b_min": 82,
      "azul_r_max": 121,
      "muestras_min": 1,
      "refractario_ds": 3,

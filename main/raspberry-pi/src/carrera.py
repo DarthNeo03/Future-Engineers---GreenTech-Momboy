@@ -69,11 +69,15 @@ class Carrera:
         ahora = time.time()
 
         if self.estado == CORRIENDO:
-            if not bool(self.cfg.get("autostop", True)):
-                return False
+            ### El tope de tiempo es del REGLAMENTO y va PRIMERO: autostop
+            ### apaga la parada en meta (pruebas de resistencia), nunca el
+            ### cronometro. Estaba al reves, asi que un perfil con autostop
+            ### apagado dejaba al carro corriendo sin limite ninguno.
             if self.transcurrido() > float(self.cfg.get("tiempo_max_s", 180)):
                 self.estado = TERMINADO
                 return True
+            if not bool(self.cfg.get("autostop", True)):
+                return False
             ### en modo color la esquina se cuenta al PISAR la linea, o sea
             ### antes de girar: si se arrancara parada_ms aqui el carro se
             ### pararia a mitad de la ultima curva. Se espera a salir de la

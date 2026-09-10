@@ -1011,6 +1011,141 @@ prueba("meta: el sentido forzado llega al gestor de lineas",
        gcar.sentido_forzado == "auto")
 
 # ===========================================================================
+print("== la linea que el TCS se perdio ==")
+### Los dos fallos de pista de septiembre, que son EL MISMO fallo visto por
+### dos lados: el TCS no veia la linea azul (c_min por encima de su canal
+### claro), y en modo color el conteo y el sentido colgaban solo del TCS.
+###   - en horario: cada naranja perdida es una esquina que no suma, la
+###     carrera no llega nunca a la meta de esquinas y el carro no se para;
+###   - en antihorario: perdida la azul de ENTRADA, la naranja de SALIDA
+###     declaraba "horario" y el carro doblaba a la derecha toda la ronda.
+cfg_red = dict(ccfg, contar_giro_sin_linea=True, refractario_ms=300)
+lin_red = dict(lcfg, esquina_max_ms=60000)
+
+# --- el giro como red: cuenta la esquina que la linea no conto -------------
+gr = GestorLineas(lin_red, cfg_color=cfg_red)
+gr.evento_tcs("naranja")                       # esquina 1: la linea la cuenta
+time.sleep(0.35)                               # el giro acaba DESPUES del
+gr.giro_completado(1)                          # refractario, como en pista
+prueba("red: la esquina que ya conto la linea no se cuenta dos veces",
+       gr.esquinas == 1, f"{gr.esquinas} {gr.ultimo_evento}")
+time.sleep(0.35)
+gr.giro_completado(1)                          # esquina 2: SIN linea (perdida)
+prueba("red: la esquina sin linea la cuenta el giro",
+       gr.esquinas == 2, f"{gr.esquinas} {gr.ultimo_evento}")
+time.sleep(0.35)
+gr.giro_completado(-1)                         # giro contra el sentido
+prueba("red: un giro hacia el lado contrario no cuenta esquina",
+       gr.esquinas == 2, gr.ultimo_evento)
+gapag = GestorLineas(lin_red, cfg_color=dict(cfg_red,
+                                             contar_giro_sin_linea=False))
+gapag.giro_completado(1)
+prueba("red: apagada, el giro sigue sin contar", gapag.esquinas == 0)
+
+# --- y con la red, la carrera SI llega a la meta y para --------------------
+gm = GestorLineas(lin_red, cfg_color=cfg_red)
+carm = Carrera({"vueltas": 1, "esquinas_por_vuelta": 4, "parada_ms": 0,
+                "sentido": "auto", "autostop": True, "tiempo_max_s": 180}, gm)
+carm.arrancar()
+for i in range(4):
+    if i != 2:                                 # en la 3a el TCS se pierde la linea
+        gm.evento_tcs("naranja")
+    time.sleep(0.35)
+    gm.giro_completado(1)
+    carm.paso()
+prueba("meta: con una linea perdida la carrera igual llega a las 4 esquinas",
+       gm.esquinas == 4, str(gm.esquinas))
+prueba("meta: y el carro se para", carm.paso() is True and carm.estado == TERMINADO,
+       carm.estado)
+
+# --- el sentido: la camara vota antes de pisar nada ------------------------
+from src.vision import Deteccion as _DetL                    # noqa: E402
+
+def _linea_suelo(dist_mm, color):
+    """Deteccion sintetica de una linea del piso a esa distancia del morro."""
+    fila = int(geo.distancia_a_fila(dist_mm + gcfg["morro_mm"]))
+    return _DetL(color=color, x=220, y=fila - 8, w=200, h=8, area=1600,
+                 llenado=1.0, aspecto=0.04, cx=320.0, cy=float(fila - 4))
+
+# antihorario: mirando de frente, la AZUL esta mas cerca (se cruza primero)
+gs = GestorLineas(dict(lin_red, usar_camara=False, sugerencia_votos=3),
+                  cfg_color=cfg_red)
+dets_anti = {"azul": [_linea_suelo(700.0, "azul")],
+             "naranja": [_linea_suelo(1100.0, "naranja")]}
+gs.paso_camara(dets_anti, None, geo)
+prueba("sentido: un solo cuadro no basta para sugerir",
+       gs.sugerencia == 0, str(gs.sugerencia))
+gs.paso_camara(dets_anti, None, geo)
+gs.paso_camara(dets_anti, None, geo)
+prueba("sentido: tres cuadros de acuerdo => la camara sugiere antihorario",
+       gs.sugerencia == ANTIHORARIO, str(gs.sugerencia))
+prueba("sentido: sugerir no es contar (usar_camara apagado)",
+       gs.esquinas == 0 and gs.dist_lineas == {} and not gs.en_esquina)
+gs.evento_tcs("naranja")          # el TCS se perdio la azul y ve la de salida
+prueba("sentido: la sugerencia manda sobre la linea pisada",
+       gs.sentido == ANTIHORARIO and gs.color_objetivo() == "azul",
+       f"{gs.sentido} {gs.color_objetivo()}")
+prueba("sentido: y esa naranja de salida no cuenta esquina",
+       gs.esquinas == 0 and gs.ignoradas == 1, gs.ultimo_evento)
+gs.evento_tcs("azul")
+prueba("sentido: la azul siguiente si cuenta", gs.esquinas == 1)
+
+# sin camara (o sin ver el par) todo sigue como antes: manda la linea pisada
+gsin = GestorLineas(dict(lin_red, usar_camara=False), cfg_color=cfg_red)
+gsin.evento_tcs("naranja")
+prueba("sentido: sin sugerencia sigue mandando la primera linea pisada",
+       gsin.sentido == HORARIO and gsin.esquinas == 1)
+
+# --- el cronometro del reglamento no depende del autostop ------------------
+gt = GestorLineas(lin_red, cfg_color=cfg_red)
+cart = Carrera({"vueltas": 3, "esquinas_por_vuelta": 4, "parada_ms": 0,
+                "sentido": "auto", "autostop": False, "tiempo_max_s": 180}, gt)
+cart.arrancar()
+prueba("tiempo: con autostop apagado no para por vueltas",
+       cart.paso() is False, cart.estado)
+cart.t_inicio -= 200.0                          # como si llevara 200 s
+prueba("tiempo: pero el tope de 3 minutos si corta igual",
+       cart.paso() is True and cart.estado == TERMINADO, cart.estado)
+
+# --- el perfil GUARDADO tiene que dejar pasar la linea azul real -----------
+### Esta es la comprobacion que nos faltaba: el codigo estaba bien y el perfil
+### que corria en el carro llevaba c_min=842, tres veces mas alto que el canal
+### claro de la linea azul (678). Se descartaba antes de mirar el color.
+import json as _json                                        # noqa: E402
+from src.lineas import clase_tcs as _clase_tcs               # noqa: E402
+
+# C, R, G, B leidos por el equipo con el sensor sobre la linea azul de la
+# pista (ratios r=70, b=107; el blanco da ~85 en los dos).
+_AZUL_PISTA = (678, 186, 231, 284)
+_BLANCO_PISTA = (3368, 1120, 1120, 1128)
+_pj = _json.loads((RAIZ / "config" / "params.json").read_text(encoding="utf-8"))
+_act = [x for x in _pj["perfiles"] if x["nombre"] == _pj["activo"]][0]
+_tcs_activo = _act["valores"]["tcs"]
+prueba("perfil activo: la linea azul medida en pista se clasifica azul",
+       _clase_tcs(*_AZUL_PISTA, _tcs_activo) == "azul",
+       f"c_min={_tcs_activo['c_min']} -> {_clase_tcs(*_AZUL_PISTA, _tcs_activo)}")
+prueba("perfil activo: y el piso blanco sigue sin clasificarse",
+       _clase_tcs(*_BLANCO_PISTA, _tcs_activo) == "-",
+       _clase_tcs(*_BLANCO_PISTA, _tcs_activo))
+# CON EL CARRO EN MARCHA casi ninguna muestra cae entera sobre la linea: el
+# sensor integra 24 ms y en ese rato el borde se mueve, asi que la ventana
+# mezcla linea y piso. Y la mezcla no es mitad y mitad en los RATIOS: el piso
+# blanco devuelve cinco veces mas luz, asi que domina la lectura y aplasta la
+# diferencia b-r. Aqui, con la ventana un 75 % sobre la linea, la diferencia
+# cae de 36 a 14: con azul_dif_min en 18 esa muestra se perdia aunque el
+# sensor estuviera justo encima de la linea. Ese es el "no ve el azul en
+# movimiento" que se veia en pista.
+_AZUL_MEZCLA = (1350, 419, 453, 495)      # 75 % linea azul, 25 % piso
+prueba("perfil activo: muestra de azul a medio borde (carro en marcha) entra",
+       _clase_tcs(*_AZUL_MEZCLA, _tcs_activo) == "azul",
+       str(_clase_tcs(*_AZUL_MEZCLA, _tcs_activo)))
+prueba("(control) con los umbrales del perfil viejo esa muestra se perdia",
+       _clase_tcs(*_AZUL_MEZCLA, {"c_min": 842, "azul_dif_min": 18,
+                                  "azul_b_min": 90, "azul_r_max": 121,
+                                  "naranja_dif_min": 30, "naranja_r_min": 130,
+                                  "naranja_b_max": 85}) == "-")
+
+# ===========================================================================
 print("== el rumbo que se quedo atras (giro al lado incorrecto) ==")
 ### Visto en pista: el TCS se pierde la linea, el centrado toma la curva solo
 ### por el hueco blanco, y el codigo sigue creyendo que la recta es la vieja.
