@@ -1,4 +1,5 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
 # Future-Engineers---GreenTech-Momboy
 =======
 # GreenTech Momboy — WRO 2026 Future Engineers
@@ -405,3 +406,6 @@ See [`LICENSE`](LICENSE). The engineering notes inside
 `journal/prototypes/CONTEXTO-reconizer.md` are in Spanish, the language we work
 in; everything a judge needs is in English here.
 >>>>>>> b403e56f7adc3b0031ae6ae71a7ddfed65ca2c54
+=======
+# Future-Engineers---GreenTech-Momboy
+>>>>>>> 421ebf519ea472d3ae74c40d6d54b1c22d8a25d8
