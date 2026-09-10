@@ -9,7 +9,8 @@
 #   ./piloto.sh log [-f]          el registro (todo lo que imprime main.py)
 #   ./piloto.sh web [args]        igual pero CON la web (pruebas por VNC/SSH)
 #   ./piloto.sh consola [args]    en primer plano (lo que usa systemd)
-#   ./piloto.sh servicio          arranque automatico al encender (systemd)
+#   ./piloto.sh servicio          arranque automatico al encender, SIN web
+#   ./piloto.sh servicio web      idem pero CON la web (banco y pruebas)
 #   ./piloto.sh quitar-servicio
 #
 # POR SSH (el carro sin pantalla, desde el portatil):
@@ -33,6 +34,9 @@
 # Variables que se pueden exportar antes de llamar:
 #   PILOTO_PYTHON   python a usar (por defecto .venv/bin/python o python3)
 #   PILOTO_ARGS     argumentos fijos extra (p.ej. "--perfil pabellon")
+#   PILOTO_WEB      1 = el servicio de systemd arranca CON web (igual que
+#                   'servicio web'). OJO: PILOTO_ARGS no sirve para esto,
+#                   porque --sin-web no se puede deshacer con otro argumento.
 #   PILOTO_ESTADO   carpeta del pid y del log
 #   PILOTO_LOG      ruta del log
 # ===========================================================================
@@ -202,11 +206,23 @@ ver_log() {
   if [ "${1:-}" = "-f" ]; then tail -n 40 -f "$LOG"; else tail -n 60 "$LOG"; fi
 }
 
-servicio() {
+servicio() {                     # servicio [web]
   command -v systemctl >/dev/null 2>&1 || { echo "esta Pi no usa systemd"; return 1; }
   local usuario="${SUDO_USER:-$USER}"
   local PY; PY="$(python_bin)"
-  echo "instalando $UNIDAD (usuario $usuario)..."
+  # El servicio nace SIN web a proposito: es el arranque de competencia, donde
+  # el reglamento no admite nada inalambrico mientras el carro corre y el
+  # unico mando tiene que ser el pulsador. Pero en banco eso desconcierta
+  # ("el servicio arranca y no hay web"), asi que se puede instalar CON web y
+  # entonces la telemetria esta en el puerto 8080 desde el encendido, sin
+  # abrir una terminal. Tiene que decidirse AQUI, al escribir la unidad:
+  # --sin-web es un interruptor de main.py y no hay ningun argumento que lo
+  # deshaga, asi que por PILOTO_ARGS no se puede.
+  local con_web="${PILOTO_WEB:-0}"
+  [ "${1:-}" = "web" ] && con_web=1
+  local flag_web="--sin-web"
+  [ "$con_web" = "1" ] && flag_web=""
+  echo "instalando $UNIDAD (usuario $usuario, $([ "$con_web" = 1 ] && echo 'CON web' || echo 'sin web'))..."
   sudo tee "$UNIDAD" >/dev/null <<UNIT
 [Unit]
 Description=Piloto WRO 2026 (GreenTech Momboy)
@@ -216,7 +232,7 @@ After=network.target
 Type=simple
 User=$usuario
 WorkingDirectory=$RAIZ
-ExecStart=$PY -u $RAIZ/main.py --sin-web $ARGS_FIJOS
+ExecStart=$PY -u $RAIZ/main.py $flag_web $ARGS_FIJOS
 # SIGTERM es la parada de emergencia de main.py: hay que dejarle terminar.
 KillSignal=SIGTERM
 TimeoutStopSec=15
@@ -233,7 +249,15 @@ UNIT
   sudo systemctl daemon-reload
   sudo systemctl enable piloto.service
   echo "listo. Arranca ya con:  sudo systemctl start piloto"
-  echo "y en cada encendido se lanza solo, sin web."
+  if [ "$con_web" = 1 ]; then
+    echo "y en cada encendido se lanza solo, CON web:"
+    echo "   http://$(hostname).local:8080/   (o http://<ip-de-la-pi>:8080/)"
+    echo "ACUERDATE de volver a 'servicio' (sin 'web') antes de competir."
+  else
+    echo "y en cada encendido se lanza solo, SIN web (modo competencia:"
+    echo "manda el pulsador del ESP32; comprueba botones.activo)."
+    echo "Para verla en banco:  ./piloto.sh servicio web  y  sudo systemctl restart piloto"
+  fi
 }
 
 quitar_servicio() {
@@ -260,7 +284,7 @@ case "$orden" in
   estado|status)         estado ;;
   log|registro)          ver_log "${1:-}" ;;
   consola|run)           cd "$RAIZ" && exec "$(python_bin)" -u "$RAIZ/main.py" --sin-web $ARGS_FIJOS "$@" ;;
-  servicio|instalar)     servicio ;;
+  servicio|instalar)     servicio "${1:-}" ;;
   quitar-servicio)       quitar_servicio ;;
   ayuda|-h|--help|help)  ayuda ;;
   *) echo "orden desconocida: $orden"; echo; ayuda; exit 2 ;;

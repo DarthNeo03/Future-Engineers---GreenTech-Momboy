@@ -770,10 +770,19 @@ Detalles que importan:
   ultima orden hasta que salte su vigilante de 300 ms.
 - El log vive en `~/.local/state/piloto/piloto.log` y rota solo a los 8 MB.
 - `./piloto.sh servicio` instala `piloto.service` (systemd) para que el
-  piloto arranque solo al encender la Pi, sin web y con los grupos `dialout`
-  (el serie del ESP32) y `video`. A partir de ahi manda systemd: `sudo systemctl
-  start|stop|status piloto` (el script lo detecta y avisa en vez de pelearse
-  con el).
+  piloto arranque solo al encender la Pi, **sin web** y con los grupos
+  `dialout` (el serie del ESP32) y `video`. A partir de ahi manda systemd:
+  `sudo systemctl start|stop|status piloto` (el script lo detecta y avisa en
+  vez de pelearse con el).
+- **Sin web es a proposito**: el servicio es el arranque de competencia, donde
+  el reglamento no admite nada inalambrico mientras el carro corre y el unico
+  mando tiene que ser el pulsador. Si en banco quieres la telemetria desde el
+  encendido, instala la unidad con `./piloto.sh servicio web` (o
+  `PILOTO_WEB=1 ./piloto.sh servicio`) y reinicia el servicio: queda en
+  `http://<ip-de-la-pi>:8080/`. **Tiene que decidirse al instalar la unidad**,
+  porque `--sin-web` es un interruptor de `main.py` y no hay ningun argumento
+  que lo deshaga: por `PILOTO_ARGS` no se puede. Vuelve a `./piloto.sh
+  servicio` (sin `web`) antes de competir.
 - Variables: `PILOTO_ARGS` (argumentos fijos, p.ej. `--perfil pabellon`),
   `PILOTO_PYTHON`, `PILOTO_LOG`, `PILOTO_ESTADO`.
 
