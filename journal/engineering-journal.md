@@ -210,7 +210,7 @@ reverse-engineering a git revert under pressure.
 
 ## Our coach
 
-Our tutor and coach is **Msc. Egardo Paolini**.
+Our tutor and coach is **Msc. Edgardo Paolini**.
 
 The rules are explicit that a coach may not build or program the robot, and ours
 did not. What our coach did do was harder to write in a commit: made sure a

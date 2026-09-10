@@ -3,12 +3,13 @@
 The rules ask for a video of at least 30 seconds per challenge, showing the
 vehicle driving autonomously, on a public link.
 
-| Round | Link | Status |
+| Round | Link | Length |
 |---|---|---|
-| Open Challenge | **TODO** | to record |
-| Obstacle Challenge | **TODO** | to record |
+| Open Challenge | [Green Tech Momboy — WRO Open Challenge](https://youtu.be/Z215ovmq5Jg) | 0:40 |
+| Obstacle Challenge | [Obstacle round](https://youtube.com/shorts/VIz5sVFtg74) | 1:38 |
 
-What we want in each one, and what we tell ourselves every time we forget:
+Both are public and both are over the 30 s minimum. What we wanted in each one,
+and what we told ourselves every time we forgot:
 
 - One continuous shot. A cut in the middle of a lap reads as a hidden retry.
 - Start with the car switched off, so the single switch and the start action are

@@ -42,7 +42,7 @@ chassis revisions and about four months of evenings.
 | [`3d-model/`](3d-model/) | Printed parts (STL) and the sliced projects with the settings we used |
 | [`images/`](images/) | Team and vehicle photos, build photos, and the frames the car itself recorded |
 | [`journal/`](journal/) | The engineering journal, the test logs, and the previous prototype |
-| [`video/`](video/) | Links to the driving videos |
+| [`video/`](video/) | Links to the driving videos, one per challenge |
 
 The two code folders are each complete and runnable on their own: `main/` is the
 car we race today, `fallback/` is the system that came before it. Keeping both
@@ -60,7 +60,7 @@ copies would have meant fixing every bug twice.
 |---|---|
 | **José Simón García Castellanos** | Obstacle challenge: pillar detection, avoidance geometry, the overtaking commitment |
 | **Cristian José Rangel** | Open challenge: wall following, corner detection and counting, the CAD of the chassis |
-| **Tutor / Coach** | **Msc. Egardo Paolini** |
+| **Tutor / Coach** | **Msc. Edgardo Paolini** |
 
 Both of us worked on every prototype, early and late. We split by *challenge*
 rather than by layer on purpose: each of us owns a full vertical slice — camera
@@ -392,7 +392,7 @@ any single algorithm:
 | Repository public, and public for 12 months after the event | Public; will stay up |
 | Three commits at the required deadlines | Our history runs from 7 May, with work committed continuously |
 | README of at least 5000 characters | This one |
-| Video of at least 30 s per challenge | [`video/video.md`](video/video.md) — **TODO: record** |
+| Video of at least 30 s per challenge | [Open Challenge](https://youtu.be/Z215ovmq5Jg) (0:40) and [Obstacle Challenge](https://youtube.com/shorts/VIz5sVFtg74) (1:38) — also listed in [`video/video.md`](video/video.md) |
 | The team builds and codes the robot, not the coach | Two students wrote every line and printed every part |
 
 ## License
