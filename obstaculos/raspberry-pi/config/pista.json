@@ -73,7 +73,9 @@
   },
   "vueltas": {
     "color_entrada_horario": "naranja",
-    "margen_meta_mm": 120.0
+    "margen_meta_mm": 120.0,
+    "max_cruces_por_ciclo": 3,
+    "min_dist_por_vuelta_mm": 4000.0
   },
   "fsm": {
     "vueltas": 3,

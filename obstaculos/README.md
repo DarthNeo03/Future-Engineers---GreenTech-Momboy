@@ -239,6 +239,33 @@ sube `sesgo_curva` o baja `aprender_curva_deg`.
 
 ---
 
+## Si dice que terminó la ronda nada más pulsar el botón
+
+Mira el resumen que imprime. Si las vueltas no cuadran con `dist_m`, el
+contador se desbocó, no es que haya corrido:
+
+```
+'vueltas': 63, 'secciones': 255, 'cruces': 255, 'dist_m': 0.3
+```
+
+255 es la saturación de un contador de 8 bits, y 63 vueltas en 0,3 m es
+imposible. Las tres redes que lo impiden:
+
+| Red | Qué hace |
+|---|---|
+| `max_cruces_por_ciclo` | entre dos ciclos de la Pi no caben más de 2-3 cruces reales; por encima se resincroniza en vez de contar. Un reinicio del contador del ESP32 (200 → 0) daba un delta de 56 por la resta de 8 bits |
+| contar solo con la ronda en marcha | en `ESPERA` el carro lleva minutos quieto delante del juez, y todo lo que entre ahí es ruido |
+| `min_dist_por_vuelta_mm` | tres vueltas no caben en tres metros; una vuelta real ronda los 8 m |
+
+Los contadores se ponen a cero **en el flanco del botón**, no al arrancar el
+programa. Hacerlo en `preparar()` abría una carrera: la Pi tomaba su línea base
+antes de que el ESP32 llegara a aplicar el `CAL_CERO_LINEAS`.
+
+Si ves `resync` subiendo en la telemetría durante la ronda, el enlace serial
+está perdiendo tramas: revisa el cableado de `Serial2` antes que el contador.
+
+---
+
 ## Si no abre la cámara
 
 ```bash

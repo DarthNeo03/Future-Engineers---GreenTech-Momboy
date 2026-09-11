@@ -147,7 +147,12 @@ class Piloto:
         direccion = combinar(sal_carril.direccion, maniobra, empujon)
 
         # --- vueltas -------------------------------------------------------
-        ev = self.contador.actualizar(sens, vel_mm_s, dt)
+        # NO se cuenta mientras la ronda no haya empezado. En ESPERA el carro
+        # lleva minutos quieto delante del juez y cualquier ruido que entre se
+        # acumula: asi es como salio del boton creyendo que llevaba 63 vueltas.
+        corriendo = self.fsm.estado not in (Estado.ESPERA, Estado.FIN,
+                                            Estado.FALLO)
+        ev = self.contador.actualizar(sens, vel_mm_s, dt, contar=corriendo)
         self.contador.evaluar_parada(int(self.cfg["fsm"].get("vueltas", 3)))
 
         # --- decidir -------------------------------------------------------
@@ -160,7 +165,22 @@ class Piloto:
             direccion_mezclada=direccion,
             guardia_muro=guardia_muro(sal_carril, self.cfg["carril"]),
             velocidad_sugerida=self.carril.velocidad(sal_carril))
+        estado_antes = self.fsm.estado
         orden = self.fsm.paso(ctx)
+
+        # --- la ronda empieza AQUI, no en preparar() ------------------------
+        # Poner los contadores a cero en preparar() abria una carrera: la Pi
+        # tomaba su linea base antes de que el ESP32 llegara a aplicar el
+        # CAL_CERO_LINEAS, y la resta de 8 bits se leia como decenas de cruces.
+        # Reiniciando en el flanco del boton, el cero de los dos lados cae en
+        # el mismo instante que el cronometro del juez, que es donde debe caer.
+        if estado_antes == Estado.ESPERA and self.fsm.estado == Estado.ARRANQUE:
+            self.contador.reiniciar()
+            self.enlace.calibrar(proto.CAL_CERO_LINEAS)
+            self.carril.reiniciar()
+            self.esquivador.reiniciar()
+            if self.verbose:
+                print("[piloto] ronda iniciada: contadores a cero")
 
         # --- actuar --------------------------------------------------------
         self._vel_pct = orden.vel

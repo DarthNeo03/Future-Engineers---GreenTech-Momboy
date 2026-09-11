@@ -170,13 +170,16 @@ def prueba_vueltas() -> None:
           str(c.e.dist_arranque_a_primer_cruce_mm))
 
     # Tres vueltas: 4 naranjas y 4 azules por vuelta.
+    # Con kilometraje realista: una vuelta son ~8 m, o sea ~1 m entre cruces.
+    # Sin el, el suelo de distancia de evaluar_parada lo rechaza con razon —
+    # tres vueltas no caben en dos metros.
     nar, azu = 4, 2
     for _ in range(3):
         for _ in range(4):
             azu += 1
-            c.actualizar(sens(nar, azu), 0.0, 0.02)
+            c.actualizar(sens(nar, azu), 1000.0, 1.0)
             nar += 1
-            c.actualizar(sens(nar, azu), 0.0, 0.02)
+            c.actualizar(sens(nar, azu), 1000.0, 1.0)
     # Se han metido 12 naranjas mas la primera = 13 -> 3 vueltas completas.
     check("tres vueltas contadas", c.e.vueltas == 3, str(c.e.vueltas))
     check("24 secciones", c.e.secciones == 25, str(c.e.secciones))
@@ -562,6 +565,68 @@ def prueba_compromiso() -> None:
           abs(guardia_muro(SalidaCarril(lat_der_mm=600.0), cfg)) < 1e-6)
 
 
+# ====================== vueltas fantasma (el fallo del boton)
+def prueba_vueltas_fantasma() -> None:
+    print("vueltas fantasma")
+    from src.config import DEFECTOS
+    cfg = DEFECTOS["vueltas"]
+
+    def S(nar, azu=0):
+        return proto.Sensores(estado=proto.S_TCS_OK, cruces_naranja=nar,
+                              cruces_azul=azu)
+
+    # EL FALLO DE PISTA. La Pi toma su linea base con el contador del ESP32 en
+    # 200 y un instante despues llega el CAL_CERO_LINEAS: 200 -> 0. La resta
+    # de 8 bits da 56, y el codigo se creia 56 cruces = 14 vueltas, con el
+    # carro quieto. La ronda terminaba nada mas pulsar el boton.
+    c = Contador(cfg)
+    c.actualizar(S(200), 0.0, 0.03)
+    c.actualizar(S(0), 0.0, 0.03)
+    check("un reinicio del contador no inventa cruces",
+          c.e.cruces_totales == 0, f"cruces={c.e.cruces_totales}")
+    check("un reinicio del contador no inventa vueltas",
+          c.e.vueltas == 0, f"vueltas={c.e.vueltas}")
+    check("el reinicio queda anotado como resync",
+          c.e.info.get("resync", 0) >= 1, str(c.e.info))
+    # Y despues del salto sigue contando normal desde la nueva referencia.
+    c.actualizar(S(1), 900.0, 1.0)
+    check("tras resincronizar vuelve a contar bien", c.e.cruces_totales == 1,
+          f"cruces={c.e.cruces_totales}")
+
+    # Un envoltorio LEGITIMO de 8 bits (254 -> 1 son 3 cruces) debe pasar.
+    c2 = Contador(cfg)
+    c2.actualizar(S(254), 0.0, 0.03)
+    c2.actualizar(S(1), 0.0, 0.03)
+    check("el envoltorio legitimo de 8 bits si cuenta",
+          c2.e.cruces_totales == 3, f"cruces={c2.e.cruces_totales}")
+
+    # En ESPERA no se cuenta nada, aunque llegue ruido.
+    c3 = Contador(cfg)
+    c3.actualizar(S(0), 0.0, 0.03, contar=False)
+    for n in range(1, 6):
+        c3.actualizar(S(n), 500.0, 0.5, contar=False)
+    check("antes de arrancar no se cuentan cruces", c3.e.cruces_totales == 0,
+          f"cruces={c3.e.cruces_totales}")
+    check("antes de arrancar el odometro no avanza", c3.e.dist_mm == 0.0,
+          f"dist={c3.e.dist_mm}")
+    # Y al empezar a contar, el primer cruce real si entra.
+    c3.actualizar(S(6), 900.0, 1.0, contar=True)
+    check("al arrancar, el primer cruce real si cuenta",
+          c3.e.cruces_totales == 1, f"cruces={c3.e.cruces_totales}")
+
+    # Suelo de distancia: tres vueltas no caben en 0.3 m.
+    c4 = Contador(cfg)
+    c4.actualizar(S(0), 0.0, 0.03)
+    n = 0
+    for _ in range(3):
+        for _ in range(4):
+            n += 1
+            c4.actualizar(S(n), 100.0, 0.1)
+    check("con 3 vueltas contadas pero sin kilometraje, NO para",
+          not c4.evaluar_parada(3).listo_para_parar,
+          f"{c4.e.vueltas} vueltas, {c4.e.dist_mm/1000:.1f} m: {c4.e.motivo}")
+
+
 def main() -> int:
     prueba_protocolo()
     prueba_reglas()
@@ -571,6 +636,7 @@ def main() -> int:
     prueba_esquive()
     prueba_carril()
     prueba_compromiso()
+    prueba_vueltas_fantasma()
     print()
     if fallos:
         print(f"{fallos} prueba(s) FALLARON")

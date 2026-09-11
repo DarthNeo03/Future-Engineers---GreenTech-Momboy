@@ -151,6 +151,13 @@ DEFECTOS: Dict[str, Any] = {
         # carro a mano y mirando la telemetria. No se adivina.
         "color_entrada_horario": "naranja",
         "margen_meta_mm": 120.0,
+        # Cruces que caben de verdad entre dos ciclos de la Pi. Por encima no
+        # son lineas: es el contador del ESP32 reiniciado o un salto de
+        # sincronismo, y contarlos regala vueltas que no ocurrieron.
+        "max_cruces_por_ciclo": 3,
+        # Ultima red: tres vueltas no caben en tres metros. El recorrido real
+        # de una vuelta ronda los 8 m.
+        "min_dist_por_vuelta_mm": 4000.0,
     },
 
     "fsm": {

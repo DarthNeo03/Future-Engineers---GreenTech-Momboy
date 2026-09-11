@@ -75,17 +75,26 @@ class Contador:
         self.e = EstadoVueltas()
 
     # ------------------------------------------------------------------
-    def actualizar(self, sens: proto.Sensores, vel_mm_s: float,
-                   dt: float) -> EstadoVueltas:
+    def actualizar(self, sens: proto.Sensores, vel_mm_s: float, dt: float,
+                   contar: bool = True) -> EstadoVueltas:
+        """contar=False mientras la ronda no haya empezado de verdad.
+
+        En ESPERA el carro esta quieto delante del juez, a veces varios
+        minutos. Todo lo que entre por el contador en ese rato es ruido, y si
+        se acumula, el carro sale del boton creyendo que ya dio tres vueltas.
+        Pasando contar=False se sigue la pista del contador del ESP32 (para no
+        ver un salto enorme al empezar) pero no se cuenta nada.
+        """
         e = self.e
 
         # --- odometro ----------------------------------------------------
         # Sin encoder en las ruedas, la distancia se integra de la velocidad
         # estimada. El error es de un 10-15 % y no importa: solo se usa para
         # medir un tramo de recta corto, no para navegar.
-        avance = max(0.0, vel_mm_s) * max(0.0, dt)
-        e.dist_mm += avance
-        e.dist_desde_cruce_mm += avance
+        if contar:
+            avance = max(0.0, vel_mm_s) * max(0.0, dt)
+            e.dist_mm += avance
+            e.dist_desde_cruce_mm += avance
 
         if not sens.tcs_ok:
             e.info["aviso"] = "TCS ausente: contando solo por camara"
@@ -105,7 +114,29 @@ class Contador:
         d_azu = (sens.cruces_azul - self._prev_azul) & 0xFF
         self._prev_naranja = sens.cruces_naranja
         self._prev_azul = sens.cruces_azul
+
+        # --- SALTO IMPOSIBLE = RESINCRONIZAR, NO CONTAR -------------------
+        # Un delta grande NO es "han pasado muchas lineas": es que el contador
+        # del ESP32 se reinicio (CAL_CERO_LINEAS) o se perdio el sincronismo.
+        # La resta de 8 bits convierte 200 -> 0 en un delta de 56, y el codigo
+        # se creia 56 cruces: catorce vueltas de golpe, con el carro quieto y
+        # con 0.3 m en el odometro. Asi termino una ronda nada mas pulsar el
+        # boton.
+        #
+        # Fisicamente, entre dos ciclos de la Pi (~33 ms) no caben mas de uno
+        # o dos cruces: a 1 m/s una linea de 20 mm dura 20 ms y las lineas de
+        # una esquina estan separadas. Por encima del limite, lo unico honesto
+        # es tomar el valor actual como nueva referencia y NO inventarse
+        # vueltas que no ocurrieron.
+        tope = int(self.cfg.get("max_cruces_por_ciclo", 3))
+        if d_nar > tope or d_azu > tope:
+            e.info["resync"] = e.info.get("resync", 0) + 1
+            return e
+
         if d_nar == 0 and d_azu == 0:
+            return e
+
+        if not contar:
             return e
 
         # --- procesar cada cruce nuevo ------------------------------------
@@ -155,6 +186,20 @@ class Contador:
         if e.vueltas < vueltas_objetivo:
             e.listo_para_parar = False
             return e
+
+        # SUELO DE DISTANCIA: tres vueltas no caben en tres metros.
+        # Es la ultima red contra un contador que se desboca. Aunque un fallo
+        # de sincronismo cuele vueltas falsas, el odometro no miente tanto: el
+        # recorrido de una vuelta ronda los 8 m, asi que exigir 4 m por vuelta
+        # deja margen de sobra para el 15 % de error del odometro y aun asi
+        # hace imposible terminar la ronda nada mas arrancar.
+        minimo = float(self.cfg.get("min_dist_por_vuelta_mm", 4000.0))
+        if e.dist_mm < vueltas_objetivo * minimo:
+            e.listo_para_parar = False
+            e.motivo = (f"{e.vueltas} vueltas pero solo {e.dist_mm/1000:.1f} m: "
+                        f"el contador no cuadra con el odometro")
+            return e
+
         d0 = e.dist_arranque_a_primer_cruce_mm
         if d0 is None:
             # Nunca se vio una linea: no se puede saber donde esta la meta.
