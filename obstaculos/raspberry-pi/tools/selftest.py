@@ -252,6 +252,21 @@ def prueba_vueltas() -> None:
     check("pero queda anotado como incoherente",
           ci.e.pares_incoherentes == 1, str(ci.e.pares_incoherentes))
 
+    # El EVENTO de esquina: lo dispara la PRIMERA linea del par, no la
+    # segunda. Es lo que la FSM usa para comprometer el giro de la curva.
+    ce = Contador(cfg_v)
+    ce.actualizar(sens_v(0, 0), 0.0, 0.02)
+    e = ce.actualizar(sens_v(1, 0), 800.0, 1.0)
+    check("la primera linea de la esquina abre esquina", e.esquina_abierta)
+    check("y dice que linea fue", e.linea_nueva == "naranja", e.linea_nueva)
+    e = ce.actualizar(sens_v(1, 1), 700.0, 1.0)
+    check("la segunda linea NO abre otra esquina", not e.esquina_abierta)
+    # Los eventos duran un ciclo: si se quedaran pegados, la FSM dispararia
+    # un giro por cada ciclo de camara mientras siguiera puesto.
+    e = ce.actualizar(sens_v(1, 1), 100.0, 0.1)
+    check("el evento de esquina dura un solo ciclo",
+          not e.esquina_abierta and e.linea_nueva == "")
+
     # Si los dos colores suben en el MISMO ciclo, el orden no se sabe: los
     # cruces cuentan, pero no forman par.
     cs = Contador(cfg_v)
@@ -379,6 +394,132 @@ def prueba_fsm() -> None:
     check("meta -> fin", fsm.estado == Estado.FIN)
     check("al terminar, desarmado y quieto",
           not o.armado and o.parada and o.vel == 0.0)
+
+
+# ================================ la curva la dispara la linea del piso
+def prueba_esquina() -> None:
+    print("curva disparada por la linea")
+    import time as _t
+
+    from src.config import DEFECTOS
+    from src.carril import SalidaCarril
+    from src.fsm import Contexto, Estado, MaquinaEstados
+    from src.senales import FASE_APROXIMACION, Maniobra
+    from src.vueltas import EstadoVueltas
+
+    cfg = dict(DEFECTOS["fsm"])
+    cfg["arranque_s"] = 0.01
+
+    def arrancado():
+        """Una FSM ya rodando en PISTA."""
+        f = MaquinaEstados(cfg)
+        f.paso(ctx())
+        f.paso(ctx(arranque_pedido=True))
+        _t.sleep(0.02)
+        f.paso(ctx())
+        return f
+
+    def ctx(frente=2000.0, sentido=+1, yaw=0.0, esquina=False, dist=5000.0,
+            maniobra=None, mpu=True, arranque_pedido=False):
+        return Contexto(
+            enlace_ok=True, hay_frame=True, velocidad_sugerida=40.0,
+            arranque_pedido=arranque_pedido,
+            sens=proto.Sensores(estado=proto.S_MPU_OK if mpu else 0, yaw=yaw),
+            carril=SalidaCarril(dist_frente_mm=frente, sentido_curva=sentido),
+            vueltas=EstadoVueltas(esquina_abierta=esquina, dist_mm=dist,
+                                  sentido=sentido),
+            maniobra=maniobra or Maniobra())
+
+    # --- no se gira hasta que llega la linea ---------------------------
+    # EL FALLO QUE SE VEIA: el carro empezaba a girar en cuanto la camara veia
+    # el muro de la esquina, o sea un metro antes de la curva, y llegaba a la
+    # linea ya torcido. Con el frente cerrado pero SIN linea, aqui no pasa
+    # nada: sigue en PISTA y recto.
+    f = arrancado()
+    f.paso(ctx(frente=900.0))
+    check("frente cerrado sin linea: sigue recto en pista",
+          f.estado == Estado.PISTA, f.estado.value)
+
+    # --- y con la linea, se compromete ---------------------------------
+    o = f.paso(ctx(frente=900.0, esquina=True))
+    check("la linea dispara la curva", f.estado == Estado.ESQUINA,
+          f.estado.value)
+    check("gira fuerte y hacia el sentido de la ronda", o.direccion > 70.0,
+          f"dir={o.direccion}")
+
+    # Sigue girando aunque el hueco se abra: eso es el compromiso. El carril
+    # aflojaria aqui, y por eso el giro se quedaba a medias.
+    o = f.paso(ctx(frente=3000.0, yaw=20.0))
+    check("con 20 grados girados todavia no suelta",
+          f.estado == Estado.ESQUINA and o.direccion > 70.0,
+          f"{f.estado.value} dir={o.direccion}")
+
+    # Girados 70 grados: hecho.
+    f.paso(ctx(frente=3000.0, yaw=72.0))
+    check("girados 70 grados, vuelve a pista", f.estado == Estado.PISTA,
+          f.estado.value)
+
+    # --- una esquina, un giro ------------------------------------------
+    # Las dos lineas de una curva caen dentro de los mismos 1000 mm. Si la
+    # segunda encadenara otro giro de 90, serian 180 y la pared de enfrente.
+    f2 = arrancado()
+    f2.paso(ctx(frente=900.0, esquina=True, dist=5000.0))
+    check("primera linea: gira", f2.estado == Estado.ESQUINA)
+    f2.paso(ctx(frente=900.0, yaw=75.0, dist=5400.0))          # curva hecha
+    f2.paso(ctx(frente=900.0, esquina=True, dist=5600.0))      # 2a linea
+    check("la segunda linea de la misma curva no encadena otro giro",
+          f2.estado == Estado.PISTA, f2.estado.value)
+    # Pero la curva SIGUIENTE, a metros de distancia, si.
+    f2.paso(ctx(frente=900.0, esquina=True, dist=8000.0))
+    check("la curva siguiente si vuelve a disparar",
+          f2.estado == Estado.ESQUINA, f2.estado.value)
+
+    # --- la camara confirma que la esquina esta ahi ---------------------
+    # Si el TCS se perdio la linea de ENTRADA, la de SALIDA abre un par nuevo
+    # y dispararia un giro justo al salir de la curva: contra el muro de la
+    # recta. Al salir, el frente esta despejado, y eso basta para descartarlo.
+    f3 = arrancado()
+    f3.paso(ctx(frente=3000.0, esquina=True))
+    check("linea con el frente despejado: no es una esquina, no gira",
+          f3.estado == Estado.PISTA, f3.estado.value)
+
+    # --- sin sentido no hay giro que comprometer ------------------------
+    f4 = arrancado()
+    f4.paso(ctx(frente=900.0, esquina=True, sentido=0))
+    check("sin saber el sentido, no se inventa un giro",
+          f4.estado == Estado.PISTA, f4.estado.value)
+
+    # --- antihorario gira al otro lado ----------------------------------
+    f5 = arrancado()
+    o = f5.paso(ctx(frente=900.0, esquina=True, sentido=-1))
+    check("en antihorario la curva va a la izquierda", o.direccion < -70.0,
+          f"dir={o.direccion}")
+
+    # --- un pilar manda sobre la curva -----------------------------------
+    # Rebasar por el lado que toca vale 8 o 10 puntos y por el malo termina la
+    # ronda; trazar bien la esquina no vale ninguno.
+    f6 = arrancado()
+    f6.paso(ctx(frente=900.0, esquina=True))
+    pilar = Maniobra(direccion=-30.0, peso=0.8, fase=FASE_APROXIMACION,
+                     color="verde", lado=-1, dist_mm=700.0)
+    f6.paso(ctx(frente=900.0, yaw=15.0, maniobra=pilar))
+    check("un pilar en plena curva interrumpe el giro",
+          f6.estado == Estado.SENAL, f6.estado.value)
+
+    # --- sin MPU se sale por tiempo, no se queda girando para siempre ----
+    cfg_corto = dict(cfg)
+    cfg_corto["esquina_max_s"] = 0.05
+    f7 = MaquinaEstados(cfg_corto)
+    f7.paso(ctx())
+    f7.paso(ctx(arranque_pedido=True))
+    _t.sleep(0.02)
+    f7.paso(ctx())
+    f7.paso(ctx(frente=900.0, esquina=True, mpu=False))
+    check("sin MPU tambien entra en la curva", f7.estado == Estado.ESQUINA)
+    _t.sleep(0.07)
+    f7.paso(ctx(frente=900.0, mpu=False))
+    check("sin MPU la curva termina por tiempo", f7.estado == Estado.PISTA,
+          f7.estado.value)
 
 
 # ============================================ esquive de extremo a extremo
@@ -636,6 +777,25 @@ def prueba_carril() -> None:
     check("tras_pilar deja mudo al sesgo de curva", s_tp.sesgo == 0.0,
           f"sesgo={s_tp.sesgo}")
 
+    # --- con TCS vivo, el sesgo ESPERA a la linea ----------------------
+    # La linea del piso cae donde de verdad empieza la curva; la camara ve el
+    # muro un metro antes. Girar con la camara es recortar, y el carro llegaba
+    # a la linea ya torcido. Con el sensor vivo el sesgo es solo la red.
+    s_espera = conducir(esquina, sentido_pista=+1, espera_linea=True)
+    check("con TCS, a 700 mm de la esquina todavia va recto",
+          s_espera.sesgo == 0.0 and "linea" in s_espera.motivo,
+          f"sesgo={s_espera.sesgo} [{s_espera.motivo}]")
+    # Pero si la linea no llega y el frente se cierra de verdad, habla igual:
+    # mas vale girar tarde que empotrarse por esperar un sensor que fallo.
+    apurado = _escena_corredor(500.0, 500.0, 420.0)
+    s_apurado = conducir(apurado, sentido_pista=+1, espera_linea=True)
+    check("si la linea no llega y el frente se cierra, el sesgo salta igual",
+          s_apurado.sesgo > 0.0, f"sesgo={s_apurado.sesgo}")
+    # Y sin TCS no hay nada que esperar: manda desde dist_curva_mm, como antes.
+    s_sin_tcs = conducir(esquina, sentido_pista=+1, espera_linea=False)
+    check("sin TCS el sesgo vuelve a mandar desde lejos",
+          s_sin_tcs.sesgo > 0.0, f"sesgo={s_sin_tcs.sesgo}")
+
     # --- el sentido de las curvas se aprende solo ----------------------
     from src.geometria import Geometria as G
     geo = G(dict(DEFECTOS["geometria"]), 640, 480)
@@ -871,6 +1031,7 @@ def main() -> int:
     prueba_geometria()
     prueba_vueltas()
     prueba_fsm()
+    prueba_esquina()
     prueba_esquive()
     prueba_carril()
     prueba_compromiso()

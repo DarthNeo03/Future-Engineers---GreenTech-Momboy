@@ -101,6 +101,13 @@ DEFECTOS: Dict[str, Any] = {
         # centrado y el carro se iba recto contra el muro. Si ya se sabe hacia
         # donde giran las curvas de esta ronda, se empuja hacia ese lado.
         "sesgo_curva": 45.0,
+        # DESDE DONDE PUEDE HABLAR EL SESGO CUANDO HAY TCS. Con el sensor de
+        # color vivo, la esquina la dispara la linea del piso, que cae donde
+        # de verdad empieza la curva; la camara ve el muro un metro antes y
+        # girar con ella es RECORTAR. Asi que el sesgo se guarda de red y solo
+        # habla si el frente se cierra por debajo de esto — o sea, si la linea
+        # no llego. Sin TCS manda desde dist_curva_mm, como antes.
+        "sesgo_desde_mm": 520.0,
         "hueco_indeciso_deg": 10.0,     # por debajo, el hueco no decide nada
         "aprender_curva_deg": 6.0,      # rumbo medio minimo para dar por
                                         #   aprendido el sentido de las curvas
@@ -134,6 +141,13 @@ DEFECTOS: Dict[str, Any] = {
         "ciego_desde_mm": 400.0,      # deja de verse: arranca el compromiso
         "dist_reversa_mm": 230.0,     # sin radio para corregir: reversa
         "margen_mm": 70.0,            # holgura al costado del pilar
+        # Y POR COLOR, cuando uno se ve peor que el otro. Una mascara que
+        # recorta el pilar lo hace parecer mas lejos (la distancia sale de la
+        # altura aparente), el esquive arranca tarde y se pasa mas cerca de
+        # ESE color. Lo correcto es arreglar el HSV; esto compra despeje
+        # mientras tanto, sin tocar el otro color.
+        "margen_rojo_mm": 70.0,
+        "margen_verde_mm": 100.0,
         "morro_mm": 60.0,             # del eje de la camara al morro
         "mirada_min_mm": 420.0,
         "ganancia": 2.1,
@@ -196,6 +210,26 @@ DEFECTOS: Dict[str, Any] = {
         "reincorporacion_max_s": 1.2,   # red por si no se llega a centrar
         "reincorporado_err": 0.30,      # error de centrado que ya vale
         "reincorporado_deg": 14.0,      # rumbo al hueco que ya vale
+        # ---- la curva, disparada por la linea del piso ----
+        # El giro se COMPROMETE: el volante se mantiene hasta haber girado de
+        # verdad, en vez de renegociarse cada ciclo contra el centrado (que es
+        # por lo que el giro se quedaba a medias).
+        "dir_esquina": 85.0,            # % de volante durante la curva
+        "esquina_grados": 70.0,         # yaw girado que da la curva por hecha
+        "esquina_max_s": 2.5,           # red sin MPU, o si el yaw no cuadra
+        "vel_esquina": 30.0,
+        # La linea dice CUANDO y la camara confirma QUE ESTA AHI: si el frente
+        # no esta cerrado, esa linea es la de SALIDA de una curva cuya entrada
+        # se perdio el sensor, y girar ahi es meterse en la pared.
+        "esquina_frente_max_mm": 1400.0,
+        # UNA ESQUINA, UN GIRO. Las dos lineas de una curva caen dentro de los
+        # mismos 1000 mm de seccion: sin este bloqueo, la segunda encadenaria
+        # un segundo giro de 90 grados y 90 + 90 es la pared de enfrente.
+        "dist_entre_esquinas_mm": 1200.0,
+        # Un pilar manda sobre la curva: rebasar por el lado que toca vale 8 o
+        # 10 puntos y hacerlo por el malo termina la ronda; trazar bien la
+        # esquina no vale ninguno.
+        "esquina_cede_peso": 0.35,
         "vel_meta": 30.0,
         "vel_reversa": 28.0,
         "dir_reversa": 70.0,

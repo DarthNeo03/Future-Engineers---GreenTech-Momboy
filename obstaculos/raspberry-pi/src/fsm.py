@@ -27,8 +27,19 @@ cumplio el compromiso. Todo lo que pueda oscilar lleva tiempo minimo.
             │
             └──corregido──> SENAL
 
+    PISTA ──linea de esquina + frente cerrado──> ESQUINA ──girado──> PISTA
     PISTA ──3 vueltas + distancia──> META ──quieto──> FIN
     cualquiera ──enlace o camara caidos──> FALLO ──recuperado──> PISTA
+
+QUIEN MANDA EN LAS ESQUINAS ES LA LINEA DEL PISO, NO LA CAMARA. La camara solo
+sabe que "el frente se cerro", y eso le pasa en una esquina igual que cuando el
+carro quedo apuntando a un muro despues de rebasar un pilar: por eso giraba
+antes de tiempo y por eso hacia un giro a medias, porque el seguidor de carril
+negocia cada ciclo con el centrado en vez de comprometerse. La linea del piso
+no se presta a esa confusion —o se pisa o no— y ademas cae donde de verdad
+empieza la curva. Asi que la linea dice CUANDO, la camara confirma que la
+esquina esta ahi de verdad (el frente tiene que estar cerrado), y el sentido de
+la ronda dice HACIA DONDE. Entre esquina y esquina el carro va recto.
 
 POR QUE HAY UN ESTADO ENTRE EL ESQUIVE Y LA PISTA. Porque lo que sale de un
 rebase no es un carro en pista: es un carro descolocado. Va pegado a un muro,
@@ -56,6 +67,7 @@ from typing import Any, Dict, Optional
 
 from . import protocolo as proto
 from .carril import SalidaCarril
+from .geometria import envolver_grados
 from .senales import FASE_COMPROMISO, FASE_CORRECCION, Maniobra
 from .vision import Escena
 from .vueltas import EstadoVueltas
@@ -74,6 +86,7 @@ class Estado(str, Enum):
     SENAL = "senal"            # señal detectada, aproximando al punto de paso
     ESQUIVE = "esquive"        # rebasando a ciegas, compromiso en curso
     REINCORPORACION = "reincorporacion"   # rebasado: volviendo al carril
+    ESQUINA = "esquina"        # linea pisada: giro comprometido de la curva
     CORRECCION = "correccion"  # se iba por el lado malo, corrigiendo
     REVERSA = "reversa"        # sin radio para corregir: retroceder y repetir
     META = "meta"              # tres vueltas hechas, buscando donde parar
@@ -126,6 +139,9 @@ class MaquinaEstados:
         self.t_arranque: Optional[float] = None
         self.t_fin: Optional[float] = None
         self._t_reversa_hasta = 0.0
+        self._yaw_esquina: Optional[float] = None   # yaw al entrar en la curva
+        self._dist_ultima_esquina_mm = -1e9         # una esquina, un giro
+        self._sentido_esquina = 0
         self._t_atasco_desde: Optional[float] = None
         self._frente_atasco_mm: Optional[float] = None
         self._historial: list = []
@@ -169,6 +185,7 @@ class MaquinaEstados:
             Estado.SENAL: self._senal,
             Estado.ESQUIVE: self._esquive,
             Estado.REINCORPORACION: self._reincorporacion,
+            Estado.ESQUINA: self._esquina,
             Estado.CORRECCION: self._correccion,
             Estado.REVERSA: self._reversa,
             Estado.META: self._meta,
@@ -205,6 +222,8 @@ class MaquinaEstados:
             return self._meta(c)
         if self._detectar_atasco(c):
             return self._entrar_reversa("atascado contra algo")
+        if self._toca_esquina(c):
+            return self._entrar_esquina(c)
         if c.maniobra.fase == FASE_CORRECCION:
             self._ir(Estado.CORRECCION, "lado incorrecto")
             return self._correccion(c)
@@ -284,6 +303,11 @@ class MaquinaEstados:
             self._ir(Estado.SENAL, f"pilar {c.maniobra.color}")
             return self._senal(c)
 
+        # Si la linea llega mientras todavia se esta recolocando, la curva
+        # manda: para eso se espero a la linea.
+        if self._toca_esquina(c):
+            return self._entrar_esquina(c)
+
         centrado = abs(c.carril.err_centrado) < float(
             self.cfg.get("reincorporado_err", 0.30))
         enfilado = abs(c.carril.rumbo_hueco_deg) < float(
@@ -301,6 +325,105 @@ class MaquinaEstados:
         return Orden(vel=v, direccion=max(-100.0, min(100.0, direccion)),
                      armado=True, parada=False, centrar=False,
                      nota="reincorporandose al carril")
+
+    # ---------------------------------------------------------- esquinas
+    def _toca_esquina(self, c: Contexto) -> bool:
+        """La linea del piso acaba de decir que aqui empieza una curva.
+
+        TRES CONDICIONES, Y CADA UNA TAPA UN AGUJERO DISTINTO:
+
+          1. Se acaba de pisar la PRIMERA linea de una esquina. La segunda no
+             dispara nada: cierra el par y ya esta.
+          2. El frente esta de verdad cerrado. Es el contraste de la camara
+             contra el TCS, y hace falta por un caso muy concreto: si el
+             sensor se pierde la linea de ENTRADA, la de SALIDA pasa a ser la
+             primera de un par nuevo y dispararia un giro al salir de la
+             curva, o sea contra el muro de la recta siguiente. Al salir de
+             una curva el frente esta despejado, asi que esta condicion sola
+             lo descarta.
+          3. Se sabe hacia donde girar. Sin sentido no hay giro que
+             comprometer; manda el seguidor de carril, como antes.
+
+        Y encima, UNA ESQUINA UN GIRO: despues de girar se bloquea durante
+        `dist_entre_esquinas_mm` de odometro. La seccion de curva mide 1000 mm
+        y las dos lineas caen dentro, asi que esto impide que la segunda linea
+        —o un rebote del sensor— encadene un segundo giro de 90 grados. Ese
+        fallo existe y se ha visto: dos giros seguidos son 180 grados y la
+        pared.
+        """
+        # EL SENTIDO, DE DONDE SALGA. El aprendido por el carril manda —no
+        # depende de ningun parametro— pero en el ciclo del PRIMER cruce de la
+        # ronda todavia vale 0: el piloto calcula el carril antes que el
+        # contador, asi que el carril arrastra el sentido del ciclo anterior.
+        # Como el evento de esquina dura un solo ciclo, exigirle solo al
+        # carril dejaba la primera curva de la ronda sin disparar — para
+        # siempre, porque la linea no se vuelve a pisar.
+        sentido = c.carril.sentido_curva or c.vueltas.sentido
+        if not c.vueltas.esquina_abierta or not sentido:
+            return False
+        lejos = float(self.cfg.get("esquina_frente_max_mm", 1400.0))
+        if c.carril.dist_frente_mm > lejos:
+            return False
+        hueco = c.vueltas.dist_mm - self._dist_ultima_esquina_mm
+        return hueco >= float(self.cfg.get("dist_entre_esquinas_mm", 1200.0))
+
+    def _entrar_esquina(self, c: Contexto) -> Orden:
+        self._dist_ultima_esquina_mm = c.vueltas.dist_mm
+        self._sentido_esquina = c.carril.sentido_curva or c.vueltas.sentido
+        self._yaw_esquina = c.sens.yaw if c.sens.mpu_ok else None
+        self._ir(Estado.ESQUINA,
+                 f"linea de esquina, giro a la "
+                 f"{'derecha' if self._sentido_esquina > 0 else 'izquierda'}")
+        return self._esquina(c)
+
+    def _esquina(self, c: Contexto) -> Orden:
+        """Giro comprometido de la curva. Se gira Y SE SIGUE GIRANDO.
+
+        La diferencia con dejarselo al seguidor de carril no es la fuerza del
+        volante, es el compromiso. El carril renegocia el volante cada ciclo
+        contra el centrado, asi que en cuanto asoma un poco de hueco afloja y
+        el giro se queda a medias; aqui el volante se mantiene hasta haber
+        girado de verdad. Lo unico que se le suma es la guardia anti-muro, que
+        no negocia el giro: solo impide rozar.
+
+        COMO SE SABE QUE YA SE GIRO. Con el yaw del MPU, que es la unica
+        medida directa de "cuanto he girado". Sin MPU solo queda el
+        cronometro, que depende de la velocidad y del agarre: funciona, pero
+        es el motivo de que `esquina_max_s` exista y de que convenga tener el
+        I2C sano.
+        """
+        if self._parada_por_vueltas(c):
+            return self._meta(c)
+        if self._detectar_atasco(c):
+            return self._entrar_reversa("atascado en la curva")
+        # UN PILAR MANDA SOBRE LA CURVA. Rebasar por el lado que toca vale 8 o
+        # 10 puntos (1.6, 1.7) y hacerlo por el lado malo termina la ronda;
+        # trazar bien la esquina no vale ninguno. Asi que si aparece una
+        # señal, se atiende y la curva la termina el seguidor de carril.
+        if c.maniobra.fase == FASE_CORRECCION:
+            self._ir(Estado.CORRECCION, "lado incorrecto en plena curva")
+            return self._correccion(c)
+        if c.maniobra.peso > float(self.cfg.get("esquina_cede_peso", 0.35)):
+            self._ir(Estado.SENAL, f"pilar {c.maniobra.color} en la curva")
+            return self._senal(c)
+
+        girado = 0.0
+        if self._yaw_esquina is not None and c.sens.mpu_ok:
+            girado = abs(envolver_grados(c.sens.yaw - self._yaw_esquina))
+        bastante = girado >= float(self.cfg.get("esquina_grados", 70.0))
+        agotado = self.en_estado_s > float(self.cfg.get("esquina_max_s", 2.5))
+        if bastante or agotado:
+            self._ir(Estado.PISTA,
+                     "tiempo de curva" if agotado else f"girados {girado:.0f} deg")
+            return self._pista(c)
+
+        v = min(c.velocidad_sugerida, float(self.cfg.get("vel_esquina", 30.0)))
+        direccion = (self._sentido_esquina *
+                     float(self.cfg.get("dir_esquina", 85.0)) + c.guardia_muro)
+        return Orden(vel=v, direccion=max(-100.0, min(100.0, direccion)),
+                     armado=True, parada=False, centrar=False, aux=AUX_LENTO,
+                     nota=f"curva comprometida ({girado:.0f} de "
+                          f"{self.cfg.get('esquina_grados', 70.0):.0f} deg)")
 
     def _correccion(self, c: Contexto) -> Orden:
         if c.maniobra.pedir_reversa:

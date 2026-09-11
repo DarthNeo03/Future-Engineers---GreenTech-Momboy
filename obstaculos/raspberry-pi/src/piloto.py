@@ -145,9 +145,14 @@ class Piloto:
         tras_pilar = (self.esquivador.ocupado() or
                       self.fsm.estado in (Estado.ESQUIVE, Estado.CORRECCION,
                                           Estado.REINCORPORACION))
+        #
+        # ESPERA_LINEA: con el TCS vivo, la esquina la dispara la linea del
+        # piso (fsm.Estado.ESQUINA) y el sesgo de curva del carril se queda de
+        # red. Sin TCS no hay linea que esperar y el sesgo vuelve a mandar.
         sal_carril = self.carril.paso(esc, gz=sens.gz,
                                       sentido_pista=self.contador.e.sentido,
-                                      tras_pilar=tras_pilar)
+                                      tras_pilar=tras_pilar,
+                                      espera_linea=sens.tcs_ok)
         # El yaw entra en el esquive para que el compromiso sostenga el RUMBO
         # y no el angulo de volante: un volante fijo describe un arco y el
         # carro se iba girando hacia el lado del pilar que acababa de pasar.
@@ -234,6 +239,9 @@ class Piloto:
             "comp_err_rumbo": round(maniobra.err_rumbo_deg, 1),
             "magenta": round(empujon, 1) if empujon is not None else None,
             "yaw": round(sens.yaw, 1),
+            "linea": ev.linea_nueva,
+            "esquina_abierta": ev.esquina_abierta,
+            "margen_pilar": maniobra.info.get("margen_pedido_mm"),
             "vueltas": ev.vueltas,
             "secciones": ev.secciones,
             "sentido": ev.sentido,

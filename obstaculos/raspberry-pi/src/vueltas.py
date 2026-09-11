@@ -71,6 +71,12 @@ class EstadoVueltas:
     sentido_firme: bool = False       # confirmado por un par de esquina entero
     origen_sentido: str = ""          # "primera linea" | "par de esquina"
     pares_incoherentes: int = 0       # pares que contradicen al sentido firme
+    # EVENTOS DE ESTE CICLO. Se ponen a falso al principio de cada
+    # actualizar(), asi que solo son ciertos en el ciclo en que ocurrieron:
+    # quien los lee no tiene que acordarse de consumirlos.
+    linea_nueva: str = ""             # color pisado en este ciclo, o ""
+    esquina_abierta: bool = False     # ese cruce ABRE una esquina (1a linea)
+    dist_esquina_mm: float = 0.0      # odometro de la ultima esquina abierta
     vueltas: int = 0
     secciones: int = 0
     cruces_totales: int = 0
@@ -110,6 +116,11 @@ class Contador:
         ver un salto enorme al empezar) pero no se cuenta nada.
         """
         e = self.e
+        # Los eventos duran UN ciclo. Dejarlos pegados obligaria a que el
+        # piloto los borrara despues de leerlos, y ese es exactamente el tipo
+        # de contrato que se olvida en una rama y dispara dos giros.
+        e.linea_nueva = ""
+        e.esquina_abierta = False
 
         # --- odometro ----------------------------------------------------
         # Sin encoder en las ruedas, la distancia se integra de la velocidad
@@ -208,6 +219,7 @@ class Contador:
                 e.vueltas = e.cruces_entrada // CRUCES_POR_VUELTA
 
         e.dist_desde_cruce_mm = 0.0
+        e.linea_nueva = color
         e.info["ultimo_cruce"] = color
 
     # ------------------------------------------------------------------
@@ -244,7 +256,20 @@ class Contador:
             if color == color0 or (e.dist_mm - dist0) > ventana:
                 abierto = None
         if abierto is None:
+            # PRIMERA LINEA DE UNA ESQUINA. Este es el evento que de verdad
+            # sirve para conducir: dice DONDE empieza la curva, que es algo
+            # que la camara no sabe decir a tiempo. La vision ve que el frente
+            # se cierra, pero eso pasa tanto en una esquina como cuando el
+            # carro quedo apuntando a un muro despues de rebasar un pilar; la
+            # linea del piso no se presta a esa confusion: o se pisa o no.
+            #
+            # El SENTIDO del giro no sale del color de ESTA linea —los dos
+            # colores aparecen en las cuatro esquinas— sino del sentido de la
+            # ronda, que es lo que el color de la PRIMERA linea de la ronda
+            # dejo fijado (naranja = horario con la configuracion de fabrica).
             self._par_abierto = (color, e.dist_mm)
+            e.esquina_abierta = True
+            e.dist_esquina_mm = e.dist_mm
             return
 
         color0, _ = abierto
@@ -315,6 +340,7 @@ class Contador:
             "sentido_firme": e.sentido_firme,
             "origen_sentido": e.origen_sentido,
             "pares_incoherentes": e.pares_incoherentes,
+            "ultima_esquina_mm": round(e.dist_esquina_mm),
             "vueltas": e.vueltas,
             "secciones": e.secciones,
             "cruces": e.cruces_totales,

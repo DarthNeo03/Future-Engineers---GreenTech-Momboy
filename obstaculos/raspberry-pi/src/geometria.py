@@ -38,6 +38,15 @@ DIST_MAX_MM = 6000.0        # mas alla de esto se reporta "infinito util"
 ALTO_PILAR_MM = 100.0       # reglamento 13.1: 50 x 50 x 100 mm
 
 
+def envolver_grados(grados: float) -> float:
+    """Diferencia de rumbos llevada a -180..180.
+
+    Sin esto, cruzar el +-180 del yaw se lee como un giro de 350 grados: el
+    esquive da un volantazo y el contador de la curva se cree que ya giro.
+    """
+    return (float(grados) + 180.0) % 360.0 - 180.0
+
+
 class Geometria:
     """Todas las conversiones salen de cfg (dict vivo de pista.json):
 

@@ -125,12 +125,16 @@ def dibujar(frame: np.ndarray, piloto: Any, esc: Escena) -> np.ndarray:
         f"carril {u.get('carril_dir',0):>6}  esquive {u.get('esquive_dir',0):>6}"
         f" x{u.get('esquive_peso',0)}  ({u.get('esquive_fase','')})",
         f"frente {u.get('frente_mm',0)}mm   lateral izq {u.get('izq_mm')}"
-        f"  der {u.get('der_mm')}",
+        f"  der {u.get('der_mm')}"
+        + (f"   margen pedido {u['margen_pilar']}mm"
+           if u.get("margen_pilar") is not None else ""),
         f"hueco a {u.get('rumbo_hueco',0)} deg   curvas hacia {giro}"
         f"   sesgo {u.get('sesgo',0):+}   [{u.get('carril_motivo','')}]",
         f"yaw {u.get('yaw',0):>6}  vuelta {u.get('vueltas',0)}"
         f"  seccion {u.get('secciones',0)}  sentido {_sentido(u)}",
     ]
+    if u.get("esquina_abierta"):
+        lineas.append(f"LINEA {u.get('linea','').upper()}: empieza la curva")
     if u.get("tras_pilar"):
         lineas.append("TRAS PILAR: sin sesgo de curva y sin aprender sentido")
     if u.get("muro_encima"):

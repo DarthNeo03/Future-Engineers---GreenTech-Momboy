@@ -258,6 +258,53 @@ Ahora solo cuenta como costado lo que está más cerca que el frente
 
 ---
 
+## Quién manda en las esquinas: la línea del piso
+
+La cámara solo sabe decir que **el frente se cerró**, y eso le pasa en una
+esquina igual que cuando el carro quedó apuntando a un muro después de rebasar
+un pilar. De ahí salían los dos síntomas: giraba antes de tiempo (recortando la
+curva, porque ve el muro un metro antes de que la curva empiece) y giraba a
+medias (porque el seguidor de carril renegocia el volante cada ciclo contra el
+centrado, y en cuanto asoma hueco afloja).
+
+La línea del piso no se presta a esa confusión: o se pisa o no, y cae donde la
+curva empieza de verdad. Así que el reparto es:
+
+| Quién | Qué aporta |
+|---|---|
+| la línea del piso (TCS) | **CUÁNDO**: la primera línea de la esquina abre la curva |
+| la cámara | **QUE ESTÁ AHÍ**: el frente tiene que estar cerrado de verdad |
+| el sentido de la ronda | **HACIA DÓNDE**: naranja = horario = todas a la derecha |
+
+Entre esquina y esquina, el carro va **recto**. Con eso, `Estado.ESQUINA` hace
+un giro **comprometido**: `dir_esquina` (85 %) sostenido hasta haber girado
+`esquina_grados` (70°) de yaw, sin renegociar. Lo único que se le suma es la
+guardia anti-muro, que no discute el giro — solo impide rozar.
+
+**Las cuatro redes**, cada una por un fallo concreto:
+
+- **Una esquina, un giro.** Las dos líneas de una curva caen dentro de los
+  mismos 1000 mm de sección. Sin `dist_entre_esquinas_mm` (1200), la segunda
+  encadenaría otro giro de 90°, y 90 + 90 es la pared de enfrente.
+- **La cámara confirma.** Si el TCS se pierde la línea de *entrada*, la de
+  *salida* abre un par nuevo y dispararía un giro justo al salir de la curva.
+  Al salir, el frente está despejado: `esquina_frente_max_mm` lo descarta.
+  Al entrar en la curva el muro exterior queda a ~1000 mm, y el umbral está en
+  1400 para dejar holgura; si en pista ves la línea pero el estado no pasa a
+  `esquina`, éste es el primer número que hay que subir.
+- **Un pilar manda sobre la curva.** Rebasar por el lado que toca vale 8 o 10
+  puntos (1.6, 1.7) y hacerlo por el malo termina la ronda; trazar bien la
+  esquina no vale ninguno. Con `esquina_cede_peso` la señal interrumpe el giro
+  y la curva la termina el seguidor de carril.
+- **Sin MPU se sale por tiempo.** El yaw es la única medida directa de «cuánto
+  he girado». Sin él queda `esquina_max_s`, que depende de la velocidad y del
+  agarre: funciona, pero es un motivo más para tener el I²C sano.
+
+Si el TCS no está (`tcs_ok` falso) no hay nada que esperar y todo vuelve al
+seguidor de carril de siempre, que es lo que se describe abajo.
+
+---
+
 ## Cómo sabe hacia dónde girar
 
 En una pista WRO **todas las curvas van hacia el mismo lado**: en sentido
@@ -293,11 +340,16 @@ en este orden:
    partir de ahí el carro empujaría hacia ese lado en las once curvas
    restantes.
 
-**Y el sesgo lleva dos candados**, los dos por el mismo fallo de pista: nunca
-se aplica con un rebase en curso o recién terminado, y nunca empuja **hacia**
-un muro que ya está a menos de `guardia_muro_mm`. El sesgo existe para
-resolver un hueco indeciso, no para meter el morro en la pared; si la esquina
-es de verdad, el término de rumbo la resuelve igual en cuanto haya sitio.
+**Y el sesgo lleva tres candados**, todos por el mismo fallo de pista:
+
+1. Nunca con un rebase en curso o recién terminado.
+2. Nunca **hacia** un muro que ya está a menos de `guardia_muro_mm`. El sesgo
+   existe para resolver un hueco indeciso, no para meter el morro en la pared.
+3. **Con el TCS vivo, espera a la línea.** Quien dispara la curva es el piso;
+   este sesgo se queda de red y solo habla si el frente baja de
+   `sesgo_desde_mm` (520 mm), o sea si la línea no llegó. Sin él, el carro
+   empezaba a girar a 820 mm y llegaba a la línea ya torcido: eso es recortar
+   la curva.
 
 En la ventana de `--ver`: `hueco a N deg`, `sesgo` y `curvas hacia ...` dicen
 qué está pensando, y salen avisos de `TRAS PILAR` y `MURO ENCIMA` cuando el
@@ -418,11 +470,40 @@ este orden, que es el orden en que se encadenaban las causas:
 | el estado después del esquive | tiene que ser `reincorporacion`, no `pista` |
 | `sesgo` durante esa reincorporación | tiene que ser `0`, y salir el aviso `TRAS PILAR` |
 | `sentido` | si dice `(provisional)` después de la primera curva, el par de la esquina no se está completando: el TCS se está saltando una de las dos líneas |
+| que aparezca `LINEA ...: empieza la curva` al llegar a cada esquina | si no aparece, el TCS no está viendo las líneas y el carro está girando solo por cámara — que es girar recortando |
+| el estado al pisar la línea | tiene que ser `esquina`, con el volante en `dir_esquina` y sostenido |
 
 Y si sale el aviso de que **las líneas y las curvas no dicen el mismo
 sentido**, para y arregla `color_entrada_horario` antes de seguir rodando: el
 carro está funcionando con dos respuestas contradictorias a la pregunta de
 hacia dónde giran las curvas.
+
+---
+
+## Si pasa más cerca de un color que del otro
+
+El punto de paso es **simétrico en el código**: `lat_mm ± (25 + semiancho +
+margen)`, con los mismos números para rojo y verde. Así que si en pista pasa
+más cerca de uno, la asimetría no está en la geometría del esquive. Los dos
+sospechosos, en orden de probabilidad:
+
+1. **La máscara de ese color recorta el pilar.** La distancia primaria sale de
+   la **altura aparente** (`dist_alto_mm`), así que un pilar recortado se ve
+   más bajo, se reporta más lejos y el esquive arranca tarde. Con `--ver`,
+   pon los dos colores a la misma distancia conocida y compara: si el verde
+   dice 900 y el rojo 700 con los dos a 700, el problema es el rango HSV del
+   verde, no el control.
+2. **El carro llegaba mal colocado.** Si venía recortando la curva anterior,
+   entra a la recta descentrado y el esquive parte con menos sitio del que
+   debería. Esto es lo que arregla el giro por línea de arriba, así que vale
+   la pena volver a medirlo después de probarlo.
+
+Mientras tanto, `margen_verde_mm` / `margen_rojo_mm` compran despeje en el
+color que lo necesite sin tocar el otro (hoy: verde 100, rojo 70). Es una
+compensación, no un arreglo: si el verde se está midiendo mal, también se está
+midiendo mal la distancia a la que arranca el compromiso. En `--ver`,
+`margen pedido` dice cuánto se está pidiendo para el pilar que se está
+atendiendo.
 
 ---
 
@@ -439,5 +520,6 @@ Con la cita al lado, para que se puedan comprobar contra el reglamento:
 | Apéndice A.5 hay margen para corregir el lado | `fsm.py` → `Estado.CORRECCION` |
 | 9.23 volver a la sección de arranque y parar | `vueltas.py` → `evaluar_parada` |
 | 9.3 / 9.4 el sentido se sortea y no se configura | `vueltas.py` → `_emparejar` (par ordenado de la esquina) |
+| 13.9 las líneas marcan dónde empieza la curva | `fsm.py` → `Estado.ESQUINA` |
 | 13.1 pilar de 50 × 50 × 100 mm | `senales.py`, `geometria.py` |
 | 13.9 líneas naranja y azul de 20 mm | `lineas.h` |

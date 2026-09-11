@@ -88,7 +88,8 @@ class SeguidorCarril:
 
     # ------------------------------------------------------------------
     def paso(self, esc: Escena, gz: float = 0.0,
-             sentido_pista: int = 0, tras_pilar: bool = False) -> SalidaCarril:
+             sentido_pista: int = 0, tras_pilar: bool = False,
+             espera_linea: bool = False) -> SalidaCarril:
         """gz: velocidad angular del MPU en grados/s (+ derecha).
 
         sentido_pista: +1 horario / -1 antihorario si ya se dedujo de las
@@ -107,6 +108,15 @@ class SeguidorCarril:
              se veia en pista justo despues de un esquive limpio.
           3. El centrado conserva toda su autoridad: es el termino que saca
              al carro del muro, y en curva se le baja al 25 %.
+
+        espera_linea: el TCS esta vivo, o sea que la esquina la va a disparar
+        la linea del piso (fsm.Estado.ESQUINA). Entonces el sesgo de curva de
+        aqui se guarda como ULTIMO RECURSO y solo habla si el frente se cierra
+        por debajo de `sesgo_desde_mm`. Sin esto el carro empieza a girar en
+        cuanto la camara ve el muro de la esquina —a 820 mm— y llega a la
+        linea ya torcido, que es lo que se veia como "recorta la curva". Con
+        el TCS ausente no hay nada que esperar y el sesgo vuelve a mandar
+        desde `dist_curva_mm`, como antes.
         """
         s = SalidaCarril()
         perfil = esc.perfil_mm
@@ -289,11 +299,22 @@ class SeguidorCarril:
         #     un hueco indeciso, no para meter el morro en la pared: si la
         #     esquina es de verdad, el termino de rumbo la resuelve igual en
         #     cuanto haya sitio.
+        #
+        # Y UN TERCER CANDADO: ESPERAR A LA LINEA. Quien manda en las esquinas
+        # es el piso, no la camara — la linea cae donde de verdad empieza la
+        # curva, y la camara ve el muro un metro antes. Girar con la camara es
+        # recortar: el carro llega a la linea ya torcido. Asi que con el TCS
+        # vivo este sesgo es solo la red por si el sensor se pierde la linea, y
+        # no habla hasta que el frente esta tan cerca que ya no se puede
+        # esperar mas.
         cerca_der = s.lat_der_mm is not None and s.lat_der_mm < umbral_muro
         cerca_izq = s.lat_izq_mm is not None and s.lat_izq_mm < umbral_muro
         muro_de_ese_lado = (sentido > 0 and cerca_der) or (sentido < 0 and cerca_izq)
+        sin_margen = s.dist_frente_mm < float(
+            self.cfg.get("sesgo_desde_mm", 520.0))
+        toca_ya = sin_margen or not espera_linea
         if (s.en_curva and sentido != 0 and not tras_pilar
-                and not muro_de_ese_lado):
+                and not muro_de_ese_lado and toca_ya):
             sesgo = float(self.cfg.get("sesgo_curva", 45.0))
             indeciso = abs(s.rumbo_hueco_deg) < float(
                 self.cfg.get("hueco_indeciso_deg", 10.0))
@@ -301,8 +322,13 @@ class SeguidorCarril:
             direccion += s.sesgo
             s.motivo = "curva " + ("(por sentido)" if indeciso else "(por hueco)")
         elif s.en_curva and sentido != 0:
-            s.motivo = ("curva (sesgo callado: tras pilar)" if tras_pilar
-                        else "curva (sesgo callado: muro de ese lado)")
+            if tras_pilar:
+                s.motivo = "curva (sesgo callado: tras pilar)"
+            elif muro_de_ese_lado:
+                s.motivo = "curva (sesgo callado: muro de ese lado)"
+            else:
+                s.motivo = "recto hasta la linea"
+
 
         # --- termino 3: amortiguacion con el giroscopio --------------------
         direccion -= float(self.cfg.get("kd_giro", 0.28)) * gz

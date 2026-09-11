@@ -76,17 +76,12 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from .geometria import DIST_MAX_MM
+from .geometria import DIST_MAX_MM, envolver_grados
 from .vision import Deteccion, Escena
 
 # +1 = el carro debe quedar a la DERECHA del pilar; -1 = a su izquierda.
 LADO_OBLIGADO = {"rojo": +1, "verde": -1}
 MITAD_PILAR_MM = 25.0        # el pilar mide 50 x 50 mm en planta
-
-def _envolver(grados: float) -> float:
-    """Diferencia de rumbos llevada a -180..180. Sin esto, cruzar el +-180
-    del yaw se lee como un giro de 350 grados y el carro da un volantazo."""
-    return (float(grados) + 180.0) % 360.0 - 180.0
 
 
 FASE_NADA = "nada"
@@ -233,10 +228,10 @@ class Esquivador:
                 if m.progreso > desde:
                     w = min(1.0, (m.progreso - desde) / max(1e-3, 1.0 - desde))
                     hacia_pasillo = yaw + float(rumbo_hueco_deg)
-                    objetivo_yaw = self._comp_yaw + w * _envolver(
+                    objetivo_yaw = self._comp_yaw + w * envolver_grados(
                         hacia_pasillo - self._comp_yaw)
                     m.saliendo = True
-                err = _envolver(objetivo_yaw - yaw)
+                err = envolver_grados(objetivo_yaw - yaw)
                 m.rumbo_objetivo = objetivo_yaw
                 m.err_rumbo_deg = err
                 direccion = (float(self.cfg.get("kp_rumbo_compromiso", 2.6)) * err
@@ -278,7 +273,16 @@ class Esquivador:
 
         # Punto de paso: al costado correcto del pilar, separado lo que ocupa
         # medio carro + medio pilar + el margen de seguridad.
-        margen = float(self.cfg.get("margen_mm", 70.0))
+        #
+        # EL MARGEN PUEDE SER DISTINTO POR COLOR, y no por capricho. Los dos
+        # colores no se ven igual de bien: si la mascara de uno recorta el
+        # pilar, su altura aparente sale menor, la distancia sale MAYOR y el
+        # esquive arranca tarde — se pasa mas cerca de ese color que del otro
+        # con exactamente el mismo codigo. Lo correcto es arreglar el rango
+        # HSV; mientras tanto, `margen_verde_mm` / `margen_rojo_mm` compran
+        # despeje en el color que lo necesite sin tocar el otro.
+        margen = float(self.cfg.get(f"margen_{objetivo.color}_mm",
+                                    self.cfg.get("margen_mm", 70.0)))
         m.objetivo_mm = objetivo.lat_mm + lado * (MITAD_PILAR_MM +
                                                   self.semiancho_mm + margen)
 
@@ -364,6 +368,11 @@ class Esquivador:
             "holgura_mm": round(holgura_actual),
             "mirada_mm": round(mirada),
             "angulo_deg": round(ang, 1),
+            # Margen que se esta PIDIENDO para este color, por encima del
+            # corredor del carro. Si en pista se ve que pasa mas cerca de un
+            # color que del otro, esto dice si es que se esta pidiendo menos
+            # o si es que no se esta consiguiendo lo que se pide.
+            "margen_pedido_mm": round(margen),
         }
         return m
 
