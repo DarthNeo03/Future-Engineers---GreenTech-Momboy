@@ -537,20 +537,24 @@ class Robot:
                                                     nav.GIRO_2T))
             debe_parar = self.carrera.paso()
 
-            # Velocidad real estimada: hace falta para saber cuanto tarda el
-            # carro en adelantar un pilar con todo su largo.
-            vel_mm_s = (abs(self.decision.vel) / 100.0
+            # Velocidad real estimada (CON SIGNO: en reversa el pilar se
+            # aleja). Con ella y el giroscopio el esquive lleva por estima
+            # donde queda cada pilar cuando ya no se ve, hasta que la cola lo
+            # pasa; y sirve para saber cuanto dura el compromiso de respaldo.
+            vel_mm_s = (self.decision.vel / 100.0
                         * int(self.p["limites"]["vmax"]) / 255.0
                         * float(self.p["velocidad"]["vel_max_mm_s"]))
             bias = self.esquivador.paso(dets, perfil, self.geo,
                                         self.lineas.dist_lineas, en_esquina,
-                                        sentido, vel_mm_s)
-            ### "pilar en juego" = visto ahora mismo (dist_mm) o en el punto
-            ### ciego mientras se adelanta (adelantando_s). La busqueda del
-            ### modo borde (buscando) no cuenta: es un recuerdo, no un pilar.
-            ### Se lee de la info del esquivador para no tocar obstaculos.py.
+                                        sentido, vel_mm_s,
+                                        yaw=yaw_ahora, error_rumbo=error_rumbo)
+            ### "pilar en juego" = visto ahora mismo (dist_mm), al costado
+            ### entre el morro y la cola (al_costado_mm) o en el punto ciego
+            ### mientras se adelanta (adelantando_s). La busqueda del modo
+            ### borde (buscando) no cuenta: es un recuerdo, no un pilar.
             info_obst = self.esquivador.info
             pilar_en_juego = ("dist_mm" in info_obst
+                              or "al_costado_mm" in info_obst
                               or "adelantando_s" in info_obst)
 
             # --- decidir ---------------------------------------------------
@@ -563,7 +567,8 @@ class Robot:
                                             linea_reciente, bias, en_esquina,
                                             esquina_confirmada,
                                             pilar_en_juego=pilar_en_juego,
-                                            freno_linea=self.lineas.freno_linea())
+                                            freno_linea=self.lineas.freno_linea(),
+                                            restriccion=self.esquivador.restriccion)
             elif self.modo == "manual" and self.armado:
                 caducado = (time.time() - self.manual["t"]) * 1000 > \
                     float(self.p["manual"]["timeout_ms"])

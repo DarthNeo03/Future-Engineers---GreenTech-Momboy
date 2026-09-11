@@ -208,6 +208,45 @@ def anotar(frame: np.ndarray,
             cv2.putText(frame, etq, (6, H - 122), cv2.FONT_HERSHEY_SIMPLEX,
                         0.42, col_o, 1, cv2.LINE_AA)
 
+        # --- el arco: a donde se mira sobre la linea de paso ---------------
+        # (modo 'arco') el punto de la linea de paso al que apunta el arco.
+        # Si esta lejos del pilar es que el carro aun tiene que desplazarse;
+        # cuando queda casi encima del eje, el carro ya va por la linea.
+        if obst_info.get("arco_x") is not None and obst_info.get("arco_y"):
+            try:
+                ua, va = geo.suelo_a_pixel(float(obst_info["arco_x"]),
+                                           float(obst_info["arco_y"]) + morro)
+                cv2.circle(frame, (ua, va), 6, (0, 220, 220), 2, cv2.LINE_AA)
+                cv2.putText(frame, "arco", (ua + 8, va + 4),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.34, (0, 220, 220), 1,
+                            cv2.LINE_AA)
+            except Exception:
+                pass
+
+        # --- el paso: al costado, saliendo, o en el corredor ----------------
+        # Estas tres lineas son las que dicen por que el volante hace lo que
+        # hace cuando el pilar ya no se ve: "no gira porque lo tiene al
+        # costado", "va despacio porque acaba de pasarlo", "va a la reversa
+        # porque lo tiene EN el corredor y encima".
+        estado_paso = ""
+        if "al_costado_mm" in obst_info:
+            estado_paso = (f"AL COSTADO ({obst_info.get('costado_color', '')} a "
+                           f"{obst_info['al_costado_mm']}mm, holgura "
+                           f"{obst_info.get('holgura_mm', '?')}mm)")
+            if obst_info.get("no_girar"):
+                estado_paso += (f" hacia la {obst_info['no_girar']} max "
+                                f"{obst_info.get('tope_hacia_pct', 0)}%")
+        elif obst_info.get("recuperando_s") is not None:
+            estado_paso = f"SALIENDO del paso {obst_info['recuperando_s']:.1f}s"
+        if obst_info.get("bloqueo_mm") is not None:
+            estado_paso += f"  EN EL CORREDOR a {obst_info['bloqueo_mm']}mm"
+        if obst_info.get("rumbo_tope"):
+            estado_paso += "  (tope de desvio: no abrirse mas)"
+        if estado_paso:
+            cv2.putText(frame, estado_paso, (6, H - 106), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.40, (0, 200, 255) if "CORREDOR" in estado_paso else col_o,
+                        1, cv2.LINE_AA)
+
     # --- volante -----------------------------------------------------------
     cx, cy = W // 2, 22
     x2 = int(cx + (W * 0.22) * (d.direccion / 100.0))

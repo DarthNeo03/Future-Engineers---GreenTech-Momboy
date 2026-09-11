@@ -63,7 +63,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from .muro import PerfilMuro, DetectorEsquinaInterna
+from .muro import PerfilMuro, DetectorEsquinaInterna, DIST_MAX_MM
+from .obstaculos import Restriccion
 
 RECTO = "recto"
 PRE_GIRO = "pre_giro"
@@ -140,6 +141,10 @@ class Navegador:
 
         self._t_fin_escape = 0.0
         self._escape_intentos = 0
+        ### el escape lo disparo un PILAR en el corredor (no un muro): guarda
+        ### por que lado habia que pasarlo, para que la reversa deje el morro
+        ### apuntando al hueco correcto
+        self._escape_pilar = 0
         self._pasillo_prev: Optional[float] = None
         self._t_pasillo = 0.0
         self._vel_cierre = 0.0        # mm/s, positivo = el muro se acerca
@@ -195,6 +200,7 @@ class Navegador:
         self.t_estado = time.time()
         self.rumbo_objetivo = None
         self._escape_intentos = 0
+        self._escape_pilar = 0
         self._pasillo_prev = None
         self._2t_yaw_prev = None
         self._esquina_atendida = False
@@ -268,14 +274,20 @@ class Navegador:
              en_esquina: bool = False,
              esquina_confirmada: bool = False,
              pilar_en_juego: bool = False,
-             freno_linea: float = 1.0) -> Decision:
+             freno_linea: float = 1.0,
+             restriccion: Optional[Restriccion] = None) -> Decision:
         """sentido: +1 horario, -1 antihorario, 0 desconocido.
-        pilar_en_juego: (modo color) hay un pilar visto ahora mismo o en el
-                    punto ciego adelantandolo. Es lo que SUELTA el giro por
-                    color; fuera de ese modo no se usa.
+        pilar_en_juego: (modo color) hay un pilar visto ahora mismo, al
+                    costado o en el punto ciego adelantandolo. Es lo que
+                    SUELTA el giro por color; fuera de ese modo no se usa.
         freno_linea: factor 0..1 sobre la velocidad en recta cuando la camara
                     ve una linea del piso cerca (lineas.frenar_ante_linea).
         bias_obstaculo: (direccion_deseada_pct, peso 0..1) del esquive.
+        restriccion: lo que el esquive impone ADEMAS de la direccion: tope de
+                    velocidad mientras un pilar manda, prohibicion de girar
+                    hacia el pilar que queda al costado, y el aviso de que
+                    hay un pilar EN el corredor de las ruedas (que dispara el
+                    escape si esta encima). Ver obstaculos.Restriccion.
         en_esquina: el carro esta en una curva, por lineas del piso O porque
                     la vision decidio girar. Con bloqueo_esquina, mientras
                     dure eso el giro no se abandona (anti-bucle).
@@ -292,6 +304,25 @@ class Navegador:
         vel_giro = float(lim.get("vel_giro", 38))
         dir_max = float(lim.get("dir_max", 100))
         pasillo = p.pasillo_mm
+
+        ### EN MANIOBRA DE ESQUIVE, "MURO DELANTE" ES LA PARED DE FRENTE.
+        ### El pasillo se mide recto delante del carro, en el corredor de las
+        ### ruedas, y eso vale mientras el carro va paralelo al carril. Pero
+        ### esquivando un pilar el carro va CRUZADO a proposito (10-25 grados
+        ### durante un segundo o dos): la pared de AL LADO entra en el
+        ### corredor y parece un muro de frente a 30-40 cm. Con eso el carro
+        ### frenaba en seco, disparaba una esquina FALSA (y en modo color el
+        ### rumbo de referencia avanzaba 90 grados: derecho a la pared) o se
+        ### iba a la reversa en mitad del esquive. Mientras dure la maniobra,
+        ### lo que cuenta como muro delante es la pared DE FRENTE identificada
+        ### por su orientacion (frontal_mm, que ya descuenta el giroscopio);
+        ### el pasillo crudo solo manda si hay algo de verdad encima.
+        peso_obst = float(bias_obstaculo[1]) if bias_obstaculo else 0.0
+        maniobra = peso_obst >= 0.5 or (restriccion is not None
+                                        and restriccion.maniobra)
+        ref_muro = pasillo
+        if maniobra:
+            ref_muro = p.frontal_mm if p.frontal_mm is not None else DIST_MAX_MM
 
         usar_yaw = bool(cfg.get("usar_yaw", True)) and yaw is not None
         if usar_yaw and self.rumbo_objetivo is None:
@@ -340,13 +371,34 @@ class Navegador:
         umbral_escape = parar_bajo
         if self.estado in (GIRO, GIRO_COLOR):
             umbral_escape *= float(esc.get("factor_en_giro", 0.6))
-        if self.estado not in (ESCAPE, GIRO_2T) and pasillo < umbral_escape:
+        ### UN PILAR EN EL CORREDOR DE LAS RUEDAS TAMBIEN ES UN MURO. El perfil
+        ### no lo ve (con metodo 'negro' solo ve negro), asi que sin esto el
+        ### carro seguia a velocidad de crucero hasta el golpe. Si el esquive
+        ### no lo ha sacado del corredor cuando esta a pilar_parar_mm, se
+        ### retrocede igual que ante una pared, con el volante al lado
+        ### contrario al de paso para que el morro quede apuntando al hueco.
+        bloqueo = None if restriccion is None else restriccion.bloqueo_mm
+        pilar_parar = float(self.obst.get("pilar_parar_mm", 180.0))
+        pilar_encima = bloqueo is not None and bloqueo < pilar_parar
+        ### fuera de maniobra ref_muro ES el pasillo; en maniobra, la pared de
+        ### frente. El pasillo crudo NO dispara el escape en maniobra ni aun
+        ### muy corto: con el pilar al costado, una reversa con el volante
+        ### girado mete el morro contra el pilar (visto en el simulador), y
+        ### rozar la pared a velocidad de esquive es el mal menor.
+        muro_encima = ref_muro < umbral_escape
+        if (self.estado not in (ESCAPE, GIRO_2T)
+                and (muro_encima or pilar_encima)):
             if self.estado == GIRO_COLOR:
                 ### el giro por color solo va hacia adelante: si el muro se
                 ### le echa encima manda el escape, y al volver se retoma
                 self._color_pendiente = True
             self._cambiar(ESCAPE)
-            deficit = umbral_escape - pasillo
+            if muro_encima:
+                deficit = umbral_escape - pasillo
+                self._escape_pilar = 0
+            else:
+                deficit = pilar_parar - float(bloqueo)
+                self._escape_pilar = int(restriccion.lado_bloqueo)
             comp = float(esc.get("escape_min_ms", 750)) + \
                 float(esc.get("escape_k_ms_por_mm", 3.0)) * deficit
             self._t_fin_escape = ahora + comp / 1000.0
@@ -357,9 +409,22 @@ class Navegador:
                 ### Umbral PROPIO para dar el escape por bueno. Antes salia de
                 ### girar_bajo_mm * 0.8, asi que subir la distancia a la que se
                 ### dispara la curva alargaba tambien todas las reversas, que
-                ### no tienen nada que ver.
-                if pasillo > float(esc.get("salir_mm", 520.0)):
+                ### no tienen nada que ver. Si lo que habia delante era un
+                ### pilar, ademas tiene que haber quedado lejos o fuera del
+                ### corredor: si no, al avanzar se vuelve a chocar con el.
+                libre = pasillo > float(esc.get("salir_mm", 520.0))
+                if self._escape_pilar:
+                    ### escape por PILAR: se sale en cuanto el pilar queda
+                    ### lejos o fuera del corredor y no hay un muro encima.
+                    ### El pasillo medido de frente NO manda aqui: la reversa
+                    ### angulada lo acorta contra la pared de al lado y el
+                    ### carro se quedaria retrocediendo hasta cruzarse.
+                    libre = pasillo > parar_bajo and (
+                        bloqueo is None
+                        or bloqueo > float(self.obst.get("pilar_salir_mm", 500.0)))
+                if libre:
                     self._escape_intentos = 0
+                    self._escape_pilar = 0
                     self._cambiar(RECTO)
                     self.pd.reiniciar()
                     # Se vuelve al rumbo de LA RECTA, no al que haya quedado
@@ -373,6 +438,7 @@ class Navegador:
                     # elegir "donde haya mas hueco" es lo que podia dejar al
                     # carro encarado hacia atras.
                     self._escape_intentos = 0
+                    self._escape_pilar = 0
                     if usar_yaw and self.rumbo_recta is not None:
                         err = _norm_ang(self.rumbo_recta - yaw)
                         self.lado_giro = 1 if err >= 0 else -1
@@ -383,15 +449,28 @@ class Navegador:
                     self._cambiar(GIRO)
                 else:
                     deficit = max(0.0, parar_bajo - pasillo)
+                    if self._escape_pilar and bloqueo is not None:
+                        deficit = max(deficit, pilar_parar - float(bloqueo))
                     comp = float(esc.get("escape_min_ms", 750)) + \
                         float(esc.get("escape_k_ms_por_mm", 3.0)) * deficit
                     self._t_fin_escape = ahora + comp / 1000.0
                     self._escape_intentos += 1
             if self.estado == ESCAPE:
                 lado, regla = self._lado_escape(p, sentido, en_esquina)
+                volante = float(esc.get("escape_dir", 80.0))
+                if self._escape_pilar:
+                    ### reversa con el volante al lado CONTRARIO al de paso:
+                    ### con Ackermann eso hace girar el morro HACIA el lado de
+                    ### paso, y al volver a avanzar el pilar queda al otro
+                    ### lado. Con menos volante que ante un muro: aqui no hay
+                    ### que "separar el morro", solo angular el carro un poco.
+                    lado = -self._escape_pilar
+                    volante = float(self.obst.get("pilar_escape_dir_pct", 45.0))
+                    regla = ("librando el pilar por su "
+                             + ("derecha" if self._escape_pilar > 0 else "izquierda"))
                 return self._salida(
                     -float(lim.get("vel_reversa", 35)),
-                    lado * float(esc.get("escape_dir", 80.0)),
+                    lado * volante,
                     p, yaw, sentido,
                     f"escape #{self._escape_intentos} pasillo={pasillo:.0f}mm "
                     f"({regla})")
@@ -587,6 +666,12 @@ class Navegador:
                 # pared cruzada delante: esto es una esquina identificada, no
                 # una pared lateral que parece cercana por ir torcido
                 disparo = f"pared de frente a {frontal:.0f}mm"
+            elif maniobra:
+                ### esquivando, el carro va cruzado a proposito: el pasillo y
+                ### la banda del muro interno miden la pared de al lado, no
+                ### una esquina. Solo la pared de frente (arriba) y la linea
+                ### del piso (mas arriba) pueden abrir una esquina aqui.
+                pass
             elif pasillo < float(cfg.get("girar_bajo_mm", 650.0)):
                 disparo = f"pasillo {pasillo:.0f}mm"
             elif aviso_interna is not None:
@@ -622,7 +707,7 @@ class Navegador:
             # de muros. Sin esto, un pilar pegado a la pared interior se lleva
             # al carro de frente contra la esquina: el esquive pesaba mas que
             # el muro justo cuando el muro era el problema.
-            holgura = (pasillo - parar_bajo) / max(
+            holgura = (ref_muro - parar_bajo) / max(
                 1.0, float(cfg.get("frenar_bajo_mm", 1000.0)) - parar_bajo)
             peso *= _lim(holgura, 0.0, 1.0)
         if peso > 0.0:
@@ -651,18 +736,45 @@ class Navegador:
             direccion += corr
             motivo += f" yaw{err:+.0f}"
 
+        # --- el pilar que queda AL COSTADO: prohibido girar hacia el -------
+        # Ya paso el morro y todavia no la cola. Volver ahora al centro del
+        # carril (centrado + rumbo tiran de eso) es barrerlo con la rueda
+        # trasera: con direccion Ackermann la cola corta por dentro. Se deja
+        # girar solo hacia el lado contrario, o ir recto.
+        if restriccion is not None and restriccion.no_girar:
+            tope_h = max(0.0, float(restriccion.tope_hacia_pct))
+            if restriccion.no_girar > 0 and direccion > tope_h:
+                direccion = tope_h
+                motivo += f" [pilar al costado: der<={tope_h:.0f}]"
+            elif restriccion.no_girar < 0 and direccion < -tope_h:
+                direccion = -tope_h
+                motivo += f" [pilar al costado: izq<={tope_h:.0f}]"
+
         # --- velocidad -----------------------------------------------------
         frenar = float(cfg.get("frenar_bajo_mm", 1000.0))
-        if pasillo >= frenar:
+        if ref_muro >= frenar:
             vel = vel_crucero
         else:
-            t = (pasillo - parar_bajo) / max(1.0, frenar - parar_bajo)
+            t = (ref_muro - parar_bajo) / max(1.0, frenar - parar_bajo)
             vel = vel_giro + (vel_crucero - vel_giro) * _lim(t, 0.0, 1.0)
             motivo += " frenando"
 
+        # VER UN PILAR ES FRENAR. El perfil del muro no lo ve, asi que sin esto
+        # la velocidad seguia siendo la de crucero hasta el golpe, y a esa
+        # velocidad no hay volante que desplace el carro 20 cm en los ultimos
+        # 70 cm. Se baja hacia obstaculos.vel_esquive en proporcion a cuanto
+        # manda el pilar (de lejos apenas), y del todo mientras esta al costado.
+        if (restriccion is not None and restriccion.vel_max_pct is not None
+                and restriccion.peso_vel > 0.0):
+            tope_v = vel_crucero - (vel_crucero - float(restriccion.vel_max_pct)) \
+                * _lim(restriccion.peso_vel, 0.0, 1.0)
+            if vel > tope_v:
+                vel = tope_v
+                motivo += f" vel pilar<={tope_v:.0f}"
+
         # freno por tiempo-hasta-el-muro: la inercia no espera a la distancia
         ttc_min = float(cfg.get("ttc_min_s", 0.7))
-        if self._vel_cierre > 60.0:
+        if not maniobra and self._vel_cierre > 60.0:
             ttc = pasillo / self._vel_cierre
             if ttc < ttc_min:
                 vel = min(vel, vel_giro * _lim(ttc / ttc_min, 0.35, 1.0))

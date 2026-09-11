@@ -72,15 +72,32 @@ MAGENTA = [[[138, 90, 70], [162, 255, 255]]]
 # Valores de arranque del esquive. Los de open no valen: estaban apagados.
 OBSTACULOS = {
     "activo": True,
-    "activar_desde_mm": 1600.0,   # la seccion recta mide 1 m: ver mas lejos
-    "mandar_desde_mm": 700.0,     # es mirar ya al pilar de la seccion siguiente
+    "activar_desde_mm": 1500.0,   # la seccion recta mide 1 m: ver mas lejos
+    "mandar_desde_mm": 1100.0,    # y mandar del todo desde poco despues: el
+    #                               cambio de carril necesita ~1 m de recta
     "margen_mm": 70.0,
+    "margen_pared_mm": 30.0,      # rozar la pared no penaliza; mover el pilar si
     "semi_pilar_mm": 25.0,        # el pilar mide 50x50 (regla 13.1)
-    "k_dir": 1.4,
-    "dir_max_pct": 55.0,
+    # --- COMO se aparta: arco por geometria (ver obstaculos.py) ------------
+    "modo": "arco",
+    "k_arco": 1.0,
+    "mirada_mm": 600.0,
     "mirada_min_mm": 350.0,
-    "peso_max": 0.8,              # NO 1.0: con 1.0 el muro deja de contar
-    "modo": "punto",
+    "dir_max_pct": 85.0,          # el arco pide a tope solo si hace falta
+    "peso_max": 1.0,              # el centrado se calla mientras se esquiva
+    "vel_esquive": 40,            # ver un pilar es frenar
+    "desvio_max_esquive_deg": 35.0,
+    "pilar_parar_mm": 180.0,      # la red: pilar en el corredor y encima -> reversa
+    "pilar_salir_mm": 500.0,
+    "pilar_escape_dir_pct": 45.0,
+    "magenta_semi_mm": 110.0,     # el delimitador mide 200: medio muro
+    # --- el paso: al costado y saliendo -----------------------------------
+    "no_volver_al_costado": True,
+    "costado_desde_mm": 120.0,
+    "costado_giro_max_pct": 25.0,
+    "recuperar_ms": 1000,
+    # (los del modo 'punto', por si se vuelve a el)
+    "k_dir": 1.4,
     # identificacion (lo que arregla el lado)
     "ignorar_magenta": True,
     "solape_magenta": 0.30,
@@ -101,10 +118,15 @@ OBSTACULOS = {
     "pista_ms": 700,
     # seguir el pilar cuando la mascara parpadea (el arreglo de "lo esquiva y ya")
     "seguir_a_ciegas": True,
-    "ciego_max_ms": 600,
+    "ciego_max_ms": 1500,         # con giroscopio la estima aguanta: el pilar
+    #                               sale por el canto a 30 cm y hay que seguirlo
     "ciego_vistas_min": 2,
     "peso_ciego": 0.9,
 }
+
+# El radio de giro es lo que convierte la curvatura del arco en % de volante.
+# 550 es un valor tipico; MIDELO (ver params.py, geometria.radio_giro_mm).
+GEOMETRIA = {"radio_giro_mm": 550.0}
 
 # El tono es lo unico que separa al rojo del magenta y al verde del piso, y el
 # balance de blancos AUTOMATICO lo mueve solo: la camara se reajusta al girar
@@ -129,6 +151,7 @@ def sembrar_params(desde: str, forzar: bool) -> Path:
 
     valores = copy.deepcopy(base["valores"])
     valores["obstaculos"].update(OBSTACULOS)
+    valores["geometria"].update(GEOMETRIA)
     valores["camara"].update(CAMARA)
 
     datos = {"version": 1, "activo": "obstaculos_base", "perfiles": []}

@@ -741,8 +741,20 @@ function refrescar(){
         fila(t, "adelantando", o.adelantando_s+" s yendo recto (no vuelvo hacia el)", "avi");
       if(o.hueco_estrecho_mm!==undefined)
         fila(t, "hueco", o.hueco_estrecho_mm+" mm: no cabe el carro, voy al centro", "mal");
-      fila(t, "esquive dir / peso", (o.dir!==undefined?o.dir+"%":"-")+"  /  "+o.peso);
+      if(o.al_costado_mm!==undefined)
+        fila(t, "al costado", (o.costado_color||"")+" a "+o.al_costado_mm+" mm, holgura "+
+             (o.holgura_mm!==undefined?o.holgura_mm:"?")+" mm"+
+             (o.no_girar ? " (hacia la "+o.no_girar+" max "+(o.tope_hacia_pct||0)+"%)" : ""), "avi");
+      if(o.recuperando_s!==undefined)
+        fila(t, "saliendo del paso", o.recuperando_s+" s (despacio, muro por orientacion)", "avi");
+      if(o.bloqueo_mm!==undefined)
+        fila(t, "EN EL CORREDOR", "pilar a "+o.bloqueo_mm+" mm dentro del paso de las ruedas"+
+             (o.bloqueo_mm < 200 ? ": reversa" : ""), o.bloqueo_mm < 200 ? "mal" : "avi");
+      fila(t, "esquive dir / peso", (o.dir!==undefined?o.dir+"%":"-")+"  /  "+o.peso+
+           (o.vel_tope_pct!==undefined ? "  (vel <= "+o.vel_tope_pct+"%)" : ""));
     }
+    else if(s.obstaculo && s.obstaculo.recuperando_s!==undefined)
+      fila(t, "saliendo del paso", s.obstaculo.recuperando_s+" s", "avi");
     fila(t, "ESP32", s.simulado ? "simulado" :
          (el.conectado ? el.puerto+" "+el.latencia_ms+"ms" : el.motivo),
          el.conectado||s.simulado ? "ok" : "mal");

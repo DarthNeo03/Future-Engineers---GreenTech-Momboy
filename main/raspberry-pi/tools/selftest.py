@@ -2126,13 +2126,19 @@ prueba("primero lo sigue a ciegas, sin soltar el lado",
        eb.info.get("ciego") is True and eb.info.get("lado") == "derecha",
        str(eb.info))
 prueba("y a ciegas no gira HACIA el pilar", d_cerca >= 0, f"dir {d_cerca:.0f}")
-# agotado ciego_max_ms, el relevo lo toma el compromiso
+# agotado ciego_max_ms, el relevo lo toma el paso AL COSTADO (la ficha del
+# pilar se sigue llevando por estima hasta que la cola lo pasa) o, si la
+# estima ya no vale, el compromiso por tiempo. En los dos casos: recto, sin
+# buscarlo y sin girar hacia el.
 for _ in range(40):
     eb._t_prev = time.time() - 0.033
     d_cerca, _pc = eb.paso({}, None, geo_o, None, False, 0, 500.0)
 prueba("cumplido el plazo a ciegas, adelanta comprometido",
-       "adelantando_s" in eb.info and eb.info.get("buscando") is None,
-       str(eb.info))
+       ("adelantando_s" in eb.info or "al_costado_mm" in eb.info)
+       and eb.info.get("buscando") is None, str(eb.info))
+prueba("y con el pilar al costado prohibe girar hacia el",
+       eb.restriccion.no_girar == -1 and abs(d_cerca) < 1e-6,
+       f"no_girar={eb.restriccion.no_girar} dir={d_cerca:.0f}")
 
 # ===========================================================================
 print("== boton de competencia ==")
@@ -2379,6 +2385,25 @@ try:
         prueba(_nombre, not _fallos, "; ".join(_fallos))
 except ImportError as _e:
     prueba("selftest_obstaculos se puede importar", False, str(_e))
+
+# ===========================================================================
+### EL CARRO PASA EL PILAR (simulacion cinematica)
+### Lo de arriba comprueba que el lado sale bien; esto comprueba que con ese
+### lado el carro de verdad se aparta y no se lo lleva por delante: modelo de
+### bicicleta con el radio de giro real, camara que pierde el pilar como la de
+### verdad, paredes del carril, y el esquivador y el navegador cableados como
+### en robot.py, con los parametros de config/obstaculos/.
+print("== el carro pasa el pilar (simulacion) ==")
+try:
+    import selftest_esquive as se               # noqa: E402
+    for _nombre, _f in se.PRUEBAS:
+        try:
+            _fallos = _f()
+        except Exception as _e:                 # noqa: BLE001
+            _fallos = [f"{type(_e).__name__}: {_e}"]
+        prueba(_nombre, not _fallos, "; ".join(_fallos))
+except ImportError as _e:
+    prueba("selftest_esquive se puede importar", False, str(_e))
 
 # ===========================================================================
 print()

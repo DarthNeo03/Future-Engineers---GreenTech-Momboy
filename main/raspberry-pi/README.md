@@ -22,7 +22,8 @@ el estado del pulsador de competencia a la Pi).
 ```bash
 python3 -m venv .venv && source .venv/bin/activate    # en Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python tools/selftest.py            # 393 pruebas, sin hardware
+python tools/selftest.py            # 409 pruebas, sin hardware
+python tools/selftest_esquive.py    # el carro PASA el pilar (simulacion cinematica)
 python main.py                      # camara + ESP32 + web (Open Challenge)
 python main.py --reto obstaculos    # Reto con Obstaculos (config/obstaculos/)
 python main.py --simulado           # sin ESP32 (pruebas en el PC)
@@ -890,20 +891,201 @@ video se dibuja una **flecha verde hasta el punto de paso** y el texto
 antes de arrancar. Si en tu competencia se interpretara al reves, esta el
 interruptor `obstaculos.invertir_en_antihorario` (apagado por defecto).
 
-### Valores recomendados
+### Valores del modo `punto` (el de antes)
 
-Los que habia en pista estaban subidos para compensar los fallos de arriba;
-con estos arreglados conviene bajarlos:
+Lo de arriba describe el modo `punto`, que sigue existiendo pero **ya no es el
+que se usa**: con `k_dir` 1.4 y `peso_max` 0.8 el carro se apartaba un poco y
+se llevaba el pilar con el costado (la seccion siguiente explica por que, con
+numeros). Si se vuelve a el, estos son sus valores:
 
-| Parametro | En pista | Recomendado | Por que |
+| Parametro | En pista | Para `punto` | Por que |
 |---|---|---|---|
 | `k_dir` | 2.83 | 1.4 | ya no hace falta forzar |
 | `margen_mm` | 261 | 90 | el margen no arreglaba la cola; el compromiso si |
 | `peso_max` | 1.0 | 0.8 | con 1.0 el muro deja de contar |
 | `activar_desde_mm` | 4000 | 1600 | 4 m es media pista: el pilar mandaba desde lejisimos |
 
-Con los valores viejos + los arreglos, el esquive queda topado en 55 %; con los
-recomendados sube progresivo de 1 % a 37 % segun se acerca.
+## Por que seguia chocando: el volante, no el lado
+
+Con todo lo de arriba el LADO ya salia bien... y el carro seguia llevandose el
+pilar por delante. Para verlo sin quemar tardes de pista se hizo un simulador
+cinematico del carro, `tools/selftest_esquive.py`: modelo de bicicleta con
+direccion Ackermann y el radio de giro real, servo y motor con retardo, una
+camara que proyecta cada pilar con la MISMA geometria que usa el carro y lo
+pierde igual que la de verdad (por el canto de la imagen a unos 25 cm, por
+abajo a unos 12), las dos paredes del carril por trazado de rayos, y el
+esquivador y el navegador cableados exactamente como en `robot.py`, con los
+parametros de `config/obstaculos/`. Ahi el choque se reproduce (queda como
+prueba de control) y se mide. Eran tres cosas, las tres en COMO se convertia
+la decision en volante:
+
+**1. El esquive pedia la mitad de lo que hace falta.** El modo `punto` pasa
+el angulo al punto de paso a direccion con una ganancia fija (`k_dir`) y una
+mirada minima. Pero un carro con direccion Ackermann no va "hacia donde
+apunta": describe un ARCO cuyo radio depende del angulo de las ruedas.
+Desplazarse 195 mm de lado (medio carro + 70 de margen + medio pilar) en
+700 mm de recorrido exige un radio de ~1,3 m; en 400 mm, uno de ~500 mm, que
+ya es el giro a tope de este carro. Medido en el simulador: la ganancia fija
+pedia 13-19 % donde la geometria pide 50-85 %.
+
+**2. El centrado peleaba contra el esquive, y ganaba.** La direccion final
+era una media ponderada: 0,8 al pilar, 0,2 al centrado. Pero el centrado del
+Open Challenge lleva `kp` 372: en cuanto el carro se desplaza 10 cm del medio
+del carril pide -70 % de volante, y el 20 % de eso son -15 % que se restaban a
+los +19 % del pilar. Quedaban unos +5 % efectivos. Y en el tramo en que el
+peso iba subiendo de 0 a 0,8 (entre 1600 y 700 mm) el centrado mandaba mas
+que el pilar: el carro se apartaba, el centrado lo devolvia al medio.
+
+**3. Nadie frenaba.** El pilar no aparece en el perfil del muro (con metodo
+`negro` solo se ve negro), asi que la velocidad seguia siendo la de crucero
+(74 %, unos 630 mm/s) hasta el golpe. A esa velocidad no hay volante que
+desplace el carro 20 cm en los ultimos 70.
+
+## Como se pasa ahora un pilar: el arco, el costado y la salida
+
+`obstaculos.modo = arco`, que es lo que trae `config/obstaculos/`. Cuatro
+partes, y cada una se ve en el video.
+
+**Aproximacion: un arco hacia la LINEA de paso.** El punto de paso es el de
+siempre (a `margen_mm` + medio carro del pilar, por el lado que manda el
+color). Por el pasa la linea PARALELA AL CARRIL por la que hay que ir, y se
+calcula el arco que lleva al carro a esa linea (pure pursuit):
+
+    curvatura = 2 * x / (x^2 + y^2)     [x, y del punto mirado, en el marco del carro]
+    volante % = 100 * curvatura * radio_giro_mm
+
+A tope de direccion el carro describe `geometria.radio_giro_mm`; en el rango
+del servo la curvatura es casi lineal con el porcentaje. Asi el volante pedido
+es el que la fisica pide, ni la mitad ni el doble. Se mira a la linea, no al
+punto: el arco que pasa por un punto llega a el CRUZADO (con el pilar a 70 cm
+y el paso a 20 cm de lado son 30 grados, derecho a la pared de al lado); el
+arco a la linea llega paralelo, y en cuanto el carro esta sobre ella la
+curvatura es cero. La mirada (`mirada_mm`, 600) se acorta hasta
+`mirada_min_mm` (350) cuando queda poco que desplazarse -el pure pursuit
+converge en unas cuantas miradas, y con la larga los ultimos 3 cm tardaban un
+metro- y nunca mira mas alla del pilar salvo para respetar ese minimo.
+
+Todo eso se calcula **en el marco del carril**, no en el del carro: con el
+giroscopio se sabe cuanto va cruzado el carro (`error_rumbo`), y con eso el
+pilar, las paredes y la linea de paso se pasan al marco de la recta. Hace
+falta porque esquivando el carro va cruzado a proposito, y en su marco la
+pared de al lado se ve DELANTE: el recorte del punto de paso al pasillo libre
+creia que el hueco se cerraba y mandaba al "centro del hueco", de frente
+contra la pared (visto en el simulador saliendo torcido de una curva). Sin
+giroscopio los dos marcos coinciden y todo sigue funcionando.
+
+Mientras el pilar manda (`mandar_desde_mm`, 1100) el peso es **1,0**: el
+centrado y el rumbo se callan. El muro sigue contando por donde debe: el
+punto de paso se recorta al pasillo libre sin cambiar de lado (dejando
+`margen_pared_mm`, 30, menos que al pilar: rozar la pared no penaliza, mover
+el pilar si) y hay una red mas abajo. Y se frena: `vel_esquive` (40 %) en
+proporcion a cuanto manda el pilar.
+
+**Al costado: seguir el pilar con el giroscopio y no barrerlo.** El pilar
+sale del cuadro por el canto a unos 25 cm del morro. Desde ahi se lleva por
+ESTIMA: cada frame la ficha se adelanta con la velocidad real y se ROTA con el
+giroscopio (sobre el eje trasero, que es donde gira el carro), asi que se sabe
+donde queda aunque no se vea, hasta que la COLA lo deja atras. Desde
+`costado_desde_mm` (12 cm antes del morro) hasta la cola, el volante HACIA el
+pilar se topa en la mitad de la holgura con que se le esta pasando, en %:
+con 5 cm de aire, 25 %; con 1 cm, 5 %; sin aire, nada. Enderezar el rumbo hay
+que permitirlo -si no el carro sigue cruzado hacia la pared de al lado todo
+el paso-, pero volver al centro del carril con el pilar a la altura de la
+rueda trasera es barrerlo (Ackermann: la cola corta por dentro). El
+compromiso por tiempo de antes sigue de respaldo cuando no hay giroscopio.
+
+**Saliendo (`recuperar_ms`, 1 s).** La cola acaba de dejar atras el pilar y
+el carro esta pegado a una pared y algo cruzado. Se sigue a `vel_esquive` (el
+siguiente pilar suele venir enseguida) y el muro se sigue midiendo como en la
+maniobra (abajo).
+
+**El muro, mientras se esquiva, se mide DE FRENTE.** El pasillo del navegador
+se mide recto delante del carro, en el corredor de las ruedas, y eso vale
+mientras el carro va paralelo al carril. Cruzado 10-25 grados, la pared de al
+lado entra en el corredor y parece un muro de frente a 30-40 cm: en el
+simulador eso frenaba en seco, disparaba una **esquina falsa** (y en modo
+color el rumbo de referencia avanzaba 90 grados: derecho a la pared) o metia
+una reversa en pleno paso, con el volante girado hacia el pilar. Ahora,
+mientras hay maniobra (pilar mandando con peso >= 0,5, al costado o
+saliendo), lo que cuenta como "muro delante" es la pared DE FRENTE
+identificada por su orientacion (`frontal_mm`, que ya descuenta el
+giroscopio); el pasillo crudo no frena, no abre esquinas ni dispara el
+escape. La linea del piso y la pared de frente si abren la esquina.
+
+**La red: un pilar EN el corredor dispara la reversa.** Si un pilar sigue
+dentro del corredor de las ruedas a menos de `pilar_parar_mm` (180), el
+esquive no lo ha librado: el navegador hace un escape marcha atras con el
+volante al lado CONTRARIO al de paso (`pilar_escape_dir_pct`, 45: con
+Ackermann la reversa hace girar el morro hacia el hueco), hasta que el pilar
+queda a `pilar_salir_mm` o fuera del corredor, y vuelve a intentarlo. Si esto
+salta a menudo, el esquive empieza tarde o va rapido; no es el modo normal de
+pasar.
+
+**Los delimitadores magenta del cajon.** Son muros de 200x20x100 contra la
+pared EXTERIOR (reglas 13.7 a 13.9), y de canto miden 20 mm en la imagen. Se
+rodean con medio ancho `magenta_semi_mm` (110: medio muro de 200 mas un poco),
+no con el de un pilar de 50. El lado sale del SITIO: si el perfil del muro
+dice que por un lado no cabe el carro, por el otro; si cabe por los dos, por
+el que tenga mas hueco; si no se ve pared, por el INTERIOR de la pista
+(horario: por su derecha; antihorario: por su izquierda); y sin sentido
+conocido, por donde menos cruce la trayectoria. Una vez decidido, fijo, como
+con las señales.
+
+**Lo unico que hay que medir: `geometria.radio_giro_mm`.** Es lo que
+convierte la curvatura en % de volante. Carro en manual con la direccion a
+tope, una vuelta completa despacio, y el DIAMETRO del circulo que dibuja el
+centro del carro, entre dos. Tipico entre 450 y 800; el perfil trae 550. Si
+esta medido de menos el carro se queda corto al apartarse (sube `k_arco`); de
+mas, se abre demasiado. El simulador comprueba que con un error del 35 % en
+cualquier sentido el pilar se sigue pasando.
+
+**Lo que dice el video y la web.** El circulo `arco` es el punto de la linea
+de paso al que se mira: lejos del pilar mientras el carro tiene que
+desplazarse, casi sobre el eje cuando ya va por la linea. `AL COSTADO (rojo a
+-80mm, holgura 45mm) hacia la izquierda max 22%` es la regla del costado en
+accion; `SALIENDO del paso 0.6s`, la salida; `EN EL CORREDOR a 210mm`, la
+red a punto de saltar; `(tope de desvio: no abrirse mas)`, que el carro ya va
+`desvio_max_esquive_deg` cruzado y solo se le deja enderezar.
+
+**Lo que la fisica no deja.** Con radio de giro de 55 cm y un carro de 20 de
+ancho: cambiar 20 cm de carril necesita unos 70 cm de recta y 35 cm, casi un
+metro (dos arcos a tope); un pilar en el medio del carril que aparece a 65 cm
+del morro se pasa, pero cruzado y rozando; dos señales de lado contrario a
+menos de 1,2 m no dan para la S (la cola tarda 25 cm en librar la primera);
+y un pilar a 30 cm de la pared del lado de paso deja 7 cm para repartir entre
+el y la pared. Nada de eso lo arregla un parametro: lo arregla ir despacio
+(`vel_esquive`) y empezar a apartarse en cuanto se ve el pilar
+(`mandar_desde_mm`).
+
+```bash
+python3 tools/selftest_esquive.py              # 15 escenarios, con la config del reto
+python3 tools/selftest_esquive.py --traza rojo # y la trayectoria tick a tick
+```
+
+Los escenarios: rojo y verde en cinco posiciones del carril, horario y
+antihorario; carril de 600; el pilar que aparece a 65 y 50 cm de frente;
+salir de la curva 30 grados torcido con el pilar delante; dos señales de
+color distinto (la S); el delimitador magenta en los dos sentidos; el
+detector perdiendo el 30 % de los frames; sin giroscopio; el radio de giro
+mal medido; los valores por defecto del esquema; y el control que reproduce
+el choque de antes. Cada uno mide colision, lado al pasar el morro, holgura
+minima y si toco una pared. Va incluido en `tools/selftest.py`.
+
+| Parametro | Valor | Que es |
+|---|---|---|
+| `geometria.radio_giro_mm` | 550 | MEDIRLO: radio a tope de direccion |
+| `obstaculos.modo` | arco | pure pursuit a la linea de paso |
+| `activar_desde_mm` / `mandar_desde_mm` | 1500 / 1100 | desde donde influye / manda del todo |
+| `peso_max` | 1.0 | el centrado se calla mientras se esquiva |
+| `dir_max_pct` | 85 | el arco pide a tope solo si hace falta |
+| `mirada_mm` / `mirada_min_mm` | 600 / 350 | mirada sobre la linea, larga lejos y corta cerca |
+| `vel_esquive` | 40 | ver un pilar es frenar |
+| `margen_mm` / `margen_pared_mm` | 70 / 30 | aire al pilar / a la pared |
+| `costado_desde_mm` / `costado_giro_max_pct` | 120 / 25 | el paso al costado y su tope |
+| `recuperar_ms` | 1000 | la salida |
+| `pilar_parar_mm` / `pilar_salir_mm` / `pilar_escape_dir_pct` | 180 / 500 / 45 | la red |
+| `magenta_semi_mm` | 110 | medio delimitador |
+| `ciego_max_ms` | 1500 | cuanto se sigue el pilar por estima sin verlo |
 
 ## El carro nunca debe circular en sentido contrario
 
@@ -1258,7 +1440,7 @@ piloto/
 │   ├── lineas.py           sentido / esquinas / vueltas + zona; modo par o por color
 │   ├── navegacion.py       RECTO / PRE_GIRO / GIRO / GIRO_2T / GIRO_COLOR / ESCAPE
 │   ├── carrera.py          director de la ronda (3 vueltas y parada en meta)
-│   ├── obstaculos.py       identifica la señal (rojo/verde/magenta) y el lado
+│   ├── obstaculos.py       identifica la señal (rojo/verde/magenta), el lado y el ARCO para pasarla
 │   ├── protocolo.py        trama binaria v2 (gemela de protocolo.h)
 │   ├── enlace.py           hilo serie; sensores del ESP32 -> eventos
 │   ├── botones.py          el boton del ESP32: corta/larga -> armar/desarmar
@@ -1267,8 +1449,9 @@ piloto/
 │   ├── servidor.py         http.server + MJPEG
 │   └── web/index.html      la interfaz
 └── tools/
-    ├── selftest.py         393 pruebas sin hardware
+    ├── selftest.py         409 pruebas sin hardware
     ├── selftest_obstaculos.py  el lado de paso, con pilares sinteticos
+    ├── selftest_esquive.py     el carro PASA el pilar: simulacion cinematica
     ├── diagnostico_pilares.py  por que NO se detecta ese pilar
     └── crear_config_obstaculos.py  siembra config/obstaculos/
 ```
