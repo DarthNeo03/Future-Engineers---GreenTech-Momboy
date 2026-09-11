@@ -148,6 +148,38 @@ class Robot:
         else:
             self.error_camara = ""
             self.aplicar_camara()
+            self._avisar_resolucion(c)
+
+    def _avisar_resolucion(self, c: Dict[str, Any]) -> None:
+        """La camara NO siempre da lo que se le pide, y eso descalibra fx.
+
+        Las focales se guardan referidas a 640x480 y cada una se escala con SU
+        lado de la captura: mientras la camara entregue lo que se le pidio, y
+        eso sea 640x480, fx y fy salen iguales, que es lo que tiene que pasar
+        con pixeles cuadrados. Si entrega otra cosa -y esta entrega 1280x720
+        cuando se le piden 1920x480- se separan, y los milimetros LATERALES
+        dejan de valer: la pared parece mas cerca y el pasillo mas estrecho.
+        Con geometria.fx_auto da igual, pero mas vale decirlo.
+        """
+        try:
+            w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        except Exception:
+            return
+        if w <= 0 or h <= 0:
+            return
+        if (w, h) != (int(c.get("ancho", 640)), int(c.get("alto", 480))):
+            self.log(f"[camara] OJO: se pidieron {c.get('ancho')}x{c.get('alto')} "
+                     f"y entrega {w}x{h}")
+        self.geo.redimensionar(w, h)
+        fx, fy = self.geo.estado()["fx_efectiva"], self.geo.estado()["fy_efectiva"]
+        if abs(fx - fy) / max(1.0, fy) > 0.1:
+            self.log(f"[camara] AVISO: capturando a {w}x{h} la focal horizontal "
+                     f"sale {fx:.0f} px y la vertical {fy:.0f}. Con pixeles "
+                     "cuadrados son la MISMA, asi que los milimetros laterales "
+                     "estan mal y el carro creera que la pared esta mas cerca "
+                     "de lo que esta. Enciende geometria.fx_auto (Ajustes) o "
+                     "captura a 640x480.")
 
     def aplicar_camara(self) -> None:
         """Aplica exposicion/balance manual si estan configurados."""
@@ -416,8 +448,14 @@ class Robot:
         return fy
 
     def calibrar_fx(self, x_rel: float, y_rel: float, lateral_mm: float) -> float:
+        """Calibrar fx a mano es decir 'usa MI numero', asi que apaga fx_auto
+        (que lo ignoraria). Al reves tambien vale: si luego se ve que los
+        laterales no cuadran, se vuelve a encender desde Ajustes."""
         fx = self.geo.calibrar_fx(x_rel * self.geo.W, y_rel * self.geo.H,
                                   lateral_mm)
+        if bool(self.p["geometria"].get("fx_auto", False)):
+            self.fijar_param("geometria", "fx_auto", False)
+            self.log("[geo] fx_auto APAGADO: mandan los clics de calibracion")
         self.fijar_param("geometria", "fx_px", fx)
         self.log(f"[geo] fx calibrada = {fx:.0f} px")
         return fx
@@ -456,6 +494,52 @@ class Robot:
         self.enlace.enviar_cfg_tcs(self.p["tcs"])
         self.log("[esp32] configuracion de servo y TCS enviada")
 
+    def _pilares_fuera_del_muro(self, masks: Dict[str, np.ndarray],
+                                dets: Dict[str, List[vision.Deteccion]]) -> None:
+        """UN PILAR NO ES UNA PARED: que no salga en el perfil del muro.
+
+        El perfil busca, subiendo desde abajo, donde el piso deja de verse. Un
+        pilar rompe esa suposicion por dos sitios:
+
+          * con el metodo 'piso', el pilar entero no es piso, asi que cuenta
+            como muro a SU distancia;
+          * con el metodo 'negro' el pilar no entra (es un color vivo), pero
+            SU SOMBRA sobre el tapete blanco si, y cae justo en su base, que
+            es donde se mide el contacto.
+
+        En los dos casos el perfil pone una pared de 5 cm de ancho donde hay
+        una señal de transito, y todo lo que cuelga del perfil se lo cree: el
+        pasillo se cierra, el carro frena, la vision dispara una esquina que
+        no existe y el escape lo manda a la reversa — justo cuando lo que
+        tiene que hacer es rodearla. Se ve en pista como "se acerca al pilar y
+        no se atreve".
+
+        Aqui se borra del muro la caja de cada señal detectada, mas unos
+        pixeles por debajo para comerse la sombra. Lo que queda es lo que el
+        perfil debe describir: las PAREDES. De los pilares se encarga el
+        esquive, que los sigue uno a uno, sabe cuanto miden y tiene su propia
+        red (un pilar dentro del corredor de las ruedas y encima = reversa).
+        """
+        if not bool(self.p["obstaculos"].get("pilares_no_son_muro", True)):
+            return
+        negro = masks.get("negro")
+        blanco = masks.get("blanco")
+        ref = negro if negro is not None else blanco
+        if ref is None:
+            return
+        H, W = ref.shape[:2]
+        pad = int(self.p["obstaculos"].get("sombra_pilar_px", 8))
+        for color in ("rojo", "verde"):
+            for d in dets.get(color, []):
+                x0, x1 = max(0, d.x - 2), min(W, d.x + d.w + 2)
+                y0, y1 = max(0, d.y - 2), min(H, d.base_y + pad)
+                if x1 <= x0 or y1 <= y0:
+                    continue
+                if negro is not None:
+                    negro[y0:y1, x0:x1] = 0        # metodo 'negro': ni el pilar ni su sombra
+                if blanco is not None:
+                    blanco[y0:y1, x0:x1] = 255     # metodo 'piso': por ahi se ve el piso
+
     def _bucle(self):
         t_prev = time.perf_counter()
         sin_frame = 0
@@ -485,6 +569,8 @@ class Robot:
             masks = self.vision.solo_mascaras(hsv, colores_muro)
             dets, masks_det = self.vision.detectar_en(hsv, quiere_det)
             masks.update(masks_det)
+            if bool(self.p["obstaculos"].get("activo")):
+                self._pilares_fuera_del_muro(masks, dets)
 
             # El perfil necesita saber cuanto se desvia el carro del rumbo de
             # la recta (giroscopio) y en que sentido corre la ronda: con eso

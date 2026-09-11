@@ -22,7 +22,7 @@ el estado del pulsador de competencia a la Pi).
 ```bash
 python3 -m venv .venv && source .venv/bin/activate    # en Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python tools/selftest.py            # 409 pruebas, sin hardware
+python tools/selftest.py            # 412 pruebas, sin hardware
 python tools/selftest_esquive.py    # el carro PASA el pilar (simulacion cinematica)
 python main.py                      # camara + ESP32 + web (Open Challenge)
 python main.py --reto obstaculos    # Reto con Obstaculos (config/obstaculos/)
@@ -1067,9 +1067,19 @@ antihorario; carril de 600; el pilar que aparece a 65 y 50 cm de frente;
 salir de la curva 30 grados torcido con el pilar delante; dos señales de
 color distinto (la S); el delimitador magenta en los dos sentidos; el
 detector perdiendo el 30 % de los frames; sin giroscopio; el radio de giro
-mal medido; los valores por defecto del esquema; y el control que reproduce
-el choque de antes. Cada uno mide colision, lado al pasar el morro, holgura
-minima y si toco una pared. Va incluido en `tools/selftest.py`.
+mal medido; **venir pegado a una pared**; **el pilar metido en el perfil del
+muro**; **fx mal calibrado**; los valores por defecto del esquema; y el
+control que reproduce el choque de antes. Cada uno mide colision, lado al
+pasar el morro, holgura minima, reversas y si toco una pared. Va incluido en
+`tools/selftest.py`.
+
+El simulador es PESIMISTA a proposito: el perfil del muro ve los pilares (con
+el metodo 'negro' entra su sombra, que cae en la base) y solo se quitan los
+que el detector de color esta viendo en ese frame, igual que hace `robot.py`
+con la mascara. Un pilar que el detector se pierde vuelve al muro — que es
+exactamente lo que pasa en pista y donde el carro frenaba. Y la proyeccion
+mundo -> pixeles usa una camara DE VERDAD distinta de la que el codigo cree
+tener, asi que una calibracion mala se prueba sin tocar nada mas.
 
 | Parametro | Valor | Que es |
 |---|---|---|
@@ -1086,6 +1096,99 @@ minima y si toco una pared. Va incluido en `tools/selftest.py`.
 | `pilar_parar_mm` / `pilar_salir_mm` / `pilar_escape_dir_pct` | 180 / 500 / 45 | la red |
 | `magenta_semi_mm` | 110 | medio delimitador |
 | `ciego_max_ms` | 1500 | cuanto se sigue el pilar por estima sin verlo |
+
+## "Lo choca, o no se atreve a pasar teniendo sitio de sobra"
+
+Con el arco puesto, en pista quedaban dos sintomas: el carro ve el pilar, el
+video dice bien por que lado va a pasar... y o lo roza, o se queda corto y no
+se atreve a rodearlo cuando viene cerca de una pared, aunque el carril mida un
+metro. No era el esquive: eran tres mentiras que le llegaban desde abajo, y una
+rampa de frenado al reves. Las cuatro estan puestas como prueba en el
+simulador (`pegado a una pared`, `el pilar metido en el perfil del muro`,
+`fx mal calibrado`), asi que si vuelven, se ven sin pista.
+
+**1. El mundo lateral venia encogido un 25 % (`fx`).** `fx_px` se guarda
+referido a 640 de ancho y `fy_px` a 480 de alto, y cada uno se escala con SU
+lado de la captura. Mientras se capture a 640x480 los dos salen iguales, que
+es lo que tiene que pasar: el sensor tiene pixeles CUADRADOS y la focal es una
+sola. Pero la camara no siempre da lo que se le pide — a esta se le piden
+**1920x480 y entrega 1280x720** — y ahi fx efectivo sale 920 contra 690 de fy,
+un 33 % de diferencia. Todo lo lateral se mide entonces un 25 % corto:
+
+| lo que hay | lo que el carro medía |
+|---|---|
+| pared a 350 mm | 260 mm |
+| pilar a 200 mm de lado | 150 mm |
+| carril de 1000 mm | 750 mm |
+
+Con eso el carro cree que no cabe donde cabe de sobra, y el corredor de las
+ruedas se le ensancha, asi que el pasillo se cierra solo y frena. En el Open
+Challenge apenas se nota (la distancia al muro sale de las FILAS, o sea de
+`fy`); aqui decide por donde se pasa cada pilar. Arreglado por los dos lados:
+`config/obstaculos/` captura a **640x480**, que es la resolucion a la que estan
+referidas las focales, y ademas trae **`geometria.fx_auto`** encendido, que
+toma la focal horizontal de la vertical y deja el problema sin sitio pase lo
+que pase con la resolucion. Al calibrar `fx` a mano desde la web se apaga solo
+(calibrar es decir "usa mi numero"). Y al abrir la camara, si lo que entrega
+no es lo que se pidio, se dice en el log.
+
+**2. Un pilar no es una pared.** El perfil del muro busca, subiendo desde
+abajo, donde el piso deja de verse. Un pilar rompe eso por dos sitios: con el
+metodo `piso` el pilar entero no es piso, y con `negro` —el que usa este
+carro— entra **su sombra sobre el tapete blanco**, que cae justo en su base,
+que es donde se mide el contacto. En los dos casos el perfil pone una pared de
+5 cm de ancho donde hay una señal, y todo lo que cuelga del perfil se lo cree:
+el pasillo se cierra, el carro frena, la vision dispara una esquina que no
+existe, el escape lo manda a la reversa, y el recorte del punto de paso al
+hueco libre se hace **contra el propio pilar que se esta rodeando**, que es la
+otra mitad de "lo roza". Ahora (`pilares_no_son_muro`) se borran del muro las
+cajas de las señales detectadas, mas `sombra_pilar_px` por debajo; y el hueco
+libre ignora ademas las columnas del pilar que se sigue **a ciegas**, que son
+justo los ultimos centimetros. Lo que queda en el perfil son las PAREDES, que
+es lo suyo; de los pilares se encarga el esquive, que los sigue uno a uno.
+
+**3. El pasillo, con el carro cruzado, mide la pared de al lado.** El pasillo
+se mide recto delante del carro, dentro del corredor de las ruedas, y eso vale
+mientras el carro va paralelo al carril. Esquivando va cruzado a proposito
+(10 a 25 grados durante un segundo o dos) y entonces la pared lateral entra en
+el corredor y parece un muro de frente a 30-40 cm. Y no era solo que frenara:
+se cerraba el circulo. El pasillo lee la pared de al lado, `ceder_ante_muro`
+desvanece el peso del pilar, el carro no llega a cruzarse, no entra nunca en
+maniobra, y el pasillo sigue mandando. El carro se enderezaba y se llevaba el
+pilar por delante. Ahora, **con un pilar en juego el muro que cuenta es el de
+FRENTE** (`frontal_mm`, que ya descuenta el giroscopio) y no el pasillo crudo:
+para ceder el mando, para frenar, para abrir esquinas y para el escape. Queda
+un suelo de seguridad bajo (`pasillo_min_maniobra_mm`, 80 mm: algo pegado al
+morro), y con el pilar **al costado** ni eso, porque lo que el pasillo mide
+ahi es el propio pilar y retroceder con el volante girado es meterle el morro.
+
+**4. La rampa de frenado estaba al reves.** La velocidad interpola de
+`vel_crucero` (muro lejos) a `vel_giro` (muro cerca), y el perfil traia
+`vel_giro` 78 con `vel_crucero` 74: el carro **aceleraba** segun se acercaba
+al muro. En `config/obstaculos/` queda en 55. La velocidad de las curvas no
+cambia por esto, que en modo color la ponen `esquina_color.vel_max_pct` y
+`vel_min_pct`.
+
+## La calibracion con la que arranca el reto
+
+`config/obstaculos/params.json` ya viene con esto (y
+`tools/crear_config_obstaculos.py` lo vuelve a sembrar igual). Lo unico que
+hay que MEDIR con el carro en la mano es el radio de giro.
+
+| Que | Valor | Por que |
+|---|---|---|
+| `camara.ancho` / `alto` | 640 / 480 | la resolucion a la que estan referidas las focales; y tres veces menos pixeles que 1280x720, o sea mas FPS |
+| `geometria.fx_auto` | si | pixeles cuadrados: la focal horizontal sale de la vertical y la resolucion deja de importar |
+| `geometria.radio_giro_mm` | 550 | **MIDELO**: volante a tope, una vuelta despacio, el diametro del circulo entre dos |
+| `limites.vel_giro` | 55 | por debajo de `vel_crucero`, o el carro acelera contra el muro |
+| `obstaculos.pilares_no_son_muro` | si | el pilar (y su sombra) fuera del perfil del muro |
+| `obstaculos.pasillo_min_maniobra_mm` | 80 | el pasillo crudo no manda mientras se esquiva |
+| `camara.balance_blancos` | 4500 | congelado, o el HSV se mueve solo al girar hacia una pared clara |
+| `camara.exposicion` | AUTO | **la unica que queda a mano**: el valor util depende de la camara y del sistema (en Linux positivos, en Windows negativos). Ponla mirando el video hasta que el tapete deje de estar quemado, ANTES de calibrar colores |
+
+En pista, por este orden: mide el radio de giro, congela la exposicion,
+comprueba con `tools/diagnostico_pilares.py` que un pilar mide ~50 mm de ancho
+y ~100 de alto, y recien entonces prueba un pilar suelto en medio del carril.
 
 ## El carro nunca debe circular en sentido contrario
 
@@ -1449,7 +1552,7 @@ piloto/
 │   ├── servidor.py         http.server + MJPEG
 │   └── web/index.html      la interfaz
 └── tools/
-    ├── selftest.py         409 pruebas sin hardware
+    ├── selftest.py         412 pruebas sin hardware
     ├── selftest_obstaculos.py  el lado de paso, con pilares sinteticos
     ├── selftest_esquive.py     el carro PASA el pilar: simulacion cinematica
     ├── diagnostico_pilares.py  por que NO se detecta ese pilar

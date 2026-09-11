@@ -10,13 +10,13 @@
     "limites": {
      "vmax": 255,
      "vel_crucero": 74,
-     "vel_giro": 78,
+     "vel_giro": 55,
      "vel_reversa": 35,
      "dir_max": 100
     },
     "camara": {
      "indice": 0,
-     "ancho": 1920,
+     "ancho": 640,
      "alto": 480,
      "fps": 30,
      "voltear": false,
@@ -34,7 +34,8 @@
      "centro_lateral_px": 0.0,
      "morro_mm": 60.0,
      "largo_carro_mm": 240.0,
-     "radio_giro_mm": 550.0
+     "radio_giro_mm": 550.0,
+     "fx_auto": true
     },
     "muro": {
      "metodo": "negro",
@@ -217,7 +218,10 @@
      "costado_giro_max_pct": 25.0,
      "recuperar_ms": 1000,
      "costado_desde_mm": 120.0,
-     "margen_pared_mm": 30.0
+     "margen_pared_mm": 30.0,
+     "pilares_no_son_muro": true,
+     "sombra_pilar_px": 8,
+     "pasillo_min_maniobra_mm": 80.0
     },
     "manual": {
      "timeout_ms": 400,
@@ -256,7 +260,7 @@
      "vel_max_mm_s": 850.0
     }
    },
-   "notas": "esquive por arco (pure pursuit) con radio de giro real; el pilar manda del todo y frena"
+   "notas": "esquive por arco con radio de giro real; el pilar manda, frena y se sigue hasta la cola; captura 640x480 y fx_auto"
   }
  ]
 }

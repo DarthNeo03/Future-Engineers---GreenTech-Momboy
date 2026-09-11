@@ -86,8 +86,10 @@ def avisos_deteccion(p) -> list:
     # milimetros laterales salen tres veces cortos y el punto de paso apunta a
     # donde no es. En el Open Challenge casi no se nota (la distancia al muro
     # sale de las FILAS, o sea de fy); aqui decide por que lado se pasa.
+    # Con fx_auto la focal horizontal se toma de la vertical y esto no puede
+    # pasar, asi que no hay nada que avisar.
     ancho = int(cam.get("ancho", 640))
-    if ancho != 640:
+    if not bool(geo.get("fx_auto", False)) and ancho != 640:
         fx = float(geo.get("fx_px", 460.0)) * (ancho / 640.0)
         fy = float(geo.get("fy_px", 460.0)) * (int(cam.get("alto", 480)) / 480.0)
         if abs(fx - fy) / max(1.0, fy) > 0.25:

@@ -305,7 +305,7 @@ class Navegador:
         dir_max = float(lim.get("dir_max", 100))
         pasillo = p.pasillo_mm
 
-        ### EN MANIOBRA DE ESQUIVE, "MURO DELANTE" ES LA PARED DE FRENTE.
+        ### CON UN PILAR EN JUEGO, "MURO DELANTE" ES LA PARED DE FRENTE.
         ### El pasillo se mide recto delante del carro, en el corredor de las
         ### ruedas, y eso vale mientras el carro va paralelo al carril. Pero
         ### esquivando un pilar el carro va CRUZADO a proposito (10-25 grados
@@ -313,16 +313,48 @@ class Navegador:
         ### corredor y parece un muro de frente a 30-40 cm. Con eso el carro
         ### frenaba en seco, disparaba una esquina FALSA (y en modo color el
         ### rumbo de referencia avanzaba 90 grados: derecho a la pared) o se
-        ### iba a la reversa en mitad del esquive. Mientras dure la maniobra,
-        ### lo que cuenta como muro delante es la pared DE FRENTE identificada
-        ### por su orientacion (frontal_mm, que ya descuenta el giroscopio);
-        ### el pasillo crudo solo manda si hay algo de verdad encima.
+        ### iba a la reversa en mitad del esquive: EXACTAMENTE el "no se
+        ### atreve a pasar aunque tiene sitio de sobra" que se veia en pista.
+        ### Lo que cuenta entonces es la pared DE FRENTE identificada por su
+        ### orientacion (frontal_mm, que ya descuenta el giroscopio).
+        ###
+        ### Dos niveles, porque no es lo mismo ver un pilar a metro y medio
+        ### que estar pasandolo:
+        ###
+        ###  hay_pilar  hay un pilar en juego, aunque este lejos. El pilar
+        ###             CEDE al muro (ceder_ante_muro) contra la pared de
+        ###             frente, nunca contra el pasillo crudo. Sin esto se
+        ###             cerraba el circulo: el pasillo lee la pared de al
+        ###             lado -> el peso del pilar se desvanece -> el carro no
+        ###             llega a cruzarse -> nunca entra en 'maniobra' -> el
+        ###             pasillo sigue mandando. El carro se enderezaba y se
+        ###             llevaba el pilar por delante.
+        ###  maniobra   el pilar ya manda de verdad (peso >= 0.5), lo tiene al
+        ###             costado o acaba de pasarlo: ademas, el pasillo crudo
+        ###             no frena, no abre esquinas y no dispara el escape.
+        ###             Queda el suelo de seguridad pasillo_min_maniobra_mm:
+        ###             por debajo de eso hay algo de verdad encima.
+        ###
+        ### Sin obstaculos.activo no hay restriccion ni peso, asi que el Open
+        ### Challenge sigue exactamente igual que siempre.
         peso_obst = float(bias_obstaculo[1]) if bias_obstaculo else 0.0
+        hay_pilar = restriccion is not None and restriccion.activa
         maniobra = peso_obst >= 0.5 or (restriccion is not None
                                         and restriccion.maniobra)
-        ref_muro = pasillo
-        if maniobra:
-            ref_muro = p.frontal_mm if p.frontal_mm is not None else DIST_MAX_MM
+        frontal_o_lejos = (p.frontal_mm if p.frontal_mm is not None
+                           else DIST_MAX_MM)
+        ref_muro = frontal_o_lejos if maniobra else pasillo
+        ref_cede = frontal_o_lejos if hay_pilar else pasillo
+        piso_pasillo = (float(self.obst.get("pasillo_min_maniobra_mm", 150.0))
+                        if maniobra else 0.0)
+        if restriccion is not None and restriccion.al_costado:
+            ### CON EL PILAR AL COSTADO NO HAY SUELO QUE VALGA. Lo que el
+            ### pasillo esta midiendo a 15 cm es EL PILAR que se esta pasando
+            ### (su sombra entra en el perfil), no un muro: retroceder ahi es
+            ### lo peor que se puede hacer, porque la reversa lleva el volante
+            ### girado y mete el morro justo contra el. Un muro de verdad
+            ### delante lo sigue viendo frontal_mm.
+            piso_pasillo = 0.0
 
         usar_yaw = bool(cfg.get("usar_yaw", True)) and yaw is not None
         if usar_yaw and self.rumbo_objetivo is None:
@@ -381,11 +413,11 @@ class Navegador:
         pilar_parar = float(self.obst.get("pilar_parar_mm", 180.0))
         pilar_encima = bloqueo is not None and bloqueo < pilar_parar
         ### fuera de maniobra ref_muro ES el pasillo; en maniobra, la pared de
-        ### frente. El pasillo crudo NO dispara el escape en maniobra ni aun
-        ### muy corto: con el pilar al costado, una reversa con el volante
-        ### girado mete el morro contra el pilar (visto en el simulador), y
-        ### rozar la pared a velocidad de esquive es el mal menor.
-        muro_encima = ref_muro < umbral_escape
+        ### frente, y el pasillo crudo solo cuenta por debajo del suelo de
+        ### seguridad. Retroceder con el pilar al costado mete el morro
+        ### contra el (el volante va girado), asi que rozar la pared a
+        ### velocidad de esquive es el mal menor.
+        muro_encima = ref_muro < umbral_escape or pasillo < piso_pasillo
         if (self.estado not in (ESCAPE, GIRO_2T)
                 and (muro_encima or pilar_encima)):
             if self.estado == GIRO_COLOR:
@@ -707,7 +739,7 @@ class Navegador:
             # de muros. Sin esto, un pilar pegado a la pared interior se lleva
             # al carro de frente contra la esquina: el esquive pesaba mas que
             # el muro justo cuando el muro era el problema.
-            holgura = (ref_muro - parar_bajo) / max(
+            holgura = (ref_cede - parar_bajo) / max(
                 1.0, float(cfg.get("frenar_bajo_mm", 1000.0)) - parar_bajo)
             peso *= _lim(holgura, 0.0, 1.0)
         if peso > 0.0:

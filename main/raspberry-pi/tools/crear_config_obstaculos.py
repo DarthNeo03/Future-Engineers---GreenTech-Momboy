@@ -96,6 +96,10 @@ OBSTACULOS = {
     "costado_desde_mm": 120.0,
     "costado_giro_max_pct": 25.0,
     "recuperar_ms": 1000,
+    # --- un pilar no es una pared -----------------------------------------
+    "pilares_no_son_muro": True,
+    "sombra_pilar_px": 8,
+    "pasillo_min_maniobra_mm": 80.0,
     # (los del modo 'punto', por si se vuelve a el)
     "k_dir": 1.4,
     # identificacion (lo que arregla el lado)
@@ -126,7 +130,20 @@ OBSTACULOS = {
 
 # El radio de giro es lo que convierte la curvatura del arco en % de volante.
 # 550 es un valor tipico; MIDELO (ver params.py, geometria.radio_giro_mm).
-GEOMETRIA = {"radio_giro_mm": 550.0}
+#
+# fx_auto: la focal horizontal se toma de la vertical (pixeles cuadrados). Es
+# lo que impide que los milimetros LATERALES se descalibren solos cuando la
+# camara entrega una resolucion distinta de la que se le pide — y esta la
+# entrega: se le piden 1920x480 y da 1280x720, con lo que fx efectivo sale un
+# 33 % por encima de fy, las paredes parecen mas cerca de lo que estan y el
+# carro no se atreve a pasar aunque tenga sitio de sobra.
+GEOMETRIA = {"radio_giro_mm": 550.0, "fx_auto": True}
+
+# La rampa de frenado del perfil de open esta INVERTIDA: vel_giro (78) por
+# encima de vel_crucero (74) hace que el carro acelere segun se acerca al
+# muro, porque la velocidad interpola de crucero (lejos) a vel_giro (cerca).
+# En el reto de obstaculos, ademas, interesa llegar despacio a todo.
+LIMITES = {"vel_giro": 55}
 
 # El tono es lo unico que separa al rojo del magenta y al verde del piso, y el
 # balance de blancos AUTOMATICO lo mueve solo: la camara se reajusta al girar
@@ -136,7 +153,12 @@ GEOMETRIA = {"radio_giro_mm": 550.0}
 # del sistema (en Linux/V4L2 son positivos, en Windows/DSHOW negativos), asi
 # que clavarlo a ciegas puede dejar la imagen negra. Ajustala tu con el slider
 # mirando el video, hasta que el tapete deje de estar quemado.
-CAMARA = {"balance_blancos": 4500.0}
+#
+# Y se captura a 640x480, que es la resolucion a la que estan referidas las
+# focales: ahi fx y fy salen iguales, que es lo que tiene que pasar en una
+# camara de pixeles cuadrados. De paso son tres veces menos pixeles que
+# 1280x720, o sea mas FPS en la Pi, que en este reto es tiempo de reaccion.
+CAMARA = {"balance_blancos": 4500.0, "ancho": 640, "alto": 480}
 
 
 def sembrar_params(desde: str, forzar: bool) -> Path:
@@ -153,6 +175,7 @@ def sembrar_params(desde: str, forzar: bool) -> Path:
     valores["obstaculos"].update(OBSTACULOS)
     valores["geometria"].update(GEOMETRIA)
     valores["camara"].update(CAMARA)
+    valores["limites"].update(LIMITES)
 
     datos = {"version": 1, "activo": "obstaculos_base", "perfiles": []}
     params_mod.guardar_perfil(datos, "obstaculos_base", valores, "obstaculos")

@@ -37,7 +37,7 @@ import random
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
@@ -115,6 +115,8 @@ class Obstaculo:
 @dataclass
 class Resultado:
     obstaculos: List[Obstaculo]
+    y_izq: float = -350.0
+    y_der: float = 350.0
     pared: bool = False
     escapes: int = 0
     vel_max_mandando: float = 0.0
@@ -173,16 +175,30 @@ def ver(geo: Geometria, fwd_cam: float, right: float, ob: Obstaculo
 def perfil_sintetico(geo: Geometria, carro: Carro, y_izq: float, y_der: float,
                      x_frente: float, cfg_muro: Dict[str, Any],
                      adelanto_cam: float, error_rumbo: Optional[float] = None,
-                     sentido: int = 0) -> PerfilMuro:
-    """Perfil del muro por trazado de rayos: las dos paredes del carril y una
-    de frente, proyectadas al cuadro y reducidas a la fila de contacto por
-    columna. Despues, la MISMA aritmetica que muro.perfil(), rectas y
-    clasificacion incluidas (el navegador distingue la pared de frente de la
-    de al lado con ellas, y esquivando el carro va cruzado)."""
-    h = float(geo.cfg.get("alto_cam_mm", 125.0))
-    tilt = math.radians(float(geo.cfg.get("inclinacion_deg", 7.5)))
-    fy = float(geo.cfg.get("fy_px", 460.0)) * (H / 480.0)
-    fx = float(geo.cfg.get("fx_px", 460.0)) * (W / 640.0)
+                     sentido: int = 0,
+                     pilares: Sequence["Obstaculo"] = (),
+                     geo_cam: Optional[Geometria] = None) -> PerfilMuro:
+    """Perfil del muro por trazado de rayos: las dos paredes del carril, una
+    de frente y la huella de los PILARES que el perfil vea, proyectadas al
+    cuadro y reducidas a la fila de contacto por columna. Despues, la MISMA
+    aritmetica que muro.perfil(), rectas y clasificacion incluidas.
+
+    Los pilares entran aqui porque el perfil de verdad los ve: con el metodo
+    'piso' el pilar entero no es piso, y con 'negro' lo es su sombra sobre el
+    tapete, que cae justo en su base. Se quitan los que el detector de color
+    esta viendo ahora mismo, que es lo que hace robot.py con la mascara. Un
+    pilar que el detector se pierde SIGUE en el muro: eso es lo que pasa en
+    pista y es donde el carro frenaba y retrocedia.
+
+    geo_cam es la camara DE VERDAD (proyeccion mundo -> pixeles) y geo lo que
+    el codigo cree que es (pixeles -> milimetros). Con los dos distintos se
+    prueba una calibracion mala sin tocar el resto.
+    """
+    gc = geo_cam if geo_cam is not None else geo
+    h = float(gc.cfg.get("alto_cam_mm", 125.0))
+    tilt = math.radians(float(gc.cfg.get("inclinacion_deg", 7.5)))
+    fy = gc._fy
+    fx = gc._fx
     cx, cy = W / 2.0, H / 2.0
 
     # muestreo fino: de cerca cada milimetro de pared cae en una columna
@@ -190,8 +206,17 @@ def perfil_sintetico(geo: Geometria, carro: Carro, y_izq: float, y_der: float,
     # que la camara de verdad no tiene)
     xs = np.arange(carro.x - 400.0, carro.x + 3600.0, 0.5)
     ys_f = np.arange(y_izq, y_der, 2.0)
-    px = np.concatenate([xs, xs, np.full(ys_f.shape, x_frente)])
-    py = np.concatenate([np.full(xs.shape, y_izq), np.full(xs.shape, y_der), ys_f])
+    trozos_x = [xs, xs, np.full(ys_f.shape, x_frente)]
+    trozos_y = [np.full(xs.shape, y_izq), np.full(xs.shape, y_der), ys_f]
+    for ob in pilares:
+        bx = np.arange(ob.x - ob.semi_x, ob.x + ob.semi_x + 0.5, 1.0)
+        by = np.arange(ob.y - ob.semi_lat, ob.y + ob.semi_lat + 0.5, 1.0)
+        trozos_x += [bx, bx, np.full(by.shape, ob.x - ob.semi_x),
+                     np.full(by.shape, ob.x + ob.semi_x)]
+        trozos_y += [np.full(bx.shape, ob.y - ob.semi_lat),
+                     np.full(bx.shape, ob.y + ob.semi_lat), by, by]
+    px = np.concatenate(trozos_x)
+    py = np.concatenate(trozos_y)
 
     c, s = math.cos(carro.th), math.sin(carro.th)
     ox, oy = carro.x + adelanto_cam * c, carro.y + adelanto_cam * s
@@ -205,7 +230,7 @@ def perfil_sintetico(geo: Geometria, carro: Carro, y_izq: float, y_der: float,
     v = cy + fy * np.tan(theta - tilt)
     rango = np.sqrt(h * h + fwd * fwd)
     u = cx + right * fx / rango
-    y_hor = max(0, geo.fila_horizonte() + int(cfg_muro.get("margen_horizonte_px", 4)))
+    y_hor = max(0, gc.fila_horizonte() + int(cfg_muro.get("margen_horizonte_px", 4)))
     dentro = (u >= 0) & (u < W) & (v > y_hor)
     u = u[dentro].astype(np.int32)
     v = np.minimum(v[dentro], H - 1).astype(np.int32)
@@ -267,9 +292,14 @@ def simular(obstaculos: List[Obstaculo], vals: Optional[Dict] = None,
             y_izq: float = -350.0, y_der: float = 350.0, x_frente: float = 6000.0,
             sentido: int = 1, ticks: int = 270, y0: float = 0.0, th0_deg: float = 0.0,
             radio_real: Optional[float] = None, p_fallo_det: float = 0.0,
-            con_yaw: bool = True, semilla: int = 1, traza: bool = False) -> Resultado:
+            con_yaw: bool = True, semilla: int = 1, traza: bool = False,
+            pilar_en_muro: bool = True,
+            geo_real: Optional[Dict[str, Any]] = None) -> Resultado:
     vals = vals if vals is not None else config_obstaculos()
     geo = Geometria(vals["geometria"], W, H)
+    # la camara DE VERDAD; por defecto, la que el codigo cree tener
+    geo_cam = Geometria(geo_real if geo_real is not None else vals["geometria"],
+                        W, H)
     largo = float(vals["geometria"]["largo_carro_mm"])
     morro = float(vals["geometria"]["morro_mm"])
     semi = float(vals["geometria"]["ancho_carro_mm"]) / 2.0
@@ -287,7 +317,7 @@ def simular(obstaculos: List[Obstaculo], vals: Optional[Dict] = None,
     obst_mod.time = reloj          # type: ignore[assignment]
     nav_mod.time = reloj           # type: ignore[assignment]
     rng = random.Random(semilla)
-    res = Resultado(obstaculos=obstaculos)
+    res = Resultado(obstaculos=obstaculos, y_izq=y_izq, y_der=y_der)
     try:
         esq = Esquivador(vals["obstaculos"])
         nav = Navegador(vals["navegacion"], vals["limites"], vals["escape"],
@@ -305,17 +335,26 @@ def simular(obstaculos: List[Obstaculo], vals: Optional[Dict] = None,
             # --- camara ------------------------------------------------
             dets: Dict[str, List[vision.Deteccion]] = {"rojo": [], "verde": [],
                                                        "magenta": []}
+            vistos = []
             for ob in obstaculos:
                 fwd_cam, right = carro.relativo(ob.x, ob.y, adelanto_cam)
                 if p_fallo_det and rng.random() < p_fallo_det:
                     continue
-                d = ver(geo, fwd_cam, right, ob)
+                d = ver(geo_cam, fwd_cam, right, ob)
                 if d is not None:
                     dets[ob.color].append(d)
+                    vistos.append(id(ob))
+            # Los pilares que el perfil del muro VE: todos (su sombra cae en la
+            # base) menos los que robot.py borra de la mascara, que son los
+            # que el detector de color esta viendo ahora mismo.
+            quita = bool(vals["obstaculos"].get("pilares_no_son_muro", True))
+            en_muro = [ob for ob in obstaculos
+                       if pilar_en_muro and not (quita and id(ob) in vistos)]
             yaw = math.degrees(carro.th) if con_yaw else None
             err = nav.error_de_rumbo(yaw)
             perfil = perfil_sintetico(geo, carro, y_izq, y_der, x_frente,
-                                      vals["muro"], adelanto_cam, err, sentido)
+                                      vals["muro"], adelanto_cam, err, sentido,
+                                      en_muro, geo_cam)
 
             # --- decidir (igual que robot.py) ---------------------------
             vel_mm_s = vel_pct / 100.0 * vmax / 255.0 * vel_max_mm_s
@@ -392,13 +431,19 @@ LADO_OK = {"rojo": -1, "verde": +1}   # donde queda el pilar respecto al carro
 def fallos_de(res: Resultado, holgura_min: float = 15.0,
               exigir_lado: bool = True, pared: bool = True) -> List[str]:
     f = []
+    # PASO APRETADO: el pilar deja menos de 30 cm hasta la pared por el lado
+    # por el que hay que pasarlo, o sea menos de 10 cm para repartir entre el
+    # pilar y la pared con un carro de 20. Ahi solo se exige no TOCAR el
+    # pilar: rozar la pared no penaliza en el reglamento, mover una señal si.
+    apretado = False
+    for ob in res.obstaculos:
+        hasta_pared = (res.y_der - ob.y if ob.color == "rojo"
+                       else ob.y - res.y_izq if ob.color == "verde" else 1e9)
+        if hasta_pared < 300.0:
+            apretado = True
+    pared = pared and not apretado
     for ob in res.obstaculos:
         etq = f"{ob.color}@({ob.x:.0f},{ob.y:+.0f})"
-        # Pilar pegado a la pared del lado de paso: entre el y la pared hay 7 cm
-        # para repartir entre el pilar y la pared, asi que ahi basta con no
-        # tocarlo (el reglamento no penaliza rozar la pared; mover el pilar si).
-        apretado = (ob.color == "rojo" and ob.y >= 200.0) or \
-                   (ob.color == "verde" and ob.y <= -200.0)
         minimo = min(holgura_min, 5.0) if apretado else holgura_min
         if ob.colision:
             f.append(f"{etq}: COLISION (holgura {ob.holgura:.0f} mm)")
@@ -589,12 +634,89 @@ def t_radio_mal():
     return f
 
 
-@prueba("carril estrecho (600 mm) con el pilar en el medio: cabe y no toca la pared")
+@prueba("carril estrecho (600 mm) con el pilar en el medio: pasa sin tocarlo")
 def t_estrecho():
+    """Tortura: el carril del reto mide 1000 mm. Con 600 y el pilar en el
+    medio quedan 275 mm de hueco para un carro de 200, asi que rozar la pared
+    entra en lo esperable; lo que no puede pasar es tocar el pilar ni
+    quedarse ahi parado."""
     f = []
     for color in ("rojo", "verde"):
         r = _correr([pilar(color, 1500.0, 0.0)], y_izq=-300.0, y_der=300.0)
-        f += [f"{color}: {x}" for x in fallos_de(r, holgura_min=5.0)]
+        f += [f"{color}: {x}" for x in fallos_de(r, holgura_min=0.0, pared=False)]
+    return f
+
+
+@prueba("pegado a una pared: se atreve a pasar, sin frenarse ni retroceder")
+def t_pegado_a_la_pared():
+    """EL SINTOMA DE PISTA. El carro viene rozando una pared (a 15 cm) y el
+    pilar hay que pasarlo justo por ese lado. Tiene sitio de sobra -el carril
+    mide un metro- pero el pasillo, medido recto delante de un carro que va
+    cruzado, lee la pared de AL LADO como si fuera un muro de frente a 30 cm:
+    frenaba, se creia una esquina y hasta se iba a la reversa."""
+    f = []
+    casos = ((-350.0, "rojo", -150.0), (350.0, "verde", 150.0),
+             (-350.0, "verde", 150.0), (350.0, "rojo", -150.0))
+    for y0, color, lat in casos:
+        r = _correr([pilar(color, 1400.0, lat)], y0=y0, ticks=330, **ANCHO)
+        etq = f"pegado a {'izq' if y0 < 0 else 'der'}, {color}@{lat:+.0f}"
+        f += [f"{etq}: {x}" for x in fallos_de(r)]
+        if r.escapes:
+            f.append(f"{etq}: se metio en reversa {r.escapes} veces")
+    return f
+
+
+@prueba("el pilar metido en el perfil del muro no frena ni manda a la reversa")
+def t_pilar_en_el_muro():
+    """Un pilar NO es una pared, pero el perfil lo ve igual: con el metodo
+    'piso' su silueta, con 'negro' su sombra sobre el tapete. Ahi es donde el
+    carro frenaba en seco delante de la señal que tenia que rodear.
+
+    El arreglo es doble y cada mitad basta por su cuenta, que por eso no hay
+    control aqui: robot.py BORRA del muro los pilares que el detector ve, y
+    el navegador no deja mandar al pasillo crudo mientras se esquiva. Esta
+    prueba las corre juntas en el caso peor -detector perdiendo el 40 % de
+    los frames, asi que el pilar vuelve al muro cada dos por tres, y
+    justamente en los ultimos centimetros- y ademas con el borrado apagado.
+    """
+    f = []
+    for semilla in (1, 2, 3):
+        r = _correr([pilar("rojo", 1400.0, 0.0)], p_fallo_det=0.4,
+                    semilla=semilla, ticks=330, **ANCHO)
+        f += [f"semilla {semilla}: {x}" for x in fallos_de(r)]
+        if r.escapes:
+            f.append(f"semilla {semilla}: retrocedio {r.escapes} veces")
+    vals = config_obstaculos()
+    vals["obstaculos"] = dict(vals["obstaculos"], pilares_no_son_muro=False)
+    r = _correr([pilar("rojo", 1400.0, 0.0)], vals=vals, ticks=330, **ANCHO)
+    f += ["sin borrar el pilar del muro: " + x for x in fallos_de(r)]
+    if r.escapes:
+        f.append(f"sin borrar el pilar del muro: retrocedio {r.escapes} veces")
+    return f
+
+
+@prueba("fx mal calibrado (la camara entrega otra resolucion): fx_auto lo salva")
+def t_fx_auto():
+    """fx_px va referido a 640 de ancho y fy_px a 480 de alto. Se pide
+    1920x480, la camara da 1280x720 y los dos se separan un 33 %: los
+    milimetros LATERALES salen un 25 % cortos, la pared parece mas cerca de
+    lo que esta y el pasillo mas estrecho. Con fx_auto la focal horizontal
+    sale de la vertical (pixeles cuadrados) y da igual que resolucion
+    entregue la camara."""
+    f = []
+    real = config_obstaculos()["geometria"]          # la camara de verdad
+    for auto in (False, True):
+        vals = config_obstaculos()
+        vals["geometria"] = dict(vals["geometria"],
+                                 fx_px=float(real["fx_px"]) * 4.0 / 3.0,
+                                 fx_auto=auto)
+        r = _correr([pilar("rojo", 1400.0, -150.0)], vals=vals, geo_real=real,
+                    y0=-300.0, ticks=330, **ANCHO)
+        malos = fallos_de(r)
+        if auto and malos:
+            f += ["con fx_auto: " + x for x in malos]
+        if auto and r.escapes:
+            f.append(f"con fx_auto se metio en reversa {r.escapes} veces")
     return f
 
 

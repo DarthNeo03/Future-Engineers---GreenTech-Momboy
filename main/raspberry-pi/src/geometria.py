@@ -75,6 +75,38 @@ class Geometria:
 
     @property
     def _fx(self) -> float:
+        """Focal horizontal EFECTIVA, en pixeles de la captura de ahora.
+
+        LA TRAMPA QUE SE LLEVA EL RETO DE OBSTACULOS. fx_px se guarda referido
+        a 640 de ancho y fy_px a 480 de alto, y cada uno se escala con SU lado
+        de la captura. Mientras se capture a 640x480 los dos salen iguales,
+        que es lo que tiene que pasar: el sensor tiene pixeles CUADRADOS y la
+        focal es una sola. Pero basta con que la camara entregue otra cosa
+        -y las entregan: se pide 1920x480 y la WN-L1812 da 1280x720- para que
+        se separen. Medido en este carro: fx efectivo 920 contra fy 690, un
+        33 % de diferencia.
+
+        Y no se nota igual en los dos retos. En el Open Challenge la distancia
+        al muro sale de las FILAS (o sea de fy) y el error apenas asoma; aqui
+        decide los milimetros LATERALES, y con ellos:
+
+          * donde esta el pilar de lado -> por donde hay que pasarlo;
+          * a que distancia esta la pared -> cuanto sitio cree que tiene;
+          * que columnas caen dentro del corredor de las ruedas -> el pasillo.
+
+        Con fx un 33 % de mas, los laterales se miden un 25 % CORTOS: la pared
+        a 350 mm se lee a 260, el corredor se ensancha y el pasillo se cierra
+        solo. El sintoma en pista es exactamente "no se atreve a pasar aunque
+        tiene sitio de sobra", y no hay parametro del esquive que lo arregle.
+
+        Con fx_auto (recomendado, y encendido en config/obstaculos/) la focal
+        horizontal se toma de la vertical: pixeles cuadrados, una sola focal,
+        y da igual a que resolucion entregue la camara. Se apaga solo en
+        cuanto alguien calibra fx a mano desde la web, que es decir "usa mi
+        numero"; y para una lente muy anamorfica, a mano.
+        """
+        if bool(self.cfg.get("fx_auto", False)):
+            return self._fy
         return float(self.cfg.get("fx_px", 460.0)) * (self.W / 640.0)
 
     @property
@@ -234,6 +266,13 @@ class Geometria:
             "horizonte": self.fila_horizonte(),
             "fy_px": round(float(self.cfg.get("fy_px", 460.0)), 1),
             "fx_px": round(float(self.cfg.get("fx_px", 460.0)), 1),
+            ### las EFECTIVAS, ya escaladas a la captura de ahora: son las que
+            ### de verdad se usan, y si no se parecen entre ellas los
+            ### milimetros laterales no valen (ver _fx)
+            "fx_efectiva": round(self._fx, 1),
+            "fy_efectiva": round(self._fy, 1),
+            "fx_auto": bool(self.cfg.get("fx_auto", False)),
+            "captura": f"{self.W}x{self.H}",
             "alto_cam_mm": self._h,
             "inclinacion_deg": float(self.cfg.get("inclinacion_deg", 7.5)),
             "dist_centro_mm": round(float(self.fila_a_distancia(self._cy)), 0),

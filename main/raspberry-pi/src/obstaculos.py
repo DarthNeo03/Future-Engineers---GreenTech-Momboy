@@ -613,7 +613,9 @@ class Esquivador:
 
     # ------------------------------------------------------------------
     def _huecos(self, y_p: float, p: PerfilMuro, geo: Geometria,
-                error_rumbo: Optional[float] = None) -> Tuple[float, float]:
+                error_rumbo: Optional[float] = None,
+                veto: Optional[List[Tuple[int, int]]] = None
+                ) -> Tuple[float, float]:
         """Limites laterales (izq, der) del pasillo libre hasta la profundidad
         del pilar, en mm y EN EL MARCO DEL CARRIL. Sin pared a la vista
         devuelve +-1500.
@@ -622,6 +624,14 @@ class Esquivador:
         carril con el error de rumbo: con el carro cruzado, la pared de al
         lado se ve delante y a lateral cero, y medida en el marco del carro
         cerraba el hueco. Sin giroscopio (error_rumbo None) es lo de siempre.
+
+        'veto' son rangos de columnas ocupadas por un pilar detectado. UN
+        PILAR NO ES UNA PARED: si su silueta (o su sombra, con el metodo
+        'negro') se cuela en el perfil, el hueco libre se parte en dos por el
+        propio pilar que se esta rodeando, el punto de paso se recorta contra
+        el, y el esquive termina pasandolo RASPANDO — que es la otra mitad de
+        "lo choca". Sus columnas no cuentan aqui; el despeje al pilar ya lo
+        pone el esquive, que sabe cuanto mide.
         """
         e = math.radians(error_rumbo) if error_rumbo is not None else 0.0
         libre_min = y_p + 250.0      # la pared debe quedar mas lejos que el pilar
@@ -629,9 +639,15 @@ class Esquivador:
         for c in range(0, p.ancho, 6):
             if not p.valido[c] or p.dist_mm[c] > libre_min + 800.0:
                 continue
+            if veto and any(a <= c <= b for a, b in veto):
+                continue
             x_c = float(geo.lateral_mm(c, max(1, int(p.y_contacto[c]))))
             x_l, y_l = _al_carril(x_c, float(p.dist_mm[c]), e)
-            if y_l > libre_min:
+            ### DELANTE, no al costado. Con el carro cruzado hay contacto de
+            ### muro que en el marco del carril cae a la altura del carro o
+            ### detras: esa pared ya no condiciona por donde pasar el pilar
+            ### que viene, y contandola el hueco salia falsamente estrecho.
+            if not (50.0 < y_l <= libre_min):
                 continue
             if x_l < 0:
                 izq_lim = max(izq_lim, x_l)
@@ -639,8 +655,41 @@ class Esquivador:
                 der_lim = min(der_lim, x_l)
         return izq_lim, der_lim
 
+    def _columnas_de(self, dets: Dict[str, List[vision.Deteccion]],
+                     geo: Optional[Geometria] = None,
+                     morro: float = 60.0,
+                     colores: Tuple[str, ...] = SENALES,
+                     margen: int = 6) -> List[Tuple[int, int]]:
+        """Rangos de columnas que ocupa cada señal: las que se VEN ahora y las
+        que solo se siguen por estima.
+
+        Las estimadas importan tanto como las vistas: cuando la mascara de
+        color parpadea, el pilar desaparece de 'dets' pero NO de la mascara
+        del muro (ahi sigue su sombra), asi que sin esto el hueco libre se
+        parte justo en el pilar durante los frames ciegos, que son los
+        ultimos antes de pasarlo.
+        """
+        out: List[Tuple[int, int]] = []
+        for color in colores:
+            for d in dets.get(color, []):
+                out.append((d.x - margen, d.x + d.w + margen))
+        if geo is None:
+            return out
+        for pi in self._pistas:
+            if not pi.color or pi.dist <= 0.0 or not pi.vistas:
+                continue
+            semi = max(25.0, pi.ancho_mm / 2.0)
+            try:
+                u_i, _ = geo.suelo_a_pixel(pi.lat - semi, pi.dist + morro)
+                u_d, _ = geo.suelo_a_pixel(pi.lat + semi, pi.dist + morro)
+            except Exception:
+                continue
+            out.append((min(u_i, u_d) - margen, max(u_i, u_d) + margen))
+        return out
+
     def _lado_magenta(self, p: Pista, sentido: int, perfil: Optional[PerfilMuro],
-                      geo: Geometria, semi_obj: float, semi_carro: float) -> int:
+                      geo: Geometria, semi_obj: float, semi_carro: float,
+                      veto: Optional[List[Tuple[int, int]]] = None) -> int:
         """Por donde se rodea un delimitador del cajon. El reglamento no manda
         lado, asi que se decide por SITIO:
 
@@ -653,7 +702,7 @@ class Esquivador:
           3. sin sentido conocido, por el lado que menos cruza la trayectoria.
         """
         if perfil is not None and getattr(perfil, "hay_muro", False):
-            izq_lim, der_lim = self._huecos(p.dist, perfil, geo)
+            izq_lim, der_lim = self._huecos(p.dist, perfil, geo, None, veto)
             sitio_der = der_lim - (p.lat + semi_obj)
             sitio_izq = (p.lat - semi_obj) - izq_lim
             # (marco del carro: el sentido dice el interior, y con el carro
@@ -672,7 +721,8 @@ class Esquivador:
     def _lado_de(self, p: Pista, sentido: int,
                  perfil: Optional[PerfilMuro] = None,
                  geo: Optional[Geometria] = None,
-                 semi_obj: float = 25.0, semi_carro: float = 100.0) -> int:
+                 semi_obj: float = 25.0, semi_carro: float = 100.0,
+                 veto: Optional[List[Tuple[int, int]]] = None) -> int:
         """El lado por el que se pasa este pilar. Una vez fijado no cambia.
 
         Mientras no haya votos suficientes se usa el lado del color que va
@@ -689,7 +739,8 @@ class Esquivador:
             if sentido < 0 and bool(self.cfg.get("invertir_en_antihorario", False)):
                 lado = -lado
         elif geo is not None:
-            lado = self._lado_magenta(p, sentido, perfil, geo, semi_obj, semi_carro)
+            lado = self._lado_magenta(p, sentido, perfil, geo, semi_obj,
+                                      semi_carro, veto)
         else:
             lado = 1 if p.lat <= 0 else -1
 
@@ -789,9 +840,11 @@ class Esquivador:
         # el lado se resuelve para TODAS las fichas con color, no solo para la
         # que manda: cuando un pilar pasa al costado ya tiene que saberse por
         # que lado se le estaba pasando
+        veto = self._columnas_de(dets, geo, morro)
         for pi in self._pistas:
             if pi.color and pi.dist > 0.0:
-                self._lado_de(pi, sentido, perfil, geo, self._semi_de(pi), semi_carro)
+                self._lado_de(pi, sentido, perfil, geo, self._semi_de(pi),
+                              semi_carro, veto)
 
         # --- el pilar que queda AL COSTADO: no girar hacia el --------------
         costado = self._pista_costado(largo, float(self.cfg.get("magenta_semi_mm", 110.0)))
@@ -822,7 +875,7 @@ class Esquivador:
 
         color = pista.color
         semi_obj = self._semi_de(pista)
-        lado = self._lado_de(pista, sentido, perfil, geo, semi_obj, semi_carro)
+        lado = self._lado_de(pista, sentido, perfil, geo, semi_obj, semi_carro, veto)
 
         # --- de aqui en adelante, en el MARCO DEL CARRIL --------------------
         # (x = lateral, + derecha; y = a lo largo de la recta), no en el del
@@ -845,7 +898,7 @@ class Esquivador:
         # --- recortar al pasillo libre a esa distancia ---------------------
         if perfil is not None and perfil.hay_muro:
             x_t = self._recortar(x_t, y_p, perfil, geo, semi_carro,
-                                 x_p, lado, minimo, error_rumbo)
+                                 x_p, lado, minimo, error_rumbo, veto)
         # el punto de paso, de vuelta en el marco del carro (video, modos viejos)
         objetivo, _ = _al_carro(x_t, y_p, e)
 
@@ -1138,7 +1191,8 @@ class Esquivador:
                   geo: Geometria, semi_carro: float,
                   lat: float = 0.0, lado: int = 0,
                   minimo: float = 0.0,
-                  error_rumbo: Optional[float] = None) -> float:
+                  error_rumbo: Optional[float] = None,
+                  veto: Optional[List[Tuple[int, int]]] = None) -> float:
         """Recorta el punto de paso al hueco libre SIN CAMBIARLO DE LADO.
         Todo en el marco del carril (con error_rumbo None, el del carro).
 
@@ -1160,7 +1214,7 @@ class Esquivador:
         # 30 cm de la pared, carro de 20) hay 7 cm que repartir, y rozar la
         # pared no penaliza; mover el pilar, si.
         margen = semi_carro + float(self.cfg.get("margen_pared_mm", 30.0))
-        izq_lim, der_lim = self._huecos(dist, p, geo, error_rumbo)
+        izq_lim, der_lim = self._huecos(dist, p, geo, error_rumbo, veto)
         lo, hi = izq_lim + margen, der_lim - margen
         if lo > hi:
             self.info["hueco_estrecho_mm"] = round(der_lim - izq_lim)
