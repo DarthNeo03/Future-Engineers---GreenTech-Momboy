@@ -223,6 +223,86 @@ prueba("borde detectado en el cambio",
 prueba("segmentos ajustados", len(p.segmentos) >= 1, str(len(p.segmentos)))
 
 # ===========================================================================
+print("== el perfil tiene que ser SIMETRICO AL ESPEJO ==")
+### El problema de pista: los MISMOS parametros funcionaban en horario y no en
+### antihorario. La pista es simetrica y el codigo tiene que serlo tambien: la
+### misma escena reflejada, con el sentido invertido, tiene que dar exactamente
+### el mismo perfil con izquierda y derecha cambiadas. Si no, hay un sesgo que
+### ayuda en un sentido y estorba en el otro, y ninguna calibracion lo arregla.
+###
+### Lo que se encontro asi: el perfil de distancias viene SUAVIZADO
+### (muro.suavizado, 7 columnas), asi que el canto del muro interno al abrirse
+### la esquina no es un escalon sino una RAMPA con valores intermedios que no
+### existen en la pista. La cadena se cortaba en UNA sola muestra, la rampa se
+### quedaba dentro, y el ajuste de rectas la convertia en un segmento de 2,4 m
+### casi perpendicular: una PARED LATERAL FANTASMA a 20-40 cm en plena esquina.
+### Y salia en un solo sentido, porque el indice del borde (np.diff) apunta a
+### la columna izquierda del par y las muestras van de 4 en 4: de que lado de
+### la rampa cae el corte depende de donde toque la rejilla, y eso no es
+### simetrico al reflejar. Medido: 20 de 20 escenas espejo daban interna_mm en
+### antihorario y None en horario.
+def escena_esquina_mm(fila_frente: int, col_fin: int, espejo: bool):
+    """Pared de frente que se ACABA en col_fin: el hueco de la esquina."""
+    b = np.zeros((H, W), np.uint8)
+    n = np.zeros((H, W), np.uint8)
+    b[fila_frente:, :] = 255
+    n[:fila_frente, :] = 255
+    b[:, col_fin:] = 255
+    n[:, col_fin:] = 0
+    if espejo:
+        b = b[:, ::-1].copy()
+        n = n[:, ::-1].copy()
+    return {"blanco": b, "negro": n}
+
+def _casi(a, b, tol=30.0):
+    if (a is None) != (b is None):
+        return False
+    return a is None or abs(a - b) <= tol
+
+asim = []
+for fila in (240, 270, 300, 330, 360):
+    for col_fin in range(300, 600, 17):        # barrido fino de la rejilla de 4
+        ph = muro.perfil(escena_esquina_mm(fila, col_fin, False), geo, mcfg, 0.0, 1)
+        pa = muro.perfil(escena_esquina_mm(fila, col_fin, True), geo, mcfg, 0.0, -1)
+        if not (_casi(ph.frontal_mm, pa.frontal_mm)
+                and _casi(ph.interna_mm, pa.interna_mm)
+                and _casi(ph.externa_mm, pa.externa_mm)
+                and abs(ph.pasillo_mm - pa.pasillo_mm) <= 1.0
+                and abs(ph.izq - pa.der) <= 0.01
+                and abs(ph.der - pa.izq) <= 0.01):
+            asim.append((fila, col_fin, ph.interna_mm, pa.interna_mm))
+prueba("90 escenas de esquina dan el mismo perfil al reflejarlas",
+       not asim, f"{len(asim)} asimetricas, p.ej. {asim[:2]}")
+
+# y la pared fantasma en concreto: un tramo no puede saltar metros entre dos
+# muestras vecinas. Eso es el canto de un borde, no una pared.
+pe = muro.perfil(escena_esquina_mm(300, 480, True), geo, mcfg, 0.0, -1)
+prueba("no aparece una pared lateral fantasma en el hueco de la esquina",
+       pe.interna_mm is None or pe.interna_mm > 200.0,
+       f"interna_mm={pe.interna_mm}")
+prueba("y ningun segmento salta mas que salto_borde_mm entre muestras",
+       all(abs(s.y1 - s.y0) / max(1, s.n_puntos - 1) <= mcfg["salto_borde_mm"]
+           for s in pe.segmentos),
+       str([(round(s.y0), round(s.y1), s.n_puntos) for s in pe.segmentos]))
+
+# --- el eje del carro no tiene por que ser el centro de la imagen ----------
+### Si la camara no esta clavada en el eje (o el mastil tiene un par de grados
+### de guiñada), izquierda-contra-derecha trae un sesgo CONSTANTE, y no es
+### neutral: empuja hacia el muro externo en un sentido de la ronda y contra el
+### interno en el otro. centro_lateral_px lo corrige; en 0 es lo de siempre.
+geo_off = Geometria(dict(gcfg, centro_lateral_px=0.0), W, H)
+p_sim = muro.perfil(escena(300), geo_off, mcfg)
+prueba("con el carro centrado y sin ajuste, izq y der salen iguales",
+       abs(p_sim.izq - p_sim.der) < 0.02, f"{p_sim.izq:.3f} {p_sim.der:.3f}")
+geo_off.cfg = dict(gcfg, centro_lateral_px=40.0)
+prueba("el ajuste mueve el eje del carro dentro de la imagen",
+       abs(geo_off._cx - (W / 2.0 + 40.0)) < 1e-6, str(geo_off._cx))
+a_off, b_off = geo_off.corredor_en_fila(H - 40)
+prueba("y el corredor de las ruedas se mueve con el",
+       abs((a_off + b_off) / 2.0 - (W / 2.0 + 40.0)) <= 1.0, f"{a_off} {b_off}")
+prueba("por defecto el ajuste es 0 (no cambia nada de lo calibrado)",
+       params_mod.valores_por_defecto()["geometria"]["centro_lateral_px"] == 0.0)
+
 print("== que recta es cada pared (giroscopio) ==")
 from src.muro import clasificar_recta, Segmento   # noqa: E402
 

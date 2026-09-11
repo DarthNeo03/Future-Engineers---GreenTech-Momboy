@@ -87,6 +87,79 @@ calcula en mm reales y se recorta al hueco libre del perfil.
 
 ---
 
+## Horario va y antihorario no: como se busca eso
+
+La pista es simetrica. Si los MISMOS parametros funcionan en un sentido y no en
+el otro, hay un sesgo en alguna parte, y ninguna calibracion lo arregla porque
+lo que ayuda en un sentido estorba en el otro. La forma de encontrarlo no es
+mirar codigo: es la **prueba de espejo**. Se coge una escena, se refleja, se
+invierte el sentido, y la salida tiene que ser identica con izquierda y derecha
+cambiadas. Lo que no cuadre, es el sesgo.
+
+**Lo que aparecio asi: una pared lateral FANTASMA en la esquina.** El perfil de
+distancias viene suavizado (`muro.suavizado`, 7 columnas), asi que el canto del
+muro interno al abrirse la curva no es un escalon sino una **rampa** de media
+docena de columnas con valores intermedios que no existen en la pista. La
+cadena de puntos se cortaba en UNA sola muestra, la rampa se quedaba dentro, y
+el ajuste de rectas la convertia en un segmento de 2,4 m casi perpendicular al
+carro: una pared lateral a 20-40 cm en plena esquina, donde no hay nada.
+
+Y salia **en un solo sentido**. El indice del borde lo da `np.diff`, que apunta
+a la columna izquierda del par, y las muestras van de 4 en 4: de que lado de la
+rampa cae el corte depende de donde toque la rejilla, y eso no es simetrico al
+reflejar. Medido sobre 198 escenas espejo: `interna_mm` salia distinto en
+**112**, siempre inventandose la pared en antihorario.
+
+Arreglo: el corte se lleva toda la anchura del suavizado a cada lado del borde,
+y ademas se descarta cualquier tramo que salte mas que `salto_borde_mm` entre
+dos muestras vecinas — un muro no puede dar un salto de dos metros de una
+columna a la siguiente; eso es un canto, no una pared. Las 198 escenas quedan
+simetricas.
+
+**Honestidad sobre el alcance:** ese fallo ensucia `interna_mm`, que es lo que
+usa `estrategia: pared` y lo que se ve en la web. Con `estrategia: centrado`
+—que es la que lleva el perfil que funciona— **no llega al volante**, asi que
+por si solo NO explica que antihorario falle. Medido tambien: con esos
+parametros la cadena entera (perfil + lineas + navegador) ya era simetrica,
+0 de 45 ticks distintos, y los dos sentidos clavan los 90 grados. Es decir:
+**el sesgo no esta en el codigo de navegacion.** Los tres sitios donde puede
+estar, en orden:
+
+1. **`carrera.sentido`.** Si el perfil lo trae forzado a `horario` y se corre
+   en antihorario, no hay nada que discutir: se cuenta el color equivocado y se
+   dobla al lado equivocado. En competencia tiene que estar en `auto`, porque
+   el reglamento prohibe decirle el sentido al robot antes de la salida.
+2. **El TCS perdiendo la linea de ENTRADA, que es distinta en cada sentido.**
+   En horario se cruza primero la naranja; en antihorario, la azul. Y no cuestan
+   lo mismo: la naranja saca ~105 puntos de diferencia r-b y la azul solo 37, y
+   con la ventana de integracion a medias sobre la linea el piso blanco (cinco
+   veces mas luz) aplasta esa diferencia hasta 14. A velocidad de crucero una
+   linea de 2 cm en diagonal deja **1,9 ventanas** de 24 ms: con
+   `muestras_min` en 2, la naranja aguanta y la azul no. Es un fallo que **solo
+   se nota en antihorario, por construccion**. Ojo especialmente con
+   `lineas.frenar_tras_ms`: si vale 0, el freno se suelta en cuanto la linea
+   sale del cuadro, que es justo el instante en que va a pasar bajo el sensor —
+   el carro la cruza a crucero (1,9 ventanas) en vez de frenado (3,1).
+3. **Que la camara no este clavada en el eje del carro** (o que el mastil tenga
+   un par de grados de guiñada). Ver abajo.
+
+## El eje del carro no tiene por que ser el centro de la imagen
+
+Todo el perfil compara izquierda contra derecha, y daba por hecho que el eje
+del carro cae exactamente en la columna central de la imagen. Un par de
+milimetros de desplazamiento de la camara, o un par de grados de guiñada del
+mastil, meten un sesgo **constante** en esa comparacion — y no es neutral:
+empuja al carro hacia el muro externo en un sentido de la ronda (donde sobra
+sitio y el control lo corrige sin que se note) y contra el interno en el otro.
+
+`geometria.centro_lateral_px` lo corrige: mueve el eje del carro dentro de la
+imagen, y con el se mueven el corredor de las ruedas, las distancias laterales
+y las dos bandas que se comparan. Vale **0 por defecto**, asi que sin tocarlo
+no cambia nada de lo ya calibrado.
+
+Calibrarlo son dos minutos: carro en el centro de una recta y bien encarado,
+mirar `izq` y `der` en la web, y mover el numero hasta que marquen lo mismo.
+
 ## El arreglo de las paredes con brillo (lo importante)
 
 El programa viejo buscaba "el pixel negro mas bajo" por columna. Cuando la

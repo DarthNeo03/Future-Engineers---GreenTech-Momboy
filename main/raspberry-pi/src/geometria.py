@@ -79,7 +79,30 @@ class Geometria:
 
     @property
     def _cx(self) -> float:
-        return self.W / 2.0
+        """Columna por la que pasa el EJE DEL CARRO.
+
+        Todo lo demas (el corredor de las ruedas, el desplazamiento lateral,
+        comparar izquierda contra derecha) se mide desde aqui, y hasta ahora se
+        daba por hecho que era el centro exacto de la imagen: o sea, que la
+        camara esta clavada en el eje del carro y perfectamente encarada. Un
+        par de milimetros de desplazamiento, o un par de grados de guiñada del
+        mastil, meten un sesgo CONSTANTE en izquierda-contra-derecha, y ese
+        sesgo no es neutral: en un sentido de la ronda empuja al carro hacia el
+        muro externo (donde sobra sitio y el control lo corrige sin que se note)
+        y en el otro contra el interno. Es una de las pocas cosas que pueden
+        hacer que los MISMOS parametros funcionen en horario y no en
+        antihorario.
+
+        centro_lateral_px lo corrige. Vale 0 por defecto: sin tocarlo, esto es
+        exactamente lo de siempre.
+        """
+        return self.W / 2.0 + float(self.cfg.get("centro_lateral_px", 0.0))
+
+    def offset_lateral_px(self) -> int:
+        """Desplazamiento del eje del carro respecto al centro de la imagen,
+        en columnas. Lo usa el perfil para que las bandas laterales queden
+        simetricas respecto al CARRO y no respecto a la imagen."""
+        return int(round(float(self.cfg.get("centro_lateral_px", 0.0))))
 
     @property
     def _cy(self) -> float:

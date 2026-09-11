@@ -119,6 +119,7 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "fx_px": _p("float", 460.0, "Focal horizontal en pixeles (referida a 640 de ancho). Se calibra con un clic sobre un objeto desplazado a un lado.", 100.0, 2000.0),
         "ancho_carro_mm": _p("float", 200.0, "Ancho total del carro con ruedas, en mm. Define el corredor dibujado por donde van a pasar las ruedas.", 100.0, 300.0),
         "margen_ruedas_mm": _p("float", 30.0, "Margen de seguridad extra a cada lado del carro para el corredor, en mm.", 0.0, 150.0),
+        "centro_lateral_px": _p("float", 0.0, "Columna por la que pasa el EJE DEL CARRO, como desplazamiento respecto al centro de la imagen. Corrige que la camara no este clavada en el eje o que el mastil tenga un par de grados de guiñada: ese sesgo se cuela en izquierda-contra-derecha y NO es neutral, porque empuja hacia el muro interno en un sentido de la ronda y hacia el externo en el otro. Para calibrarlo: carro en el centro de una recta y encarado, y muevelo hasta que izq y der marquen lo mismo en la web. 0 = como siempre.", -160.0, 160.0),
         "morro_mm": _p("float", 60.0, "Distancia de la lente al frente del carro, en mm. Las distancias mostradas se miden desde el morro.", 0.0, 300.0),
         "largo_carro_mm": _p("float", 240.0, "Largo total del carro, del morro a la cola. Sirve para saber cuanto tiene que avanzar para adelantar un pilar ENTERO: hasta que la cola no lo pasa, no se puede volver al centro del carril o la rueda trasera se lo lleva.", 100.0, 400.0),
     },

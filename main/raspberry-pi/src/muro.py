@@ -259,12 +259,23 @@ def perfil(masks: Dict[str, np.ndarray], geo: Geometria,
     # --- bandas laterales --------------------------------------------------
     banda = float(cfg.get("banda_lateral", 0.28))
     n_lat = max(1, int(W * banda))
-    p.izq = float(p.libre[:n_lat].mean())
-    p.der = float(p.libre[-n_lat:].mean())
-    a_rango_izq = valido[:n_lat] & (p.dist_mm[:n_lat] < p.alcance_mm * 0.98)
-    a_rango_der = valido[-n_lat:] & (p.dist_mm[-n_lat:] < p.alcance_mm * 0.98)
-    p.cobertura_izq = float(np.count_nonzero(a_rango_izq)) / n_lat
-    p.cobertura_der = float(np.count_nonzero(a_rango_der)) / n_lat
+    # Las bandas van centradas en el EJE DEL CARRO, no en el centro de la
+    # imagen: si la camara no esta clavada en el eje (o el mastil tiene un par
+    # de grados de guiñada), comparar izquierda contra derecha trae un sesgo
+    # constante, y ese sesgo empuja hacia el muro interno en un sentido de la
+    # ronda y hacia el externo en el otro. Con centro_lateral_px en 0 -lo de
+    # siempre- esto es exactamente el recorte de antes.
+    off = max(-n_lat, min(n_lat, geo.offset_lateral_px()))
+    ini_i, fin_i = max(0, off), max(1, off + n_lat)
+    ini_d, fin_d = min(W - 1, W + off - n_lat), min(W, W + off)
+    p.izq = float(p.libre[ini_i:fin_i].mean())
+    p.der = float(p.libre[ini_d:fin_d].mean())
+    a_rango_izq = (valido[ini_i:fin_i] &
+                   (p.dist_mm[ini_i:fin_i] < p.alcance_mm * 0.98))
+    a_rango_der = (valido[ini_d:fin_d] &
+                   (p.dist_mm[ini_d:fin_d] < p.alcance_mm * 0.98))
+    p.cobertura_izq = float(np.count_nonzero(a_rango_izq)) / max(1, fin_i - ini_i)
+    p.cobertura_der = float(np.count_nonzero(a_rango_der)) / max(1, fin_d - ini_d)
 
     # --- pasillo: lo que de verdad esta EN el camino de las ruedas ---------
     # Un punto de contacto esta "en el camino" si su desplazamiento lateral a
@@ -366,8 +377,30 @@ def _segmentos(p: PerfilMuro, geo: Geometria, cfg: Dict[str, Any],
     gap_max = float(cfg.get("seg_gap_max_mm", 350.0))
     ang_fus = float(cfg.get("seg_angulo_fusion_deg", 12.0))
 
-    # cadenas: se cortan donde falte contacto o donde haya un borde declarado
-    cortes = set(b[0] // paso for b in p.bordes)
+    # Cadenas: se cortan donde falte contacto o donde haya un borde declarado.
+    #
+    # EL CORTE TIENE QUE SER ANCHO, Y AQUI ERA DE UNA SOLA MUESTRA.
+    # El perfil de distancias viene SUAVIZADO (muro.suavizado, 7 columnas), asi
+    # que un salto de profundidad real -el canto del muro interno al abrirse la
+    # esquina- no es un escalon: es una RAMPA de media docena de columnas con
+    # valores intermedios que no existen en la pista. Cortando una sola muestra
+    # quedaban dentro de la cadena, y el ajuste de rectas las convertia en un
+    # segmento de 2.4 m casi perpendicular al carro: una PARED LATERAL FANTASMA
+    # a 20-40 cm, justo en la esquina.
+    #
+    # Y aparecia en un solo sentido. El indice del borde sale de np.diff, que
+    # apunta a la columna IZQUIERDA del par, y las muestras se toman cada 4
+    # columnas: de que lado de la rampa cae el corte depende de donde toque la
+    # rejilla, y eso NO es simetrico al reflejar la escena. Medido sobre 20
+    # escenas espejo, la pared fantasma salia en las 20 en antihorario y en
+    # ninguna en horario: `interna_mm` daba 168 mm donde no habia nada.
+    #
+    # Se descarta toda la anchura del suavizado a cada lado del borde.
+    pad = int(math.ceil((float(cfg.get("suavizado", 7)) / 2.0) / paso)) + 1
+    cortes = set()
+    for b in p.bordes:
+        centro = b[0] // paso
+        cortes.update(range(centro - pad, centro + pad + 1))
     cadenas: List[List[Tuple[float, float, int]]] = []
     actual: List[Tuple[float, float, int]] = []
     for j, c in enumerate(cols):
@@ -417,8 +450,16 @@ def _segmentos(p: PerfilMuro, geo: Geometria, cfg: Dict[str, Any],
     # fusion de colineales separados por un hueco (puentea el brillo)
     brutos.sort(key=lambda s: s.col0)
     fusionados: List[Segmento] = []
+    salto = float(cfg.get("salto_borde_mm", 400.0))
     for s in brutos:
         if s.largo < 30:                             # astillas: fuera
+            continue
+        # Un muro NO puede dar un salto de profundidad enorme entre dos
+        # muestras vecinas: eso es el canto de un borde, no una pared. Segunda
+        # reja contra la pared fantasma de la esquina, por si el suavizado
+        # deja rampa mas ancha de lo previsto o el borde no llego a declararse.
+        muestras = max(1, s.n_puntos - 1)
+        if abs(s.y1 - s.y0) / muestras > salto:
             continue
         if fusionados:
             u = fusionados[-1]
