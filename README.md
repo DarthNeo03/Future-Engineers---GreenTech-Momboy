@@ -54,6 +54,19 @@ rounds, and the round is chosen by which calibration profile is loaded — the
 Obstacle Challenge simply switches obstacle handling on. Splitting it into two
 copies would have meant fixing every bug twice.
 
+Printed parts in [`3d-model/Documentación 3D/`](3d-model/Documentación%203D/)
+are grouped by subassembly:
+
+| Group | Function |
+|---|---|
+| A-Arm | Front suspension links |
+| Battery | Battery case and cell retention |
+| Camera | Camera mast and mount |
+| Chassis | Structural core: motor mount, gear supports, steering rack housing, electronics deck |
+| Diferrential | Mechanical differential and drive gear train, rear axle |
+| RaspberryPi5Mount | Raspberry Pi 5 mounting plate |
+| Steering | Rack-and-pinion steering, Ackermann geometry |
+
 ## The team
 
 | | |
