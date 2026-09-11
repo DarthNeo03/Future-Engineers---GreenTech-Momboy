@@ -30,6 +30,25 @@ from typing import Any, Dict, List, Optional, Union
 RAIZ_PROYECTO = Path(__file__).resolve().parent.parent
 RUTA_CONFIG_POR_DEFECTO = RAIZ_PROYECTO / "config" / "colors.json"
 
+# ===========================================================================
+# UN ARCHIVO POR RETO, EN SU PROPIA CARPETA (ver params.py)
+# El color se calibra distinto en cada reto: el Open Challenge no necesita
+# separar el rojo del magenta, y en obstaculos esa separacion es justo lo que
+# decide si el carro pasa por el lado correcto. Con archivos separados, tocar
+# uno no puede estropear el otro.
+# ===========================================================================
+RUTAS_RETO = {
+    "open": RUTA_CONFIG_POR_DEFECTO,
+    "obstaculos": RAIZ_PROYECTO / "config" / "obstaculos" / "colors.json",
+    "estacionar": RAIZ_PROYECTO / "config" / "estacionar" / "colors.json",
+}
+
+
+def ruta_de_reto(reto=None) -> Path:
+    """Archivo de colores del reto pedido. Sin reto, el de siempre."""
+    return RUTAS_RETO.get(str(reto or "").strip(), RUTA_CONFIG_POR_DEFECTO)
+
+
 MAX_PERFILES = 20
 # ===========================================================================
 # TRES LINEAS DE CALIBRACION

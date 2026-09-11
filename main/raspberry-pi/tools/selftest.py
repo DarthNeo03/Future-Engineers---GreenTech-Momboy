@@ -1728,12 +1728,25 @@ vo = params_mod.valores_por_defecto()
 vo["obstaculos"]["activo"] = True
 geo_o = Geometria(vo["geometria"], 640, 480)
 
-def pilar(dist_mm, lat_mm=0.0, color="rojo"):
-    """Deteccion sintetica de un pilar cuya base cae a esa distancia."""
-    u, v = geo_o.suelo_a_pixel(lat_mm, dist_mm + vo["geometria"]["morro_mm"])
-    d = Deteccion(color=color, x=u - 15, y=v - 60, w=30, h=60,
-                  area=1800, llenado=0.9, aspecto=2.0, cx=float(u), cy=float(v - 30))
-    return d
+def pilar(dist_mm, lat_mm=0.0, color="rojo", ancho_mm=50.0, alto_mm=100.0):
+    """Deteccion sintetica de un objeto cuya base cae a esa distancia DEL MORRO.
+
+    El tamaño en pixeles sale de la geometria, no a ojo. Desde que el esquive
+    comprueba que el objeto MIDE lo que tiene que medir para ser una señal
+    (50x50x100 mm, regla 13.1), una caja inventada de 30x60 px ya no es un
+    pilar creible a ninguna distancia, y con razon: eso era justo lo que se
+    colaba en pista como pilar sin serlo.
+    """
+    y_cam = dist_mm + vo["geometria"]["morro_mm"]
+    u_izq, v = geo_o.suelo_a_pixel(lat_mm - ancho_mm / 2.0, y_cam)
+    u_der, _ = geo_o.suelo_a_pixel(lat_mm + ancho_mm / 2.0, y_cam)
+    u, _ = geo_o.suelo_a_pixel(lat_mm, y_cam)
+    v_cima = geo_o.fila_de_altura(y_cam, alto_mm)
+    x, w = min(u_izq, u_der), max(1, abs(u_der - u_izq))
+    h = max(1, v - v_cima)
+    return Deteccion(color=color, x=x, y=v_cima, w=w, h=h,
+                     area=int(w * h * 0.9), llenado=0.9, aspecto=h / float(w),
+                     cx=float(u), cy=float(v_cima + h / 2.0))
 
 esq = Esquivador(vo["obstaculos"])
 cerca = {"rojo": [pilar(600.0, 120.0)]}       # pilar de ESTA recta
@@ -2048,9 +2061,9 @@ eb = Esquivador(vb["obstaculos"])
 
 
 def _pil(dist_mm, lat_mm, color="rojo"):
-    u, vv = geo_o.suelo_a_pixel(lat_mm, dist_mm + vb["geometria"]["morro_mm"])
-    return Deteccion(color=color, x=u - 18, y=vv - 70, w=36, h=70, area=2400,
-                     llenado=0.9, aspecto=2.0, cx=float(u), cy=float(vv - 35))
+    # Mismo pilar sintetico de antes: proyectado con la geometria, para que
+    # pase la prueba de tamaño real igual que lo haria uno de verdad.
+    return pilar(dist_mm, lat_mm, color)
 
 
 def estable(dets, ticks=60):
@@ -2335,6 +2348,24 @@ with tempfile.TemporaryDirectory() as tmp:
            str(params_mod.listar(datos2, "estacionar")))
     prueba("una categoria inventada cae en open",
            params_mod.categoria_valida("loquesea") == "open")
+
+# ===========================================================================
+### IDENTIFICAR EL PILAR ANTES DE DECIDIR EL LADO
+### Vive en tools/selftest_obstaculos.py porque ahi las detecciones se fabrican
+### proyectando objetos de tamaño real y se lee como lo que es: la prueba de
+### que el carro no va a pasar una señal por el lado que termina la ronda. Se
+### corre desde aqui para que un solo comando lo compruebe todo.
+print("== identificacion de señales y lado de paso ==")
+try:
+    import selftest_obstaculos as so            # noqa: E402
+    for _nombre, _f in so.PRUEBAS:
+        try:
+            _fallos = _f()
+        except Exception as _e:                 # noqa: BLE001
+            _fallos = [f"{type(_e).__name__}: {_e}"]
+        prueba(_nombre, not _fallos, "; ".join(_fallos))
+except ImportError as _e:
+    prueba("selftest_obstaculos se puede importar", False, str(_e))
 
 # ===========================================================================
 print()

@@ -130,6 +130,27 @@ class Geometria:
         av = theta - self._tilt
         return int(round(self._cy + self._fy * math.tan(av)))
 
+    def fila_de_altura(self, y_mm: float, z_mm: float = 0.0) -> int:
+        """Fila de imagen de un punto que esta a y_mm de distancia sobre el
+        suelo y a z_mm de ALTURA sobre el.
+
+        distancia_a_fila() solo sabe de puntos apoyados en el suelo (z=0). Para
+        saber cuanto debe MEDIR en pixeles un pilar de 100 mm que esta a 1.2 m
+        hace falta tambien la fila de su cima, y esa esta z_mm por encima del
+        plano del suelo. Con z_mm = 0 devuelve exactamente lo mismo que
+        distancia_a_fila().
+        """
+        y_mm = max(1.0, float(y_mm))
+        theta = math.atan2(self._h - float(z_mm), y_mm)
+        return int(round(self._cy + self._fy * math.tan(theta - self._tilt)))
+
+    def alto_esperado_px(self, y_mm: float, z_mm: float) -> int:
+        """Cuantos pixeles de alto ocupa un objeto de z_mm de alto apoyado en
+        el suelo a y_mm de distancia. Es la prueba mas barata que existe para
+        distinguir un pilar de verdad de una mancha de color en la pared."""
+        return max(1, self.fila_de_altura(y_mm, 0.0) -
+                   self.fila_de_altura(y_mm, float(z_mm)))
+
     def lateral_mm(self, u, v) -> np.ndarray:
         """Columna(s)+fila(s) -> desplazamiento lateral en mm (+derecha)."""
         u = np.asarray(u, dtype=np.float32)

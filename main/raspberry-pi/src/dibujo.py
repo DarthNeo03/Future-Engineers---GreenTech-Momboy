@@ -19,6 +19,10 @@ from .muro import PerfilMuro
 from .navegacion import (Decision, RECTO, PRE_GIRO, GIRO, GIRO_2T, ESCAPE,
                          GIRO_COLOR)
 
+# Color del rotulo del esquive, por objeto identificado (BGR).
+COLOR_OBSTACULO = {"rojo": (0, 0, 235), "verde": (0, 200, 0),
+                   "magenta": (200, 0, 200)}
+
 COLOR_ESTADO = {
     RECTO: (80, 220, 80),
     PRE_GIRO: (0, 200, 255),
@@ -149,7 +153,10 @@ def anotar(frame: np.ndarray,
 
     # --- esquive: por que lado va a pasar y si esta adelantando ----------
     if obst_info:
-        col_o = (0, 0, 235) if obst_info.get("color") == "rojo" else (0, 200, 0)
+        # El color del rotulo es el del objeto IDENTIFICADO, no el de la
+        # mascara que lo encontro: es lo unico que dice de un vistazo si el
+        # carro esta viendo un pilar o un delimitador del cajon.
+        col_o = COLOR_OBSTACULO.get(str(obst_info.get("color", "")), (0, 200, 0))
         if "objetivo_mm" in obst_info and "dist_mm" in obst_info:
             try:
                 u, v = geo.suelo_a_pixel(float(obst_info["objetivo_mm"]),
@@ -165,6 +172,13 @@ def anotar(frame: np.ndarray,
         if obst_info.get("lado"):
             etq = (f"{obst_info.get('color', '')} -> paso por su "
                    f"{obst_info['lado']}")
+            if "senal" in obst_info and not obst_info["senal"]:
+                # No es una señal de transito: el reglamento no manda lado.
+                etq += " (cajon: lado libre)"
+            elif obst_info.get("fijo"):
+                etq += " [FIJO]"
+            elif "votos" in obst_info:
+                etq += f" [votos {obst_info['votos']}]"
         if "adelantando_s" in obst_info:
             etq += f"  ADELANTANDO {obst_info['adelantando_s']:.1f}s (recto)"
         if "hueco_estrecho_mm" in obst_info:

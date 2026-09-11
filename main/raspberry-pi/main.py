@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-main.py — Piloto WRO 2026 (Open Challenge + deteccion de obstaculos).
+main.py — Piloto WRO 2026 (Open Challenge + Reto con Obstaculos).
 
     python3 main.py                     # camara + ESP32 + web
     python3 main.py --simulado          # en el PC, sin ESP32
@@ -8,8 +8,20 @@ main.py — Piloto WRO 2026 (Open Challenge + deteccion de obstaculos).
     python3 main.py --vmax 90           # tope de PWM solo para esta prueba
     python3 main.py --puerto COM7       # forzar el puerto serie
     python3 main.py --perfil pista_casa # perfil de parametros a cargar
+    python3 main.py --reto obstaculos   # RETO CON OBSTACULOS (otra carpeta)
     python3 main.py --sin-web           # COMPETENCIA: solo los pulsadores
     ./piloto.sh arrancar                # lo mismo, como demonio (SSH/VNC)
+
+CADA RETO, SU CARPETA. --reto elige de donde se leen y donde se guardan los
+parametros y los colores:
+
+    open        (por defecto)  config/params.json        config/colors.json
+    obstaculos                 config/obstaculos/...     config/obstaculos/...
+    estacionar                 config/estacionar/...     config/estacionar/...
+
+Asi, calibrar el reto de obstaculos NO puede tocar la calibracion del Open
+Challenge, que es la que ya funciona. Sin --reto todo queda exactamente como
+estaba.
 
 Web de depuracion: http://carrito.local:8080/ (o la IP de la Pi).
 
@@ -47,6 +59,9 @@ from src import servidor as srv_mod         # noqa: E402
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Piloto WRO 2026")
+    ap.add_argument("--reto", default="open",
+                    choices=("open", "obstaculos", "estacionar"),
+                    help="de que carpeta de config se lee y en cual se guarda")
     ap.add_argument("--perfil", default=None, help="perfil de parametros")
     ap.add_argument("--perfil-color", default=None, help="perfil de color")
     ap.add_argument("--imagen", default=None, help="foto fija en vez de camara")
@@ -56,22 +71,30 @@ def main() -> int:
     ap.add_argument("--puerto", default=None)
     args = ap.parse_args()
 
-    datos_params = params_mod.cargar()
+    ruta_params = params_mod.ruta_de_reto(args.reto)
+    ruta_colores = cc.ruta_de_reto(args.reto)
+    datos_params = params_mod.cargar(ruta_params)
     if args.perfil:
         datos_params["activo"] = args.perfil
-    datos_colores = cc.cargar()
+    datos_colores = cc.cargar(ruta_colores)
     if args.perfil_color:
         cc.fijar_activo(datos_colores, args.perfil_color)
 
     r = robot_mod.Robot(datos_params, datos_colores,
-                        simulado=args.simulado, fuente_imagen=args.imagen)
+                        simulado=args.simulado, fuente_imagen=args.imagen,
+                        reto=args.reto)
     if args.vmax is not None:
         r.p["limites"]["vmax"] = max(0, min(255, args.vmax))
     if args.puerto:
         r.p["enlace"]["puerto"] = args.puerto
 
-    print(f"[main] perfil params: {datos_params.get('activo')} | "
+    print(f"[main] reto: {args.reto} | config: {ruta_params.parent} | "
+          f"perfil params: {datos_params.get('activo')} | "
           f"colores: {r.perfil_color['nombre']} | vmax={r.p['limites']['vmax']}")
+    if args.reto != "open" and not bool(r.p["obstaculos"].get("activo")):
+        print("[main] AVISO: --reto " + args.reto + " pero obstaculos.activo "
+              "esta APAGADO: el carro no va a esquivar nada. Enciendelo en la "
+              "web o carga un perfil del reto.")
     r.iniciar()
 
     servidor = None

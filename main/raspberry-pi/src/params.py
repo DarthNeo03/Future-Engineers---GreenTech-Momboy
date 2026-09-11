@@ -23,6 +23,27 @@ from typing import Any, Dict, List, Optional
 RAIZ_PROYECTO = Path(__file__).resolve().parent.parent
 RUTA_PARAMS = RAIZ_PROYECTO / "config" / "params.json"
 MAX_PERFILES = 20
+
+# ===========================================================================
+# UN ARCHIVO POR RETO, EN SU PROPIA CARPETA
+# Los perfiles etiquetados por categoria conviven en el MISMO archivo, y eso
+# basta mientras se calibra en el taller. En competencia no: un guardado
+# distraido desde la web con el reto equivocado seleccionado se lleva por
+# delante la calibracion buena del otro reto, y no hay tiempo de rehacerla.
+# Por eso cada reto puede cargarse desde su propia carpeta (--reto en main.py).
+# El Open Challenge se queda EXACTAMENTE donde estaba: config/params.json.
+# ===========================================================================
+RUTAS_RETO = {
+    "open": RUTA_PARAMS,
+    "obstaculos": RAIZ_PROYECTO / "config" / "obstaculos" / "params.json",
+    "estacionar": RAIZ_PROYECTO / "config" / "estacionar" / "params.json",
+}
+
+
+def ruta_de_reto(reto: Optional[str] = None) -> Path:
+    """Archivo de parametros del reto pedido. Sin reto, el de siempre."""
+    return RUTAS_RETO.get(str(reto or "").strip(), RUTA_PARAMS)
+
 # ===========================================================================
 # TRES LINEAS DE CALIBRACION
 # Cada reto necesita ajustes distintos y no se pueden mezclar: para el Open
@@ -304,6 +325,27 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "memoria_ms": _p("int", 3000, "Cuanto dura el recuerdo del ultimo pilar desde que se dejo de ver.", 200, 15000),
         "limitar_por_lineas": _p("bool", True, "No hacer caso a los pilares que quedan MAS ALLA de la linea del piso: esos son de la seccion siguiente. Si se les hace caso desde la recta, el esquive pega el carro a la esquina interna justo antes de la curva y engancha el canto al girar. En cuanto se cruza la linea el filtro se levanta y esos pilares cuentan."),
         "margen_linea_mm": _p("float", 60.0, "Holgura sobre la distancia a la linea: un pilar justo antes de ella sigue contando. Subelo si descarta pilares que si son de esta recta.", 0.0, 400.0),
+
+        ### IDENTIFICAR EL PILAR ANTES DE DECIDIR EL LADO
+        ### El lado de paso es la unica decision del reto que, si sale mal,
+        ### TERMINA LA RONDA (Apendice A, seccion 5). Antes se decidia con la
+        ### etiqueta de color tal cual salia del detector y se recalculaba
+        ### entera en cada frame; estos parametros son los tres filtros que se
+        ### interponen ahora: el veto del magenta, la prueba de tamaño real y
+        ### la votacion que fija el lado.
+        "ignorar_magenta": _p("bool", True, "EL DELIMITADOR MAGENTA NO ES UNA SEÑAL. Los dos topes del cajon de estacionamiento son magenta, RGB(255,0,255) = tono 150 en OpenCV, y el rango de rojo suele empezar justo ahi: sin esto el carro ve un 'pilar rojo' donde hay un muro de 100 mm y trata de pasarlo por su derecha. Con esto encendido, toda deteccion roja o verde que caiga encima de una mancha magenta se descarta. Funciona aunque el rango de rojo siga abierto, asi que dejalo encendido incluso despues de calibrar."),
+        "solape_magenta": _p("float", 0.30, "Cuanto tiene que pisar una mancha magenta a la deteccion roja/verde para tumbarla, en fraccion de su area. 0.30 = con que le tape un tercio ya basta. Bajalo si algun delimitador se sigue colando como pilar; subelo si un pilar de verdad JUNTO al cajon se esta descartando.", 0.05, 1.0),
+        "esquivar_magenta": _p("bool", True, "Rodear tambien los delimitadores del cajon. Son muros fisicos de 200x20x100 mm que no se pueden mover (reglas 13.7 a 13.9), pero NO son señales: el reglamento no manda lado, asi que se pasan por donde menos se cruce la trayectoria. Apagalo solo si el magenta esta mal calibrado y produce fantasmas."),
+        "verificar_tamano": _p("bool", True, "LA PRUEBA FISICA. Una señal mide 50x50x100 mm (regla 13.1): sabiendo a que distancia esta, la geometria dice cuanto TIENE que medir en pixeles. Lo que no cuadra no es un pilar y se descarta: sombras rojizas del zocalo, reflejos en el tapete, trozos de pared. No depende de la calibracion de color, solo de que la geometria de la camara este bien medida — si esa esta mal, esto descarta pilares buenos, asi que calibra fy/fx antes de encenderlo."),
+        "pilar_ancho_min_mm": _p("float", 25.0, "Ancho real minimo (mm) para creerse un pilar. El pilar mide 50; por debajo de la mitad es ruido.", 5.0, 200.0),
+        "pilar_ancho_max_mm": _p("float", 120.0, "Ancho real maximo (mm). El pilar mide 50 y el delimitador del cajon 200: cualquier tope entre medias los separa. 120 deja sitio a dos pilares pegados vistos como uno.", 30.0, 400.0),
+        "pilar_alto_mm": _p("float", 100.0, "Alto real de la señal, en mm (regla 13.1). Es lo que se compara contra el alto medido en pixeles.", 40.0, 200.0),
+        "pilar_alto_tol": _p("float", 0.55, "Tolerancia del alto esperado, en fraccion. 0.55 = se acepta entre el 45 % y el 155 % de lo que dice la geometria. Generosa a proposito: la base del pilar se ve mal de lejos y el contraste se come filas. Los pilares recortados por el canto de la imagen no pasan esta prueba, se dan por buenos.", 0.1, 0.95),
+        "lat_max_mm": _p("float", 900.0, "Desplazamiento lateral maximo (mm) para que un pilar cuente como de este carril. Mas alla esta al otro lado de la pista y no es problema de ahora.", 300.0, 2000.0),
+        "votos_color": _p("int", 3, "Frames seguidos en que el mismo color tiene que ganar antes de CLAVAR el lado de paso de ese pilar. Con 1 el lado puede cambiar en cualquier frame (que es como se cruzaba de lado a lado); con 3 hace falta un error sostenido para equivocarse. Mientras tanto ya se esquiva con el color que va ganando: no se espera parado.", 1, 10),
+        "fijar_lado": _p("bool", True, "Una vez decidido el lado de un pilar, NO cambiarlo mientras se le siga viendo. Es el arreglo del sintoma clasico: el detector falla un frame de cada cinco, el lado se recalcula entero en cada uno y la media de ir a la derecha y a la izquierda es ir de frente contra el pilar. Apagalo solo para depurar la clasificacion."),
+        "emparejar_mm": _p("float", 260.0, "Radio (mm, sobre el plano del suelo) para dar por el MISMO pilar el que se ve ahora y el que se veia en el frame anterior. Demasiado pequeño y cada frame estrena pilar (los votos nunca se acumulan); demasiado grande y dos pilares vecinos se funden en uno.", 50.0, 800.0),
+        "pista_ms": _p("int", 700, "Cuanto sobrevive el seguimiento de un pilar sin volver a verlo. Cubre los frames sueltos en que la mascara se pierde. Pasado esto se olvida y el siguiente que aparezca vuelve a votar desde cero.", 100, 4000),
     },
 
     "manual": {

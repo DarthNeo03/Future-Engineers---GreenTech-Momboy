@@ -1,18 +1,57 @@
 """
-obstaculos.py — Esquive de las señales de transito.
+obstaculos.py — Identificar las señales de transito y pasarlas por el lado que
+manda el reglamento.
 
 REGLA DEL JUEGO (reglamento 2026, punto 9.19)
 El pilar ROJO se pasa por su DERECHA; el VERDE por su IZQUIERDA. "Derecha" e
-"izquierda" son las del VEHICULO segun avanza, no las del tapete: el punto 5
-lo dice como "el lado del CARRIL por el que debe circular". Por eso NO hay que
-invertir nada al cambiar de sentido — el mismo pilar fisico se pasa por un
-lado distinto en horario que en antihorario, y eso ya sale solo de trabajar en
-el marco del carro. Aun asi queda el interruptor `invertir_en_antihorario`
-por si en tu pista se interpreta al reves: apagado por defecto.
+"izquierda" son las del VEHICULO segun avanza, no las del tapete: el Apendice
+A lo repite para la conduccion de atras hacia adelante, asi que es el marco del
+carro. Por eso NO hay que invertir nada al cambiar de sentido — el mismo pilar
+fisico se pasa por un lado distinto en horario que en antihorario, y eso ya
+sale solo de trabajar en el marco del carro. Aun asi queda el interruptor
+`invertir_en_antihorario` por si en tu pista se interpreta al reves: apagado
+por defecto.
 
 Matiz que se olvida: "pasar por la derecha del pilar" NO es "girar a la
 derecha". Si el pilar esta a la izquierda del carro, el punto de paso puede
 quedar a la izquierda del centro de la imagen.
+
+=========================================================================
+POR QUE EL LADO SALIA MAL (lo que arregla este archivo)
+=========================================================================
+El esquive de antes decidia el lado con una sola linea:
+
+    lado = +1 si color == "rojo" si no -1
+
+...y volvia a decidirlo DESDE CERO en cada frame, creyendose la etiqueta de
+color tal cual salia del detector. Eso falla por tres sitios a la vez, y el
+sintoma en pista es siempre el mismo: el carro esquiva, pero por el lado que
+le da la gana.
+
+1. EL MAGENTA SE CUELA COMO ROJO. Los delimitadores del cajon de
+   estacionamiento son magenta, RGB(255,0,255) = tono 150 en la escala de
+   OpenCV (0-179). El rango de rojo de la calibracion empezaba justo en 150,
+   asi que TODO delimitador magenta se veia tambien como un pilar rojo y el
+   carro intentaba pasarlo por su derecha. Y el magenta no es una señal: es un
+   muro de 100 mm que no se puede mover (reglas 13.7 a 13.9). Aqui se vetan
+   las detecciones rojas/verdes que caen encima de una mancha magenta, asi que
+   el arreglo funciona AUNQUE el rango de rojo siga abierto.
+
+2. CUALQUIER MANCHA DEL COLOR VALIA COMO PILAR. Una sombra rojiza en el
+   zocalo, el reflejo de un pilar en el suelo o un trozo de pared con V baja
+   entraban como "pilar" si pasaban los filtros de area y aspecto, que son
+   filtros de IMAGEN y no saben de tamaños reales. Una señal mide 50x50x100 mm
+   (regla 13.1): sabiendo a que distancia esta, se sabe cuanto TIENE que medir
+   en pixeles. Lo que no mide eso, no es un pilar.
+
+3. EL LADO PARPADEABA. Aunque la clasificacion falle solo en uno de cada
+   cinco frames, el lado se recalculaba entero en cada uno: un frame el pilar
+   era rojo y el objetivo se iba a la derecha, al siguiente era magenta-leido-
+   como-verde y se iba a la izquierda. La media de eso es ir de frente contra
+   el pilar. Ahora cada pilar se SIGUE entre frames, el color se decide por
+   VOTACION y, una vez decidido, el lado QUEDA FIJO hasta que el pilar se
+   pierde: pasar por el lado incorrecto termina la ronda (Apendice A, 5), asi
+   que esta es la decision que menos derecho tiene a cambiar de opinion.
 
 COMO SE PASA UN PILAR, EN TRES ACTOS
   1. APROXIMACION. Se apunta a un punto al costado correcto del pilar,
@@ -41,11 +80,62 @@ from __future__ import annotations
 
 import math
 import time
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import vision
 from .geometria import Geometria
 from .muro import PerfilMuro
+
+# Lado por el que el VEHICULO pasa cada señal (regla 9.19).
+#   +1 = el carro pasa por la DERECHA del pilar
+#   -1 = el carro pasa por su IZQUIERDA
+# El magenta NO esta aqui a proposito: no es una señal de transito y no manda
+# ningun lado. Se rodea por donde haya sitio.
+LADO_REGLAMENTO: Dict[str, int] = {"rojo": +1, "verde": -1}
+SENALES = ("rojo", "verde")
+
+
+@dataclass
+class Candidato:
+    """Una mancha de color que ya paso el filtro de "esto puede ser un pilar"."""
+    color: str
+    det: vision.Deteccion
+    dist: float          # mm desde el MORRO
+    dist_cam: float      # mm desde la lente (la que usa la geometria)
+    lat: float           # mm, + a la derecha del eje del carro
+    ancho_mm: float
+
+
+@dataclass
+class Pista:
+    """Un pilar SEGUIDO entre frames.
+
+    Existe para que el color -y por tanto el lado- no se vuelva a votar desde
+    cero en cada imagen. Mientras el mismo pilar se siga viendo, los votos se
+    acumulan; cuando hay bastantes, el lado se fija y ya no se mueve.
+    """
+    id: int
+    votos: Dict[str, int] = field(default_factory=dict)
+    color: str = ""
+    lat: float = 0.0
+    dist: float = 0.0
+    t: float = 0.0
+    vistas: int = 0
+    lado: int = 0
+    fijo: bool = False
+
+    def votar(self, color: str) -> None:
+        self.votos[color] = self.votos.get(color, 0) + 1
+        self.color = max(self.votos.items(), key=lambda kv: kv[1])[0]
+
+    @property
+    def apoyo(self) -> int:
+        return self.votos.get(self.color, 0)
+
+    @property
+    def es_senal(self) -> bool:
+        return self.color in LADO_REGLAMENTO
 
 
 class Esquivador:
@@ -59,7 +149,10 @@ class Esquivador:
         self._t_prev = 0.0
         self._comp_hasta = 0.0     # hasta cuando se mantiene el paso a ciegas
         self._comp_color = ""
-        self._comp_lado = 0        # +1 el pilar quedo a la izquierda del carro
+        self._comp_lado = 0        # +1 el carro pasa por la derecha del pilar
+        # --- seguimiento de pilares ---------------------------------------
+        self._pistas: List[Pista] = []
+        self._id_siguiente = 1
         # --- memoria del ultimo pilar (obstaculos.recordar_lado) -----------
         self.mem_color = ""        # que era
         self.mem_lado = 0          # +1 se pasaba por su derecha
@@ -91,7 +184,194 @@ class Esquivador:
                 "lat_mm": round(self.mem_lat),
                 "edad_s": round(time.time() - self.mem_t, 1) if self.mem_t else None}
 
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # IDENTIFICACION: que es un pilar y que no
+    # ==================================================================
+    def _medidas(self, d: vision.Deteccion, dist_cam: float,
+                 geo: Geometria) -> Tuple[float, int]:
+        """(ancho real en mm, alto en px que DEBERIA tener un pilar ahi).
+
+        El ancho se mide sobre el plano del suelo en la fila de la BASE, que es
+        donde el objeto toca el tapete y donde la proyeccion es valida. El alto
+        esperado sale de la geometria: un pilar de 100 mm a 1 m se ve de un
+        tamaño y solo de uno.
+        """
+        y = float(max(1, min(geo.H - 1, d.base_y)))
+        izq = float(geo.lateral_mm(float(d.x), y))
+        der = float(geo.lateral_mm(float(d.x + d.w), y))
+        alto_esp = geo.alto_esperado_px(
+            max(1.0, dist_cam), float(self.cfg.get("pilar_alto_mm", 100.0)))
+        return abs(der - izq), alto_esp
+
+    def _es_pilar(self, d: vision.Deteccion, dist_cam: float,
+                  geo: Geometria) -> Tuple[bool, float]:
+        """¿Esta mancha puede ser una señal de transito de 50x50x100 mm?
+
+        Es una prueba FISICA, no de imagen: no depende de como este calibrado
+        el color, solo de la geometria de la camara. Por eso caza tanto al
+        delimitador magenta (mide 200 mm de ancho, cuatro veces un pilar) como
+        a las manchas de color en la pared o en el zocalo, que a su distancia
+        saldrian enanas o enormes.
+        """
+        ancho_mm, alto_esp = self._medidas(d, dist_cam, geo)
+        if not bool(self.cfg.get("verificar_tamano", True)):
+            return True, ancho_mm
+
+        # Recortado por el canto de la imagen: la medida ya no es la del objeto
+        # entero, asi que no se puede usar para descartarlo. Pasa siempre con
+        # el pilar que ya se tiene encima (se sale por abajo del cuadro).
+        margen = 3
+        cortado_lados = d.x <= margen or (d.x + d.w) >= (geo.W - margen)
+        cortado_abajo = d.base_y >= (geo.H - margen)
+        cortado_arriba = d.y <= margen
+
+        if not cortado_lados:
+            lo = float(self.cfg.get("pilar_ancho_min_mm", 25.0))
+            hi = float(self.cfg.get("pilar_ancho_max_mm", 120.0))
+            if not (lo <= ancho_mm <= hi):
+                return False, ancho_mm
+
+        if not (cortado_abajo or cortado_arriba):
+            tol = float(self.cfg.get("pilar_alto_tol", 0.55))
+            if not (alto_esp * (1.0 - tol) <= d.h <= alto_esp * (1.0 + tol)):
+                return False, ancho_mm
+
+        return True, ancho_mm
+
+    @staticmethod
+    def _solape(d: vision.Deteccion, otras: List[vision.Deteccion]) -> float:
+        """Fraccion del area de 'd' que tapan las cajas de 'otras'.
+
+        Aproximacion barata a proposito (se suman los solapes en vez de unir
+        las cajas): las manchas magenta de un mismo delimitador no se pisan
+        entre ellas, y si la suma se pasara de 1.0 igualmente quedaria muy por
+        encima del umbral, que es lo unico que se mira.
+        """
+        area = float(max(1, d.w * d.h))
+        tapado = 0.0
+        for o in otras:
+            ix = max(0, min(d.x + d.w, o.x + o.w) - max(d.x, o.x))
+            iy = max(0, min(d.y + d.h, o.y + o.h) - max(d.y, o.y))
+            tapado += ix * iy
+        return tapado / area
+
+    def _candidatos(self, dets: Dict[str, List[vision.Deteccion]],
+                    geo: Geometria, morro: float, activar: float,
+                    limite: Optional[float]) -> List[Candidato]:
+        """De todas las manchas de color, las que de verdad pueden ser un
+        obstaculo de ESTA seccion, ordenadas de la mas cercana a la mas lejana."""
+        magentas = list(dets.get("magenta", []))
+        veto = bool(self.cfg.get("ignorar_magenta", True)) and bool(magentas)
+        umbral = float(self.cfg.get("solape_magenta", 0.30))
+        lat_max = float(self.cfg.get("lat_max_mm", 900.0))
+        mirar = list(SENALES)
+        if bool(self.cfg.get("esquivar_magenta", True)):
+            mirar.append("magenta")
+
+        fuera = {"tras_linea": 0, "fuera_tamano": 0, "veto_magenta": 0,
+                 "otro_carril": 0}
+        salida: List[Candidato] = []
+        for color in mirar:
+            for d in dets.get(color, []):
+                dist_cam = float(geo.fila_a_distancia(d.base_y))
+                dist = dist_cam - morro
+                if dist <= 0 or dist > activar:
+                    continue
+                if limite is not None and dist > limite:
+                    fuera["tras_linea"] += 1   # detras de la linea: otra seccion
+                    continue
+                lat = float(geo.lateral_mm(d.cx, d.base_y))
+                if abs(lat) > lat_max:         # muy afuera: otro carril
+                    fuera["otro_carril"] += 1
+                    continue
+                if color in SENALES:
+                    # (1) EL VETO DEL MAGENTA. Una señal nunca esta encima de
+                    #     un delimitador del cajon; si lo esta, es el propio
+                    #     delimitador leido con el rango de rojo abierto.
+                    if veto and self._solape(d, magentas) >= umbral:
+                        fuera["veto_magenta"] += 1
+                        continue
+                    # (2) LA PRUEBA FISICA DE TAMAÑO.
+                    vale, ancho_mm = self._es_pilar(d, dist_cam, geo)
+                    if not vale:
+                        fuera["fuera_tamano"] += 1
+                        continue
+                else:
+                    ancho_mm, _ = self._medidas(d, dist_cam, geo)
+                salida.append(Candidato(color=color, det=d, dist=dist,
+                                        dist_cam=dist_cam, lat=lat,
+                                        ancho_mm=ancho_mm))
+        for k, v in fuera.items():
+            if v:
+                self.info[k] = v
+        salida.sort(key=lambda c: c.dist)
+        return salida
+
+    # ==================================================================
+    # SEGUIMIENTO: el lado se decide UNA vez por pilar
+    # ==================================================================
+    def _seguir(self, cands: List[Candidato],
+                ahora: float) -> List[Tuple[Pista, Candidato]]:
+        """Empareja cada candidato con el pilar que ya se venia siguiendo.
+
+        Asociacion por cercania en el plano del suelo: el carro avanza unos
+        pocos centimetros entre frames, asi que el mismo pilar reaparece casi
+        en el mismo sitio. 'emparejar_mm' es el radio de busqueda; por encima
+        de el se da por un pilar nuevo.
+        """
+        caduca = float(self.cfg.get("pista_ms", 700)) / 1000.0
+        self._pistas = [p for p in self._pistas if (ahora - p.t) <= caduca]
+
+        radio = float(self.cfg.get("emparejar_mm", 260.0))
+        libres = list(self._pistas)
+        parejas: List[Tuple[Pista, Candidato]] = []
+        for c in cands:
+            mejor, mejor_d = None, radio
+            for p in libres:
+                sep = math.hypot(p.lat - c.lat, p.dist - c.dist)
+                if sep < mejor_d:
+                    mejor, mejor_d = p, sep
+            if mejor is None:
+                mejor = Pista(id=self._id_siguiente)
+                self._id_siguiente += 1
+                self._pistas.append(mejor)
+            else:
+                libres.remove(mejor)
+            mejor.votar(c.color)
+            mejor.lat, mejor.dist, mejor.t = c.lat, c.dist, ahora
+            mejor.vistas += 1
+            parejas.append((mejor, c))
+        return parejas
+
+    def _lado_de(self, p: Pista, sentido: int) -> int:
+        """El lado por el que se pasa este pilar. Una vez fijado no cambia.
+
+        Mientras no haya votos suficientes se usa el lado del color que va
+        ganando -hay que esquivar desde ya, no se puede esperar-, pero no se
+        da por definitivo. En cuanto el mismo color gana 'votos_color' frames,
+        el lado queda CLAVADO: pasar por el lado incorrecto termina la ronda,
+        y un parpadeo del detector no es motivo para cambiar de opinion.
+        """
+        if p.fijo and p.lado:
+            return p.lado
+
+        if p.es_senal:
+            lado = LADO_REGLAMENTO[p.color]
+            if sentido < 0 and bool(self.cfg.get("invertir_en_antihorario", False)):
+                lado = -lado
+        else:
+            # Magenta: el reglamento no manda lado (no es una señal). Se rodea
+            # por el lado que menos cruza la trayectoria: si esta a la
+            # izquierda del carro, se pasa por su derecha.
+            lado = 1 if p.lat <= 0 else -1
+
+        p.lado = lado
+        if (p.apoyo >= int(self.cfg.get("votos_color", 3))
+                and bool(self.cfg.get("fijar_lado", True))):
+            p.fijo = True
+        return lado
+
+    # ==================================================================
     def paso(self, dets: Dict[str, List[vision.Deteccion]],
              perfil: Optional[PerfilMuro], geo: Geometria,
              dist_lineas: Optional[Dict[str, float]] = None,
@@ -99,6 +379,9 @@ class Esquivador:
              vel_mm_s: float = 0.0) -> Tuple[float, float]:
         """Devuelve (direccion_deseada_pct, peso 0..1).
 
+        dets:        detecciones por color. Necesita 'rojo' y 'verde', y usa
+                     'magenta' si esta: para vetar falsos pilares y para rodear
+                     los delimitadores del cajon de estacionamiento.
         dist_lineas: distancia a las lineas del piso que se ven delante.
         en_esquina:  ya dentro de la curva; el limite de seccion se levanta.
         sentido:     +1 horario, -1 antihorario (solo lo usa el interruptor
@@ -112,6 +395,7 @@ class Esquivador:
         self.info = {}
         if not bool(self.cfg.get("activo", False)):
             self._comp_hasta = 0.0
+            self._pistas.clear()
             return 0.0, 0.0
 
         activar = float(self.cfg.get("activar_desde_mm", 1600.0))
@@ -126,39 +410,26 @@ class Esquivador:
             limite = cerca + float(self.cfg.get("margen_linea_mm", 60.0))
             self.info["limite_mm"] = round(limite)
 
-        # --- pilar mas cercano dentro del alcance --------------------------
-        descartados = 0
-        mejor = None          # (dist, lat, color, deteccion)
-        for color in ("rojo", "verde"):
-            for d in dets.get(color, []):
-                dist = float(geo.fila_a_distancia(d.base_y)) - morro
-                if dist <= 0 or dist > activar:
-                    continue
-                if limite is not None and dist > limite:
-                    descartados += 1     # esta detras de la linea: otra seccion
-                    continue
-                lat = float(geo.lateral_mm(d.cx, d.base_y))
-                if abs(lat) > 900:                 # muy afuera: otro carril
-                    continue
-                if mejor is None or dist < mejor[0]:
-                    mejor = (dist, lat, color, d)
-        if descartados:
-            self.info["tras_linea"] = descartados
+        # --- identificar y seguir ------------------------------------------
+        cands = self._candidatos(dets, geo, morro, activar, limite)
+        parejas = self._seguir(cands, ahora)
 
         # --- no se ve ninguno: adelantando, o hay que ir a buscarlo ---------
-        if mejor is None:
+        if not parejas:
             return self._sin_pilar(ahora, dt)
 
-        dist, lat, color, d_mejor = mejor
-
-        # --- por que lado hay que pasarlo ----------------------------------
-        # lado = +1 -> el carro pasa por la DERECHA del pilar (rojo)
-        lado = 1 if color == "rojo" else -1
-        if sentido < 0 and bool(self.cfg.get("invertir_en_antihorario", False)):
-            lado = -lado
+        pista, cand = parejas[0]          # el mas cercano es el que manda
+        dist, lat, d_mejor = cand.dist, cand.lat, cand.det
+        color = pista.color
+        lado = self._lado_de(pista, sentido)
 
         semi_carro = float(geo.cfg.get("ancho_carro_mm", 200.0)) / 2.0
         semi_pilar = float(self.cfg.get("semi_pilar_mm", 25.0))
+        if not pista.es_senal:
+            # El delimitador del cajon mide 200 mm de largo y el centroide cae
+            # en su mitad: el despeje se cuenta desde su CANTO, no desde el
+            # centro, o el carro le pasaria por encima creyendo que sobra sitio.
+            semi_pilar = max(semi_pilar, cand.ancho_mm / 2.0)
         # Despeje COMODO (el que se pide) y MINIMO (el que fisicamente hace
         # falta para no tocarlo). Si el hueco no da para el comodo se aprieta
         # hacia el minimo, pero jamas se cambia de lado.
@@ -207,7 +478,10 @@ class Esquivador:
         self.info.update({"color": color, "dist_mm": round(dist),
                           "lat_mm": round(lat), "objetivo_mm": round(objetivo),
                           "lado": "derecha" if lado > 0 else "izquierda",
-                          "modo": modo,
+                          "senal": pista.es_senal, "id": pista.id,
+                          "votos": pista.apoyo, "fijo": pista.fijo,
+                          "ancho_mm": round(cand.ancho_mm),
+                          "vistos": len(parejas), "modo": modo,
                           "peso": round(peso, 2), "dir": round(direccion),
                           "compromiso_s": round(seg, 2)})
         return direccion, peso

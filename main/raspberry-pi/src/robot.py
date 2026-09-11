@@ -41,9 +41,17 @@ from .obstaculos import Esquivador
 
 class Robot:
     def __init__(self, datos_params: Dict[str, Any], datos_colores: Dict[str, Any],
-                 simulado: bool = False, fuente_imagen: Optional[str] = None):
+                 simulado: bool = False, fuente_imagen: Optional[str] = None,
+                 reto: str = "open"):
         self.datos_params = datos_params
         self.datos_colores = datos_colores
+        # De donde salieron estos archivos y donde hay que volver a guardarlos.
+        # Cada reto tiene su carpeta (ver params.RUTAS_RETO): asi, guardar un
+        # perfil desde la web con el reto de obstaculos cargado NO puede tocar
+        # la calibracion del Open Challenge, que es la que ya funciona.
+        self.reto = params_mod.categoria_valida(reto)
+        self.ruta_params = params_mod.ruta_de_reto(self.reto)
+        self.ruta_colores = cc.ruta_de_reto(self.reto)
         self.p: Dict[str, Dict[str, Any]] = params_mod.obtener(datos_params)["valores"]
         self.perfil_color = cc.obtener(datos_colores)
         self.simulado = simulado
@@ -259,7 +267,7 @@ class Robot:
                               categoria: str = "") -> None:
         cat = params_mod.categoria_valida(categoria or self.categoria)
         params_mod.guardar_perfil(self.datos_params, nombre, self.p, cat)
-        params_mod.guardar_archivo(self.datos_params)
+        params_mod.guardar_archivo(self.datos_params, self.ruta_params)
         self.categoria = cat
         self.log(f"[params] perfil '{nombre}' guardado en '{cat}'")
 
@@ -272,7 +280,7 @@ class Robot:
                 self.p[g].update(copy.deepcopy(claves))
         self.datos_params["activo"] = perfil["nombre"]
         self.categoria = params_mod.categoria_valida(perfil.get("categoria"))
-        params_mod.guardar_archivo(self.datos_params)
+        params_mod.guardar_archivo(self.datos_params, self.ruta_params)
         self.enlace.fijar_vmax(int(self.p["limites"]["vmax"]))
         self._cfg_esp_firma = ""
         self.log(f"[params] perfil '{perfil['nombre']}' cargado")
@@ -285,13 +293,13 @@ class Robot:
                           camara=self.perfil_color.get("camara"),
                           notas="calibrado desde la web",
                           categoria=cat)
-        cc.guardar(self.datos_colores)
+        cc.guardar(self.datos_colores, self.ruta_colores)
         self.perfil_color = cc.obtener(self.datos_colores, nombre)
         self.log(f"[colores] perfil '{nombre}' guardado")
 
     def cargar_perfil_colores(self, nombre: str) -> None:
         cc.fijar_activo(self.datos_colores, nombre)
-        cc.guardar(self.datos_colores)
+        cc.guardar(self.datos_colores, self.ruta_colores)
         self.perfil_color = copy.deepcopy(cc.obtener(self.datos_colores, nombre))
         self.vision.actualizar(self.perfil_color["colores"])
         self.log(f"[colores] perfil '{nombre}' activo")
@@ -432,10 +440,16 @@ class Robot:
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
             # --- vision ---------------------------------------------------
-            masks = self.vision.solo_mascaras(hsv, ["blanco", "negro", "magenta"])
+            # Con obstaculos encendido el magenta se DETECTA (cajas), no solo
+            # se enmascara: el esquive lo necesita para vetar los delimitadores
+            # del cajon que el rango de rojo lee como pilares, y para rodearlos.
+            colores_muro = ["blanco", "negro"]
             quiere_det = ["naranja", "azul"]
             if bool(self.p["obstaculos"].get("activo")):
-                quiere_det += ["rojo", "verde"]
+                quiere_det += ["rojo", "verde", "magenta"]
+            else:
+                colores_muro.append("magenta")
+            masks = self.vision.solo_mascaras(hsv, colores_muro)
             dets, masks_det = self.vision.detectar_en(hsv, quiere_det)
             masks.update(masks_det)
 
@@ -653,6 +667,7 @@ class Robot:
             "memoria_pilar": (self.esquivador.memoria()
                               if self.esquivador.memoria_viva(time.time()) else None),
             "categoria": self.categoria,
+            "reto": self.reto,
             "botones": self.botones.estado(),
             "enlace": self._estado_enlace(),
             "geometria": self.geo.estado(),

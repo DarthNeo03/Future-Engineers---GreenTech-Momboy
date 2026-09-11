@@ -1,4 +1,4 @@
-# Piloto WRO 2026 — Open Challenge + deteccion de obstaculos
+# Piloto WRO 2026 — Open Challenge + Reto con Obstaculos
 
 Sistema nuevo del carro (GreenTech Momboy). Sustituye a `reconizer` tomando lo
 que funcionaba (navegacion centrada, calibracion por clic, enlace binario con
@@ -22,8 +22,9 @@ el estado del pulsador de competencia a la Pi).
 ```bash
 python3 -m venv .venv && source .venv/bin/activate    # en Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python tools/selftest.py            # 323 pruebas, sin hardware
-python main.py                      # camara + ESP32 + web
+python tools/selftest.py            # 387 pruebas, sin hardware
+python main.py                      # camara + ESP32 + web (Open Challenge)
+python main.py --reto obstaculos    # Reto con Obstaculos (config/obstaculos/)
 python main.py --simulado           # sin ESP32 (pruebas en el PC)
 python main.py --imagen foto.jpg    # sin camara, sobre una foto
 python main.py --vmax 90            # tope de PWM solo para esta prueba
@@ -81,7 +82,8 @@ carro; el programa se lanza como demonio con `./piloto.sh arrancar`. Ver
    reglamento y va por delante de todo: `carrera.autostop` apaga la parada por
    vueltas para pruebas de resistencia, **nunca el cronometro**.
 
-**Obstaculos (basico, apagado por defecto)**: `obstaculos.activo` en la web.
+**Obstaculos**: `python3 main.py --reto obstaculos` (o `obstaculos.activo` en
+la web). Ver *Identificar el pilar ANTES de decidir el lado*.
 Pilar rojo se pasa por la derecha, verde por la izquierda; el punto de paso se
 calcula en mm reales y se recorta al hueco libre del perfil.
 
@@ -647,6 +649,27 @@ afinar el reto de obstaculos no toca la calibracion buena del Open. El
 selector esta arriba de cada lista de perfiles; lo que guardes va a la linea
 que tengas puesta. Los perfiles que ya existian quedaron en "Open Challenge".
 
+### ...y una CARPETA por reto
+
+Las etiquetas bastan para calibrar en el taller, pero comparten archivo: un
+guardado distraido desde la web con el reto equivocado seleccionado se lleva
+por delante la calibracion buena del Open Challenge, y en competencia no hay
+tiempo de rehacerla. Por eso cada reto puede tener ademas su propia carpeta:
+
+| `--reto` | parametros | colores |
+|---|---|---|
+| `open` (por defecto) | `config/params.json` | `config/colors.json` |
+| `obstaculos` | `config/obstaculos/params.json` | `config/obstaculos/colors.json` |
+| `estacionar` | `config/estacionar/params.json` | `config/estacionar/colors.json` |
+
+```bash
+python3 tools/crear_config_obstaculos.py   # siembra config/obstaculos/
+python3 main.py --reto obstaculos          # y el carro arranca con esa
+```
+
+Lo que guardes desde la web va a la carpeta del reto con el que arrancaste.
+Sin `--reto`, todo queda exactamente como estaba.
+
 ## El esquive: tres cosas que estaban mal
 
 **1. El lado de paso se invertia** (se veia sobre todo en antihorario, pero no
@@ -683,6 +706,60 @@ adelantamiento. En el video se ve la linea del canto objetivo y la flecha.
 guarda color, por que lado habia que pasarlo, donde estaba y a que distancia,
 durante `memoria_ms`. Sirve en la curva, cuando el pilar sale de cuadro al
 girar y el carro se olvidaba de que lo tenia al lado. Se ve en la telemetria.
+
+## Identificar el pilar ANTES de decidir el lado
+
+El lado de paso es la unica decision del reto que, si sale mal, **termina la
+ronda** (Apendice A, seccion 5). Y se decidia con una linea:
+
+```python
+lado = +1 si color == "rojo" si no -1
+```
+
+...recalculada desde cero en cada frame, creyendose la etiqueta del detector
+tal cual. Falla por tres sitios a la vez, y el sintoma en pista siempre es el
+mismo: **el carro esquiva, pero por el lado que le da la gana**.
+
+**1. El magenta se colaba como rojo.** Los dos topes del cajon de
+estacionamiento son magenta, RGB(255,0,255) = **tono 150** en la escala de
+OpenCV. El rango de rojo calibrado empezaba **justo en 150**, asi que cada
+delimitador se veia tambien como pilar rojo y el carro intentaba pasarlo por su
+derecha. Y no es una señal: es un muro de 100 mm que no se puede mover (reglas
+13.7 a 13.9). Ahora toda deteccion roja o verde que caiga encima de una mancha
+magenta se descarta (`ignorar_magenta`, `solape_magenta`), asi que funciona
+**aunque el rango de rojo siga abierto**. El magenta pasa a rodearse como lo
+que es: un obstaculo sin lado obligatorio (`esquivar_magenta`).
+
+**2. Cualquier mancha del color valia como pilar.** Los filtros de area,
+llenado y aspecto son de IMAGEN: no saben de tamaños reales. Una sombra rojiza
+del zocalo, un reflejo en el tapete o un trozo de pared los pasaba. Una señal
+mide **50x50x100 mm** (regla 13.1): sabiendo a que distancia esta, la geometria
+dice cuanto TIENE que medir en pixeles, y lo que no cuadra no es un pilar
+(`verificar_tamano`). Esto es lo que caza al delimitador aunque el magenta este
+mal calibrado: mide 200 mm de ancho, cuatro veces un pilar. Depende de que la
+geometria este bien medida (`fy`, `fx`, altura, inclinacion): calibrala antes.
+Los objetos recortados por el canto de la imagen no se descartan, que de cerca
+siempre se salen del cuadro.
+
+**3. El lado parpadeaba.** Aunque el detector falle solo uno de cada cinco
+frames, el lado se recalculaba entero en cada uno: un frame rojo (objetivo a la
+derecha), el siguiente magenta-leido-como-verde (objetivo a la izquierda). La
+media de eso es ir de frente contra el pilar. Ahora cada pilar **se sigue entre
+frames** (`emparejar_mm`, `pista_ms`), el color se decide por **votacion**
+(`votos_color`) y, en cuanto gana, el lado queda **clavado** (`fijar_lado`)
+hasta que el pilar se pierde. Mientras tanto ya se esquiva con el color que va
+ganando: no se espera parado.
+
+En el video, el rotulo dice el objeto identificado y en que punto esta la
+decision: `[votos 2]` mientras se vota, `[FIJO]` cuando ya no cambia, y
+`(cajon: lado libre)` si es un delimitador magenta.
+
+```bash
+python3 tools/selftest_obstaculos.py    # el lado, sin camara ni pista
+```
+
+Comprueba los tres fallos de arriba con detecciones sinteticas proyectadas con
+la geometria real. Va incluido en `tools/selftest.py`.
 
 ## Los pilares de la seccion siguiente no son de esta recta
 
@@ -1103,7 +1180,8 @@ Detalles que importan:
 piloto/
 ├── main.py                 arranque; --simulado, --imagen, --vmax, --puerto, --sin-web
 ├── piloto.sh               demonio sin web (arrancar/parar/estado/log; SSH y VNC)
-├── config/                 params.json y colors.json (se crean solos; 5 perfiles c/u)
+├── config/                 params.json y colors.json (se crean solos; 20 perfiles c/u)
+│   └── obstaculos/         los del Reto con Obstaculos (main.py --reto obstaculos)
 ├── src/
 │   ├── geometria.py        pixeles <-> mm sobre el suelo; horizonte; corredor
 │   ├── muro.py             perfil robusto + rectas clasificadas + esquinas
@@ -1113,7 +1191,7 @@ piloto/
 │   ├── lineas.py           sentido / esquinas / vueltas + zona; modo par o por color
 │   ├── navegacion.py       RECTO / PRE_GIRO / GIRO / GIRO_2T / GIRO_COLOR / ESCAPE
 │   ├── carrera.py          director de la ronda (3 vueltas y parada en meta)
-│   ├── obstaculos.py       esquive rojo/verde con compromiso de paso
+│   ├── obstaculos.py       identifica la señal (rojo/verde/magenta) y el lado
 │   ├── protocolo.py        trama binaria v2 (gemela de protocolo.h)
 │   ├── enlace.py           hilo serie; sensores del ESP32 -> eventos
 │   ├── botones.py          el boton del ESP32: corta/larga -> armar/desarmar
@@ -1121,7 +1199,10 @@ piloto/
 │   ├── dibujo.py           overlay del video
 │   ├── servidor.py         http.server + MJPEG
 │   └── web/index.html      la interfaz
-└── tools/selftest.py       323 pruebas sin hardware
+└── tools/
+    ├── selftest.py         387 pruebas sin hardware
+    ├── selftest_obstaculos.py  el lado de paso, con pilares sinteticos
+    └── crear_config_obstaculos.py  siembra config/obstaculos/
 ```
 
 ## Notas practicas (heredadas a golpes)
