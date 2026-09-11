@@ -1,7 +1,3 @@
-<<<<<<< HEAD
-<<<<<<< HEAD
-# Future-Engineers---GreenTech-Momboy
-=======
 # GreenTech Momboy — WRO 2026 Future Engineers
 
 Engineering documentation for our self-driving car: a 200 × 180 × 150 mm
@@ -40,7 +36,7 @@ chassis revisions and about four months of evenings.
 
 | Folder | What is in it |
 |---|---|
-| [`main/`](main/) | The car we race. Pilot program (Pi) + ESP32 firmware. Both challenges, selected by profile |
+| [`main/`](main/) | The car we race: one pilot program per challenge (Pi) + the shared ESP32 firmware |
 | [`fallback/`](fallback/) | The previous system, still runnable: reconizer (Pi) + the same firmware |
 | [`schemes/`](schemes/) | Wiring diagram, system block diagram, pinout, power budget |
 | [`3d-model/`](3d-model/) | Printed parts (STL) and the sliced projects with the settings we used |
@@ -53,10 +49,16 @@ car we race today, `fallback/` is the system that came before it. Keeping both
 means we can go back to a known-good program in the pits by changing which
 `main.py` we launch, instead of reverse-engineering a git revert under pressure.
 
-There is no separate folder per challenge. It is one program that runs both
-rounds, and the round is chosen by which calibration profile is loaded — the
-Obstacle Challenge simply switches obstacle handling on. Splitting it into two
-copies would have meant fixing every bug twice.
+Inside `main/` there is **one folder per challenge**:
+[`main/open-challenge/`](main/open-challenge/) drives three laps of an empty
+track and does not so much as look for a red or a green pillar, and
+[`main/obstacle-challenge/`](main/obstacle-challenge/) is a copy of it that adds
+pillar avoidance and a rescue for the corner it used to get wedged into. They
+were one program with two calibration profiles until we noticed the real cost of
+that: every experiment for one round could break the other the night before a
+competition, and in the pits the only thing you want to decide is which
+`main.py` you launch. The duplication is the price, and we would rather pay it
+in lines of code than in a round.
 
 ## The team
 
@@ -350,25 +352,25 @@ the car onto the inner corner exactly when it should be setting up to turn.
 
 ```bash
 git clone https://github.com/DarthNeo03/Future-Engineers---GreenTech-Momboy.git
-cd Future-Engineers---GreenTech-Momboy/main/raspberry-pi
+cd Future-Engineers---GreenTech-Momboy/main/open-challenge   # or obstacle-challenge
 
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt      # opencv-python, numpy, pyserial
 
-python3 tools/selftest.py            # 323 checks — no camera, no car, no ESP32
+python3 tools/selftest.py            # no camera, no car, no ESP32
 python3 main.py --simulado           # run the whole pilot on a laptop
 python3 main.py --imagen ../../images/test-captures/frames/...   # replay a real frame
 python3 main.py                      # the real thing: camera + ESP32 + panel
 ```
 
-The ESP32 side: open `firmware/esp32/esp32_carro.ino` in the Arduino IDE (all
+The ESP32 side: open `firmware/esp32_carro/esp32_carro.ino` in the Arduino IDE (all
 five files in the same folder) and upload — no external libraries. Upload new
 firmware **before** running `main.py`.
 
 Three things make this project reproducible, and they were worth more to us than
 any single algorithm:
 
-- **323 checks that run on any laptop.** Everything that can break hardware or
+- **Checks that run on any laptop** — 58 for the Open Challenge, 74 for the Obstacle Challenge. Everything that can break hardware or
   count wrong lives in pure Python or pure C++ and is tested without the car.
   There is one car and two of us; whoever does not have it can still work.
 - **The car records what it sees.** The frame sequences in
@@ -402,10 +404,6 @@ any single algorithm:
 ## License
 
 See [`LICENSE`](LICENSE). The engineering notes inside
-`main/raspberry-pi/README.md` and
+`main/open-challenge/README.md`, `main/obstacle-challenge/README.md` and
 `journal/prototypes/CONTEXTO-reconizer.md` are in Spanish, the language we work
 in; everything a judge needs is in English here.
->>>>>>> b403e56f7adc3b0031ae6ae71a7ddfed65ca2c54
-=======
-# Future-Engineers---GreenTech-Momboy
->>>>>>> 421ebf519ea472d3ae74c40d6d54b1c22d8a25d8

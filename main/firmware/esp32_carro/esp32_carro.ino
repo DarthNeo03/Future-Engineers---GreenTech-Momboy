@@ -389,7 +389,7 @@ void tareaSensores(void *) {
   attachInterrupt(digitalPinToInterrupt(PIN_INT_MPU), isrMpu, RISING);
 
   uint32_t msSondeo = millis() - REINTENTO_I2C_MS;   // sondear ya mismo
-  uint32_t msTcs = 0, msFondo = 0, msChequeoInt = 0;
+  uint32_t msFondo = 0, msChequeoInt = 0;
   uint32_t usPrevMpu = micros();
   uint32_t nIntMpuPrev = 0;
   float cFondo = 0.0f;              // nivel de claro del piso, aprendido
@@ -486,22 +486,25 @@ void tareaSensores(void *) {
     }
 
     // --- color ---------------------------------------------------------
-    // Dos motivos para leer: el borde de linea que avisa la INT (inmediato,
-    // es el que importa cruzando rapido) y el ritmo normal de integracion,
-    // que es lo que permite saber cuando se SALE de la linea.
+    // Se PREGUNTA en cada vuelta de la tarea (200 Hz) y se toma la muestra en
+    // cuanto el chip la da por buena. Antes se preguntaba cada periodoMs(),
+    // o sea a la misma frecuencia a la que el chip integra pero sin
+    // sincronizar: en cuanto los dos relojes derivan un pelo, la pregunta cae
+    // siempre justo ANTES de que el dato exista y se pierde un ciclo entero,
+    // asi que 24 ms de integracion daban hasta 48 ms reales entre muestras y
+    // una linea de 2 cm cabia en el hueco sin dejar ni una lectura.
+    // Con ATIME=0xFB son 12 ms REALES: unas 3 lecturas por linea a velocidad
+    // de crucero. La INT solo adelanta el momento de limpiar el flanco.
     if (tcs.presente) {
       const bool borde = (avisos & AVISO_TCS) != 0;
-      if (borde || (ahora - msTcs) >= tcs.periodoMs()) {
-        msTcs = ahora;
-        if (tcs.leerColor()) {
-          clasificador.paso(tcs.c, tcs.r, tcs.g, tcs.b, ahora);
-          // Nivel de claro del PISO: solo se aprende cuando no hay linea.
-          if (clasificador.clase() == lin::NADA && tcs.c > 0) {
-            cFondo = (cFondo <= 0.0f) ? tcs.c : (cFondo * 15.0f + tcs.c) / 16.0f;
-          }
+      if (tcs.leerColor() && tcs.fresco) {
+        clasificador.paso(tcs.c, tcs.r, tcs.g, tcs.b, ahora);
+        // Nivel de claro del PISO: solo se aprende cuando no hay linea.
+        if (clasificador.clase() == lin::NADA && tcs.c > 0) {
+          cFondo = (cFondo <= 0.0f) ? tcs.c : (cFondo * 15.0f + tcs.c) / 16.0f;
         }
-        if (borde) tcs.limpiarInterrupcion();
       }
+      if (borde) tcs.limpiarInterrupcion();
       // El umbral de la INT va en % del piso aprendido, asi que sigue siendo
       // correcto aunque se cambie el tiempo de integracion o la ganancia.
       if (cFondo > 0.0f && (ahora - msFondo) >= 2000) {

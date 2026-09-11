@@ -3,43 +3,66 @@
 This is the current system: the program that races, kept in `main/` so there is
 never a doubt about which of the two is which (the one before it lives in
 [`../fallback/`](../fallback/)).
-It runs **both** rounds: the Open Challenge and the Obstacle Challenge are the
-same program with a different calibration profile, not two codebases.
+
+**One folder per round.** The two challenges used to be one program with two
+calibration profiles. They are now two programs, because sharing them meant
+every experiment for the Obstacle Challenge could break a clean Open Challenge
+run the night before a competition, and in the pits the only thing you want to
+change is which `main.py` you launch. The Open Challenge folder is the version
+that reliably completes three laps, kept deliberately small; the Obstacle
+Challenge folder started as a copy of it and adds exactly two things.
 
 ```
 main/
-├── raspberry-pi/      the pilot program (Python 3.11 + OpenCV)
-│   ├── main.py        entry point
-│   ├── piloto.sh      daemon: runs it with no web panel (for competition)
-│   ├── src/           vision, geometry, walls, lines, navigation, obstacles, button, link
-│   ├── config/        params.json and colors.json — profiles, three lines of them
-│   ├── tools/         selftest.py — 323 checks, no hardware needed
-│   └── README.md      the deep technical notes (Spanish, our working language)
-└── firmware/esp32/    hardware controller: motor, servo, gyro, colour, button, failsafe
+├── open-challenge/     three laps of an empty track. No pillars, no red, no green
+├── obstacle-challenge/ the same, plus pillar avoidance and the corner rescue
+│   ├── main.py         entry point (both folders have the same shape)
+│   ├── piloto.sh       daemon: runs it with no web panel (for competition)
+│   ├── src/            vision, geometry, walls, lines, navigation, button, link
+│   ├── config/         params.json and colors.json — one calibration per round
+│   ├── tools/          selftest.py — no hardware needed
+│   └── README.md       the deep technical notes (Spanish, our working language)
+├── raspberry-pi/       the previous combined program, kept until the two above
+│                       have been through a full track session
+└── firmware/esp32_carro/  hardware controller: motor, servo, gyro, colour, button,
+                        failsafe. SHARED — the same binary serves both rounds
 ```
 
 ## Running it
 
 ```bash
-cd raspberry-pi
+cd open-challenge          # or: cd obstacle-challenge
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-python3 tools/selftest.py        # 323 checks, no camera, no car
+python3 tools/selftest.py        # no camera, no car
 python3 main.py                  # camera + ESP32 + web panel
 python3 main.py --simulado       # on a laptop, without the ESP32
 python3 main.py --imagen foto.jpg  # on a still, without a camera
 python3 main.py --vmax 70        # PWM ceiling — always the first run of the day
 ```
 
-ESP32: open `firmware/esp32/esp32_carro.ino` in the Arduino IDE (all files in
+The two folders are independent on purpose: each has its own `config/`, so
+tuning obstacle avoidance cannot touch the calibration that just completed three
+clean laps.
+
+ESP32: open `firmware/esp32_carro/esp32_carro.ino` in the Arduino IDE (all files in
 the same folder) and upload. No external libraries. **Upload the firmware before
 running `main.py`** — if the protocol changed, old firmware just sits in
 failsafe.
 
-Then pick the profile line for the round you are practising: **Open Challenge**,
-**Avoid obstacles**, or **Obstacles + parking**. They are stored separately, so
-tuning one round can never damage another round's working calibration.
+**Flash the firmware before the first run of the day.** The colour sensor now
+integrates for 12 ms instead of 24 (ATIME 251) and the ESP32 polls it at 200 Hz
+instead of once per integration period — polling at the same rate as the chip
+integrates meant the two drifted and a sample was lost every other cycle, so
+24 ms of integration produced up to 48 ms between readings and a 2 cm line fitted
+in the gap without leaving a single reading. Three readings per line now, where
+before there were sometimes none.
+
+After flashing, **re-sample white on the Calibrate tab**: halving the integration
+time halves every raw count, so the light floor (`tcs.c_min`) moves. The
+thresholds that actually decide the colour are ratios and the difference between
+them, and those do not change — which is exactly why they are the discriminators.
 
 ## Starting a round
 
@@ -113,10 +136,34 @@ Three failures worth reading:
    Now its authority fades as the corridor narrows, and if the gap is narrower
    than the car, the car aims at the middle of the gap instead of picking a side.
 
-One filter that is easy to miss: **pillars seen behind the floor lines belong to
-the next section** and are ignored until the car enters the corner zone. Reacting
-to them early drags the car onto the inner corner exactly when it should be
-setting up to turn.
+### The corner rescue — when the floor becomes a triangle
+
+The failure that the Obstacle Challenge folder exists to fix: the car enters a
+corner and does not come out. Black fills nearly the whole frame and the floor
+that is left is a **triangle with its vertex at the top** — the two walls of the
+corner closing in from both sides. Reversing does not help; it opens a hand's
+width of corridor, hands control back to lane-centring, and lane-centring drives
+straight back into the same gap.
+
+It is detected on the wall profile that is already being computed, with no extra
+vision: wall in nearly every column, nothing far away even at the 80th
+percentile, a profile with **relief** (a flat wall ahead gives 0 % and is a
+different problem, solved by the existing reverse), little floor left, and all of
+that held for `rescate.confirmar_ms` without the vertex moving away. Then the car
+reverses briefly with opposite lock and commits to a turn of about 100° toward
+the inside of the lap — or toward the side a visible pillar demands, because
+passing one on the wrong side ends the round while being stuck only costs time.
+
+If the rescue ever fires in a good corner, raise `confirmar_ms` before touching
+anything else.
+
+Two measurements worth keeping: the relief threshold is a **percentage, not
+millimetres** — the same 90° corner gives 27 % from 700 mm and 31 % from 400, but
+in millimetres it drops from 147 to 89, so a millimetre threshold would fail
+exactly when the car is most stuck. And the way out of a corner is read from
+**how much floor is visible on each half of the image**, not from which side is
+further away: wedged into a corner both sides are equally close and the distance
+comparison says nothing, while the white pixels still do.
 
 ### Parking — the open item
 

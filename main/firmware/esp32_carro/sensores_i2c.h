@@ -155,12 +155,16 @@ class Tcs34725 {
   bool int_ok = false;           // la pata INT esta cableada y responde
   uint16_t umbral_int = 0;       // por debajo de este claro, salta la INT
   uint16_t c = 0, r = 0, g = 0, b = 0;
+  bool fresco = false;           // leerColor() trajo una conversion NUEVA
 
-  // atime: 0xFF=2.4ms, 0xF6=24ms, 0xEB=50ms. gain: 0=x1 1=x4 2=x16 3=x60.
+  // atime: 0xFF=2.4ms, 0xFB=12ms, 0xF6=24ms, 0xEB=50ms.
+  // gain: 0=x1 1=x4 2=x16 3=x60.
   // Bajar ATIME multiplica las muestras por linea (que es lo que hace falta
   // para cruzarlas rapido) pero baja los valores absolutos: hay que repetir
-  // la calibracion del TCS despues de tocarlo.
-  bool detectar(uint8_t atime = 0xF6, uint8_t gain = 2) {
+  // la calibracion del TCS despues de tocarlo. Lo que NO cambia son los
+  // ratios r*255/c y b*255/c ni su diferencia, que es justo por lo que el
+  // clasificador decide con ellos y no con los absolutos (ver lineas.h).
+  bool detectar(uint8_t atime = 0xFB, uint8_t gain = 2) {
     uint8_t id = 0;
     if (!leer(0x12, &id, 1)) { presente = false; return false; }
     if (id != 0x44 && id != 0x4D && id != 0x10) { presente = false; return false; }
@@ -224,7 +228,21 @@ class Tcs34725 {
     return ms < 3 ? 3 : (uint16_t)ms;
   }
 
+  // Devuelve si el sensor sigue vivo; 'fresco' dice si ESTA llamada trajo una
+  // conversion nueva. Hay que mirar 'fresco' antes de clasificar: alimentar
+  // al clasificador con la misma lectura repetida le infla la cuenta de
+  // muestras seguidas y le falsea el refractario.
+  //
+  // POR QUE SE SONDEA MAS RAPIDO QUE LA INTEGRACION: si se pregunta cada
+  // periodoMs() justo, el sondeo y el ciclo del chip van a la misma
+  // frecuencia pero sin sincronizar, asi que en cuanto derivan un poco la
+  // pregunta cae siempre un pelo ANTES de que el dato este listo y se pierde
+  // un ciclo entero: 24 ms de integracion daban 48 ms reales entre muestras,
+  // y una linea de 2 cm cabe entera en ese hueco. Preguntando a 200 Hz la
+  // muestra se recoge en cuanto existe y el periodo real ES el de
+  // integracion. Cuesta una lectura de 1 byte por I2C, nada.
   bool leerColor() {
+    fresco = false;
     if (!presente) return false;
     uint8_t st = 0;
     if (!leer(0x13, &st, 1)) { fallo(); return presente; }
@@ -232,6 +250,7 @@ class Tcs34725 {
     uint8_t d[8];
     if (!leer(0x14, d, 8)) { fallo(); return presente; }
     fallos_ = 0;
+    fresco = true;
     c = d[0] | (d[1] << 8);
     r = d[2] | (d[3] << 8);
     g = d[4] | (d[5] << 8);
@@ -241,7 +260,7 @@ class Tcs34725 {
 
  private:
   static const uint8_t DIR = 0x29;
-  uint8_t atime_ = 0xF6;
+  uint8_t atime_ = 0xFB;
   uint8_t fallos_ = 0;
 
   void fallo() { if (++fallos_ > 20) presente = false; }
