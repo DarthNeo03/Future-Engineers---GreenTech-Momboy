@@ -1,0 +1,221 @@
+{
+  "camara": {
+    "indice": 0,
+    "ancho": 640,
+    "alto": 480,
+    "fps": 30,
+    "fourcc": "MJPG",
+    "voltear": false
+  },
+  "servo": {
+    "centro": 100,
+    "izquierda": 65,
+    "derecha": 135,
+    "grados_por_seg": 320,
+    "rampa_motor": 10,
+    "ms_freno_inversion": 150
+  },
+  "geometria": {
+    "alto_cam_mm": 125.0,
+    "inclinacion_deg": 7.5,
+    "fy_px": 460.0,
+    "fx_px": 460.0,
+    "ancho_carro_mm": 200.0,
+    "largo_carro_mm": 200.0,
+    "margen_ruedas_mm": 30.0
+  },
+  "traccion": {
+    "mm_s_por_pct": 22.0,
+    "vmax_pwm": 210
+  },
+  "carril": {
+    "ancho_carril_mm": 1000.0,
+    "dist_curva_mm": 700.0,
+    "dist_recta_mm": 1800.0,
+    "mirada_min_mm": 500.0,
+    "kp_centrado": 55.0,
+    "kp_rumbo": 70.0,
+    "kd_giro": 0.28,
+    "suavizado": 0.45,
+    "vel_recta": 42.0,
+    "vel_curva": 24.0,
+    "freno_por_volante": 0.35
+  },
+  "senales": {
+    "activar_desde_mm": 1600.0,
+    "mandar_desde_mm": 750.0,
+    "ciego_desde_mm": 400.0,
+    "dist_reversa_mm": 230.0,
+    "margen_mm": 70.0,
+    "morro_mm": 60.0,
+    "mirada_min_mm": 420.0,
+    "ganancia": 1.9,
+    "suavizado": 0.5,
+    "holgura_linea_mm": 80.0,
+    "largo_carro_mm": 200.0,
+    "extra_mm": 120.0,
+    "compromiso_max_s": 1.6,
+    "memoria_s": 3.0
+  },
+  "vueltas": {
+    "color_entrada_horario": "naranja",
+    "margen_meta_mm": 120.0
+  },
+  "fsm": {
+    "vueltas": 3,
+    "arranque_s": 0.4,
+    "vel_arranque": 26.0,
+    "vel_senal": 32.0,
+    "vel_esquive": 30.0,
+    "vel_correccion": 22.0,
+    "vel_meta": 26.0,
+    "vel_reversa": 24.0,
+    "dir_reversa": 70.0,
+    "reversa_s": 0.9,
+    "atasco_dist_mm": 260.0,
+    "atasco_movimiento_mm": 45.0,
+    "atasco_s": 1.2
+  },
+  "colores": {
+    "rojo": {
+      "rangos": [
+        [
+          [
+            0,
+            110,
+            70
+          ],
+          [
+            10,
+            255,
+            255
+          ]
+        ],
+        [
+          [
+            168,
+            110,
+            70
+          ],
+          [
+            179,
+            255,
+            255
+          ]
+        ]
+      ],
+      "abrir": 3,
+      "cerrar": 5,
+      "area_min": 320,
+      "aspecto_min": 0.7,
+      "aspecto_max": 4.0,
+      "llenado_min": 0.55,
+      "max_objetos": 4
+    },
+    "verde": {
+      "rangos": [
+        [
+          [
+            42,
+            80,
+            55
+          ],
+          [
+            88,
+            255,
+            255
+          ]
+        ]
+      ],
+      "abrir": 3,
+      "cerrar": 5,
+      "area_min": 320,
+      "aspecto_min": 0.7,
+      "aspecto_max": 4.0,
+      "llenado_min": 0.55,
+      "max_objetos": 4
+    },
+    "magenta": {
+      "rangos": [
+        [
+          [
+            140,
+            90,
+            70
+          ],
+          [
+            166,
+            255,
+            255
+          ]
+        ]
+      ],
+      "abrir": 3,
+      "cerrar": 5,
+      "area_min": 400,
+      "max_objetos": 3
+    },
+    "negro": {
+      "rangos": [
+        [
+          [
+            0,
+            0,
+            0
+          ],
+          [
+            179,
+            255,
+            88
+          ]
+        ]
+      ],
+      "abrir": 3,
+      "cerrar": 7,
+      "area_min": 1200,
+      "max_objetos": 3
+    },
+    "naranja": {
+      "rangos": [
+        [
+          [
+            8,
+            120,
+            90
+          ],
+          [
+            24,
+            255,
+            255
+          ]
+        ]
+      ],
+      "abrir": 3,
+      "cerrar": 5,
+      "area_min": 500,
+      "ancho_min_frac": 0.18,
+      "max_objetos": 2
+    },
+    "azul": {
+      "rangos": [
+        [
+          [
+            95,
+            90,
+            60
+          ],
+          [
+            125,
+            255,
+            255
+          ]
+        ]
+      ],
+      "abrir": 3,
+      "cerrar": 5,
+      "area_min": 500,
+      "ancho_min_frac": 0.18,
+      "max_objetos": 2
+    }
+  }
+}

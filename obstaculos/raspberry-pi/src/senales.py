@@ -1,0 +1,265 @@
+"""
+senales.py — Rebasar las señales de transito por el lado que manda la regla.
+
+REGLA DEL JUEGO (reglamento 2026, punto 9.19)
+    pilar ROJO  -> se pasa por su DERECHA
+    pilar VERDE -> se pasa por su IZQUIERDA
+
+"Derecha" e "izquierda" son las del PILAR visto desde el carro que avanza, no
+las del tapete. Por eso NO hay que invertir nada cuando la ronda se corre en
+sentido contrario: el mismo pilar fisico se rebasa por un lado distinto en
+horario que en antihorario, y eso sale solo de trabajar en el marco del carro.
+
+MATIZ QUE SE OLVIDA SIEMPRE: "pasar por la derecha del pilar" NO es "girar a
+la derecha". Si el pilar ya esta a la izquierda del carro, lo correcto puede
+ser seguir recto o incluso corregir a la izquierda para no invadir el carril
+contrario. Lo que se calcula no es un giro: es un PUNTO DE PASO.
+
+LOS TRES ACTOS DE UN REBASE
+
+  1. APROXIMACION. Se apunta a un punto al costado correcto del pilar,
+     separado medio carro + medio pilar + margen. Se convierte en direccion
+     con una MIRADA MINIMA: sin ella, al acercarse, el angulo al punto crece
+     hasta pedir el volante a tope.
+
+  2. COMPROMISO. Cuando el pilar queda muy cerca deja de verse: la camara no
+     llega tan abajo. Si en ese momento el esquive desapareciera, el seguidor
+     de carril tiraria del carro hacia el centro y la RUEDA TRASERA barreria
+     el pilar — con direccion Ackermann la cola corta por dentro. Asi que
+     desde que se pierde de vista se MANTIENE el rumbo, sin volver hacia el
+     pilar, el tiempo que el carro necesita para adelantarlo con todo su
+     largo. Ese tiempo se calcula con la velocidad real, no es un valor fijo.
+
+  3. SALIDA. Cumplido el compromiso, vuelve a mandar el seguidor de carril.
+
+LO QUE ESTA MAS ALLA DE LA LINEA DEL PISO NO ES DE ESTA RECTA
+Las lineas naranja y azul marcan el limite de seccion. Un pilar que se ve por
+detras de ellas pertenece al tramo SIGUIENTE. Hacerle caso desde la recta tira
+del carro justo cuando toca prepararse para la curva, y el carro se pega a la
+esquina interior. Se descartan mientras se viene por la recta, y cuentan al
+entrar en la curva.
+
+RECUPERACION POR LADO INCORRECTO (Apendice A, seccion 5)
+Empezar a rebasar por el lado equivocado NO termina la ronda: la ronda termina
+cuando el carro cruza COMPLETAMENTE el radio (la linea muro interior - muro
+exterior) donde esta la señal. O sea que hay un margen real para darse cuenta
+y corregir, y el reglamento lo dice explicitamente. Este modulo lo usa.
+"""
+
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+from .geometria import DIST_MAX_MM
+from .vision import Deteccion, Escena
+
+# +1 = el carro debe quedar a la DERECHA del pilar; -1 = a su izquierda.
+LADO_OBLIGADO = {"rojo": +1, "verde": -1}
+MITAD_PILAR_MM = 25.0        # el pilar mide 50 x 50 mm en planta
+
+FASE_NADA = "nada"
+FASE_APROXIMACION = "aproximacion"
+FASE_COMPROMISO = "compromiso"
+FASE_CORRECCION = "correccion"
+
+
+@dataclass
+class Maniobra:
+    direccion: float = 0.0       # % con signo
+    peso: float = 0.0            # 0 = manda el carril, 1 = manda el esquive
+    fase: str = FASE_NADA
+    color: str = ""
+    lado: int = 0                # lado por el que se pasa (+1 derecha)
+    dist_mm: float = DIST_MAX_MM
+    lat_mm: float = 0.0
+    objetivo_mm: float = 0.0     # lateral del punto de paso
+    lado_incorrecto: bool = False
+    pedir_reversa: bool = False
+    info: Dict[str, Any] = field(default_factory=dict)
+
+
+class Esquivador:
+    def __init__(self, cfg: Dict[str, Any], semiancho_mm: float = 130.0) -> None:
+        self.cfg = cfg
+        self.semiancho_mm = semiancho_mm
+        self.reiniciar()
+
+    def reiniciar(self) -> None:
+        self._fase = FASE_NADA
+        self._dir_prev = 0.0
+        self._comp_hasta = 0.0
+        self._comp_dir = 0.0
+        self._comp_color = ""
+        self._mem_color = ""
+        self._mem_lado = 0
+        self._mem_t = 0.0
+
+    # ------------------------------------------------------------ eleccion
+    def elegir(self, esc: Escena, lineas_mm: Dict[str, Optional[float]],
+               en_curva: bool) -> Optional[Deteccion]:
+        """El pilar que toca atender AHORA, o None.
+
+        No es "el mas cercano" a secas: hay que descartar lo que pertenece a
+        la seccion siguiente y lo que todavia esta demasiado lejos para que
+        valga la pena desviarse.
+        """
+        activar = float(self.cfg.get("activar_desde_mm", 1600.0))
+        # Limite de seccion: la linea de piso mas cercana que se vea delante.
+        limite = DIST_MAX_MM
+        if not en_curva:
+            vistas = [d for d in lineas_mm.values() if d is not None]
+            if vistas:
+                limite = min(vistas) + float(self.cfg.get("holgura_linea_mm", 80.0))
+
+        candidatos = [p for p in esc.pilares
+                      if p.color in LADO_OBLIGADO
+                      and p.dist_mm <= activar
+                      and p.dist_mm <= limite]
+        if not candidatos:
+            return None
+        # Entre varios, el mas cercano. Con dos pilares seguidos, resolver el
+        # primero bien deja el carro colocado para ver el segundo; intentar
+        # planear los dos a la vez con una sola camara sale peor.
+        return min(candidatos, key=lambda p: p.dist_mm)
+
+    # ---------------------------------------------------------------- paso
+    def paso(self, esc: Escena, lineas_mm: Dict[str, Optional[float]],
+             en_curva: bool, vel_mm_s: float) -> Maniobra:
+        ahora = time.time()
+        m = Maniobra()
+        objetivo = self.elegir(esc, lineas_mm, en_curva)
+
+        # ---------------------------------------------- fase de compromiso
+        # Se evalua ANTES de mirar si hay pilar: el compromiso existe
+        # justamente porque el pilar ya no se ve.
+        if objetivo is None and ahora < self._comp_hasta:
+            m.fase = FASE_COMPROMISO
+            m.color = self._comp_color
+            m.direccion = self._comp_dir
+            m.peso = 1.0
+            m.info = {"queda_s": round(self._comp_hasta - ahora, 2)}
+            self._fase = FASE_COMPROMISO
+            self._dir_prev = m.direccion
+            return m
+
+        if objetivo is None:
+            self._fase = FASE_NADA
+            self._dir_prev *= 0.6        # suelta el volante sin dar un tiron
+            return m
+
+        # ------------------------------------------------------- geometria
+        lado = LADO_OBLIGADO[objetivo.color]
+        m.color = objetivo.color
+        m.lado = lado
+        m.dist_mm = objetivo.dist_mm
+        m.lat_mm = objetivo.lat_mm
+
+        # Punto de paso: al costado correcto del pilar, separado lo que ocupa
+        # medio carro + medio pilar + el margen de seguridad.
+        margen = float(self.cfg.get("margen_mm", 70.0))
+        m.objetivo_mm = objetivo.lat_mm + lado * (MITAD_PILAR_MM +
+                                                  self.semiancho_mm + margen)
+
+        # ¿Estamos ya del lado correcto? El carro esta en x = 0; el pilar en
+        # lat_mm. Si lat_mm * lado < 0, el pilar queda al otro lado: bien.
+        holgura_actual = -objetivo.lat_mm * lado    # >0 = vamos bien
+        m.lado_incorrecto = holgura_actual < (MITAD_PILAR_MM + self.semiancho_mm * 0.5)
+
+        # --------------------------------------------------------- direccion
+        morro = float(self.cfg.get("morro_mm", 60.0))
+        mirada = max(float(self.cfg.get("mirada_min_mm", 420.0)),
+                     objetivo.dist_mm - morro)
+        ang = math.degrees(math.atan2(m.objetivo_mm, mirada))
+        k = float(self.cfg.get("ganancia", 1.9))
+        direccion = k * ang
+
+        # ----------------------------------------- recuperacion por mal lado
+        # Mientras no se haya cruzado el radio del pilar, corregir es legal y
+        # es lo correcto. Cuanto mas cerca, mas agresivo hay que ser.
+        dist_reversa = float(self.cfg.get("dist_reversa_mm", 230.0))
+        if m.lado_incorrecto:
+            m.fase = FASE_CORRECCION
+            urgencia = 1.0 - min(1.0, objetivo.dist_mm / 900.0)
+            direccion = lado * (55.0 + 45.0 * urgencia)
+            # Demasiado cerca para meter el morro por el lado bueno: no hay
+            # radio de giro que valga. Se pide reversa; quien manda decide.
+            if objetivo.dist_mm < dist_reversa:
+                m.pedir_reversa = True
+        else:
+            m.fase = FASE_APROXIMACION
+
+        # ------------------------------------------------------------- peso
+        # Transicion suave entre "manda el carril" y "manda el esquive": un
+        # salto brusco de autoridad se ve como un volantazo a 1.5 m del pilar.
+        activar = float(self.cfg.get("activar_desde_mm", 1600.0))
+        mandar = float(self.cfg.get("mandar_desde_mm", 750.0))
+        if objetivo.dist_mm <= mandar:
+            m.peso = 1.0
+        else:
+            t = (activar - objetivo.dist_mm) / max(1.0, activar - mandar)
+            m.peso = float(min(1.0, max(0.0, t)))
+        if m.fase == FASE_CORRECCION:
+            m.peso = 1.0            # corregir no se negocia con el carril
+
+        # --------------------------------------------------------- suavizado
+        alfa = float(self.cfg.get("suavizado", 0.5))
+        direccion = alfa * direccion + (1.0 - alfa) * self._dir_prev
+        self._dir_prev = direccion
+        m.direccion = float(max(-100.0, min(100.0, direccion)))
+
+        # ------------------------------------------- armar el compromiso
+        # Desde que el pilar entra en la zona ciega se guarda cuanto tiempo
+        # hay que sostener este rumbo para adelantarlo entero.
+        ciego = float(self.cfg.get("ciego_desde_mm", 400.0))
+        if objetivo.dist_mm <= ciego and not m.pedir_reversa:
+            largo = float(self.cfg.get("largo_carro_mm", 200.0))
+            recorrido = objetivo.dist_mm + largo + float(self.cfg.get("extra_mm", 120.0))
+            v = max(120.0, vel_mm_s)      # nunca dividir por una velocidad ~0
+            dur = min(float(self.cfg.get("compromiso_max_s", 1.6)), recorrido / v)
+            self._comp_hasta = ahora + dur
+            self._comp_dir = m.direccion
+            self._comp_color = objetivo.color
+
+        self._fase = m.fase
+        self._mem_color = objetivo.color
+        self._mem_lado = lado
+        self._mem_t = ahora
+        m.info = {
+            "holgura_mm": round(holgura_actual),
+            "mirada_mm": round(mirada),
+            "angulo_deg": round(ang, 1),
+        }
+        return m
+
+    # ------------------------------------------------------------ memoria
+    def memoria_viva(self, ahora: Optional[float] = None) -> bool:
+        """El ultimo pilar sigue contando aunque ya no se vea. Sirve sobre todo
+        en la curva: el pilar sale de cuadro al girar, y sin memoria el carro
+        se olvida de que lo tiene al lado justo cuando mas cerca esta."""
+        if not self._mem_color:
+            return False
+        ahora = ahora or time.time()
+        return (ahora - self._mem_t) <= float(self.cfg.get("memoria_s", 3.0))
+
+    def memoria(self) -> Dict[str, Any]:
+        return {"color": self._mem_color,
+                "lado": "derecha" if self._mem_lado > 0 else "izquierda",
+                "edad_s": round(time.time() - self._mem_t, 2) if self._mem_t else None}
+
+
+def combinar(dir_carril: float, maniobra: Maniobra,
+             empujon_magenta: Optional[float]) -> float:
+    """Mezcla final de las tres autoridades que pueden mover el volante.
+
+    El orden no es arbitrario:
+      - el esquive se MEZCLA con el carril segun su peso (transicion suave),
+      - el empujon del magenta se SUMA por encima de todo, porque tocarlo
+        termina la ronda y no hay nada que negociar con eso.
+    """
+    d = (1.0 - maniobra.peso) * dir_carril + maniobra.peso * maniobra.direccion
+    if empujon_magenta is not None:
+        d += empujon_magenta
+    return float(max(-100.0, min(100.0, d)))

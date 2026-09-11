@@ -1,0 +1,209 @@
+"""
+config.py — Un solo sitio con todos los numeros ajustables.
+
+POR QUE TODO AQUI Y NO REPARTIDO POR EL CODIGO
+En la pista de practica hay veinte minutos y dos personas. Buscar una ganancia
+dentro de un modulo, editarla, y acordarse de deshacerlo si sale peor, es como
+se pierden las tardes. Con un unico JSON: se edita, se relanza, y si sale mal
+se recupera del git. Ademas, los valores por defecto viven en el codigo, asi
+que un JSON corrupto o incompleto NO deja el carro sin arrancar: se rellena
+con lo que falte y se avisa por consola.
+
+QUE NO VA AQUI: nada que el reglamento fije. El ancho del carril (1000 mm), el
+tamaño del pilar (50x100) y el lado por el que se rebasa cada color son
+constantes del juego, no parametros: viven en el modulo que los usa, con la
+cita de la regla al lado. Si un dia el reglamento cambia, se busca la cita.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import os
+from typing import Any, Dict
+
+RUTA_POR_DEFECTO = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "config", "pista.json")
+
+
+# ---------------------------------------------------------------------------
+# Valores de partida. Los de vision estan calibrados para el tapete WRO bajo
+# luz de taller; los de control, para nuestro carro de 200 x 180 mm con motor
+# de 500 rpm y servo MG996R.
+# ---------------------------------------------------------------------------
+DEFECTOS: Dict[str, Any] = {
+
+    "camara": {
+        "indice": 0,
+        "ancho": 640,
+        "alto": 480,
+        "fps": 30,
+        "fourcc": "MJPG",
+        "voltear": False,
+    },
+
+    # Servo: lo unico que la Pi le dice al firmware sobre el hardware. Los
+    # topes de compilacion del ESP32 siempre ganan; esto solo puede estrechar.
+    "servo": {
+        "centro": 100,
+        "izquierda": 65,
+        "derecha": 135,
+        "grados_por_seg": 320,
+        "rampa_motor": 10,
+        "ms_freno_inversion": 150,
+    },
+
+    # Geometria de la camara: altura del centro optico, inclinacion y focales.
+    # fy/fx se calibran con tools/calibrar_camara.py y NO se tocan a ojo.
+    "geometria": {
+        "alto_cam_mm": 125.0,
+        "inclinacion_deg": 7.5,
+        "fy_px": 460.0,
+        "fx_px": 460.0,
+        "ancho_carro_mm": 200.0,
+        "largo_carro_mm": 200.0,
+        "margen_ruedas_mm": 30.0,
+    },
+
+    # Conversion de % de mando a velocidad real. Se mide una vez: se manda un
+    # 40 % durante 3 s en recta y se divide la distancia entre el tiempo.
+    "traccion": {
+        "mm_s_por_pct": 22.0,      # 40 % -> ~880 mm/s
+        "vmax_pwm": 210,           # techo duro de PWM que manda la Pi
+    },
+
+    "carril": {
+        "ancho_carril_mm": 1000.0,
+        "dist_curva_mm": 700.0,
+        "dist_recta_mm": 1800.0,
+        "mirada_min_mm": 500.0,
+        "kp_centrado": 55.0,
+        "kp_rumbo": 70.0,
+        "kd_giro": 0.28,
+        "suavizado": 0.45,
+        "vel_recta": 42.0,
+        "vel_curva": 24.0,
+        "freno_por_volante": 0.35,
+    },
+
+    "senales": {
+        "activar_desde_mm": 1600.0,   # se empieza a tener en cuenta
+        "mandar_desde_mm": 750.0,     # manda del todo sobre el carril
+        "ciego_desde_mm": 400.0,      # deja de verse: arranca el compromiso
+        "dist_reversa_mm": 230.0,     # sin radio para corregir: reversa
+        "margen_mm": 70.0,            # holgura al costado del pilar
+        "morro_mm": 60.0,             # del eje de la camara al morro
+        "mirada_min_mm": 420.0,
+        "ganancia": 1.9,
+        "suavizado": 0.5,
+        "holgura_linea_mm": 80.0,     # margen al descartar pilares de la
+                                      #   seccion siguiente
+        "largo_carro_mm": 200.0,
+        "extra_mm": 120.0,
+        "compromiso_max_s": 1.6,
+        "memoria_s": 3.0,
+    },
+
+    "vueltas": {
+        # CUAL DE LOS DOS COLORES SE PISA AL ENTRAR EN CURVA EN SENTIDO
+        # HORARIO. Se comprueba UNA VEZ en la pista de practica empujando el
+        # carro a mano y mirando la telemetria. No se adivina.
+        "color_entrada_horario": "naranja",
+        "margen_meta_mm": 120.0,
+    },
+
+    "fsm": {
+        "vueltas": 3,
+        "arranque_s": 0.4,
+        "vel_arranque": 26.0,
+        "vel_senal": 32.0,
+        "vel_esquive": 30.0,
+        "vel_correccion": 22.0,
+        "vel_meta": 26.0,
+        "vel_reversa": 24.0,
+        "dir_reversa": 70.0,
+        "reversa_s": 0.9,
+        "atasco_dist_mm": 260.0,
+        "atasco_movimiento_mm": 45.0,
+        "atasco_s": 1.2,
+    },
+
+    # -------------------------------------------------------- vision (HSV)
+    # H va de 0 a 179 en OpenCV (no 0-359). S y V, de 0 a 255.
+    # El ROJO necesita DOS rangos porque el tono es circular y el rojo esta a
+    # caballo del cero.
+    "colores": {
+        "rojo": {
+            "rangos": [[[0, 110, 70], [10, 255, 255]],
+                       [[168, 110, 70], [179, 255, 255]]],
+            "abrir": 3, "cerrar": 5, "area_min": 320,
+            "aspecto_min": 0.7, "aspecto_max": 4.0, "llenado_min": 0.55,
+            "max_objetos": 4,
+        },
+        "verde": {
+            "rangos": [[[42, 80, 55], [88, 255, 255]]],
+            "abrir": 3, "cerrar": 5, "area_min": 320,
+            "aspecto_min": 0.7, "aspecto_max": 4.0, "llenado_min": 0.55,
+            "max_objetos": 4,
+        },
+        # Delimitadores del cajon. NO son objetivo: son muro intocable.
+        "magenta": {
+            "rangos": [[[140, 90, 70], [166, 255, 255]]],
+            "abrir": 3, "cerrar": 5, "area_min": 400,
+            "max_objetos": 3,
+        },
+        # Muros: negro es poca V, sin importar el tono.
+        "negro": {
+            "rangos": [[[0, 0, 0], [179, 255, 88]]],
+            "abrir": 3, "cerrar": 7, "area_min": 1200,
+            "max_objetos": 3,
+        },
+        "naranja": {
+            "rangos": [[[8, 120, 90], [24, 255, 255]]],
+            "abrir": 3, "cerrar": 5, "area_min": 500,
+            "ancho_min_frac": 0.18, "max_objetos": 2,
+        },
+        "azul": {
+            "rangos": [[[95, 90, 60], [125, 255, 255]]],
+            "abrir": 3, "cerrar": 5, "area_min": 500,
+            "ancho_min_frac": 0.18, "max_objetos": 2,
+        },
+    },
+}
+
+
+def _fundir(base: Dict[str, Any], encima: Dict[str, Any]) -> Dict[str, Any]:
+    """Mezcla recursiva. Lo que falte en 'encima' se queda del defecto, para
+    que un JSON a medio escribir no deje el carro sin arrancar."""
+    salida = copy.deepcopy(base)
+    for k, v in (encima or {}).items():
+        if isinstance(v, dict) and isinstance(salida.get(k), dict):
+            salida[k] = _fundir(salida[k], v)
+        else:
+            salida[k] = v
+    return salida
+
+
+def cargar(ruta: str = RUTA_POR_DEFECTO, verbose: bool = True) -> Dict[str, Any]:
+    if not os.path.exists(ruta):
+        if verbose:
+            print(f"[config] {ruta} no existe: se usan los valores por defecto")
+        return copy.deepcopy(DEFECTOS)
+    try:
+        with open(ruta, "r", encoding="utf-8") as f:
+            datos = json.load(f)
+    except (OSError, ValueError) as err:
+        # Aqui NO se lanza la excepcion a proposito: un JSON roto en la mesa de
+        # jueces no puede ser el motivo de que el carro no salga.
+        print(f"[config] {ruta} ilegible ({err}); se usan los defectos")
+        return copy.deepcopy(DEFECTOS)
+    if verbose:
+        print(f"[config] {ruta}")
+    return _fundir(DEFECTOS, datos)
+
+
+def guardar(cfg: Dict[str, Any], ruta: str = RUTA_POR_DEFECTO) -> None:
+    os.makedirs(os.path.dirname(ruta), exist_ok=True)
+    with open(ruta, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
