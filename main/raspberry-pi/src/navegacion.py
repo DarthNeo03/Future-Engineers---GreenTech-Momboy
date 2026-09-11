@@ -330,13 +330,23 @@ class Navegador:
         # por encima de parar_bajo_mm). Si el escape se metiera en medio, los
         # dos estarian dando ordenes de reversa distintas.
         parar_bajo = float(cfg.get("parar_bajo_mm", 300.0))
-        if self.estado not in (ESCAPE, GIRO_2T) and pasillo < parar_bajo:
+        ### EL PASILLO SE MIDE RECTO DELANTE DEL CARRO. En mitad de un giro de
+        ### 90 el morro barre hacia la pared aunque el carro este rotando
+        ### perfectamente: esa medida baja sola, sin que haya ningun peligro
+        ### nuevo, y disparaba el escape ENCIMA de una curva que iba bien.
+        ### Reversa, reanudar, reversa... y pegado en la esquina. Dentro de un
+        ### giro comprometido el umbral se reduce a factor_en_giro; el escape
+        ### sigue estando, solo que pide que el muro este de verdad encima.
+        umbral_escape = parar_bajo
+        if self.estado in (GIRO, GIRO_COLOR):
+            umbral_escape *= float(esc.get("factor_en_giro", 0.6))
+        if self.estado not in (ESCAPE, GIRO_2T) and pasillo < umbral_escape:
             if self.estado == GIRO_COLOR:
                 ### el giro por color solo va hacia adelante: si el muro se
                 ### le echa encima manda el escape, y al volver se retoma
                 self._color_pendiente = True
             self._cambiar(ESCAPE)
-            deficit = parar_bajo - pasillo
+            deficit = umbral_escape - pasillo
             comp = float(esc.get("escape_min_ms", 750)) + \
                 float(esc.get("escape_k_ms_por_mm", 3.0)) * deficit
             self._t_fin_escape = ahora + comp / 1000.0
@@ -344,7 +354,11 @@ class Navegador:
 
         if self.estado == ESCAPE:
             if ahora >= self._t_fin_escape:
-                if pasillo > float(cfg.get("girar_bajo_mm", 650.0)) * 0.8:
+                ### Umbral PROPIO para dar el escape por bueno. Antes salia de
+                ### girar_bajo_mm * 0.8, asi que subir la distancia a la que se
+                ### dispara la curva alargaba tambien todas las reversas, que
+                ### no tienen nada que ver.
+                if pasillo > float(esc.get("salir_mm", 520.0)):
                     self._escape_intentos = 0
                     self._cambiar(RECTO)
                     self.pd.reiniciar()
@@ -970,18 +984,28 @@ class Navegador:
         if sentido == 0:
             return self._dir_centrado(p, ahora)
         lado_int = sentido               # +1 = interno a la derecha
-        if bool(self.cfg.get("usar_rectas", True)) and p.interna_mm is not None:
-            d_actual = p.interna_mm
-            fuente = "recta"
-        else:
-            d_actual = (p.der if lado_int > 0 else p.izq) * p.alcance_mm
-            fuente = "banda"
+        ### SIN PARED IDENTIFICADA SE CAE AL CENTRADO, no a la media de la
+        ### banda. La media de la banda por el alcance NO es una distancia
+        ### lateral: es el hueco medio HACIA DELANTE en ese lado de la imagen,
+        ### y en recta vale facilmente 600-700 mm, con lo que el error contra
+        ### pared_objetivo_mm salia de casi 300 mm y el volante se iba al 65 %
+        ### contra el muro interno por un numero que no medía lo que decía.
+        if not (bool(self.cfg.get("usar_rectas", True))
+                and p.interna_mm is not None):
+            d, motivo = self._dir_centrado(p, ahora)
+            return d, motivo + " (sin pared interna)"
+        d_actual = p.interna_mm
         objetivo = float(self.cfg.get("pared_objetivo_mm", 320.0))
         err = d_actual - objetivo        # >0 = estoy lejos del muro interno
         salida = self.pd_pared.paso(err, float(self.cfg.get("kp_pared", 0.22)),
                                     float(self.cfg.get("kd_pared", 0.05)), ahora)
+        ### tope propio: mantener el carril es una correccion, no una maniobra.
+        ### Si el volante se satura siguiendo la pared no queda margen para el
+        ### rumbo ni para el esquive, que se suman despues.
+        tope = float(self.cfg.get("pared_max_pct", 60.0))
+        salida = _lim(salida, -tope, tope)
         # interno a la derecha y lejos -> acercarse girando a la derecha
-        return lado_int * salida, f"pared int({fuente}) d={d_actual:.0f} err={err:+.0f}"
+        return lado_int * salida, f"pared int d={d_actual:.0f} err={err:+.0f}"
 
     # ------------------------------------------------------------------
     def _salida(self, vel: float, direccion: float, p: PerfilMuro,

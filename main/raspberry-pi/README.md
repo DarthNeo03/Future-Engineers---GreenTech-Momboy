@@ -393,6 +393,76 @@ Comprobacion aparte, que el codigo no puede hacer por ti: si en la web
 por color ignora las azules y gira a la derecha en cada naranja, que en
 antihorario es la linea de SALIDA de la curva. Dejalo en AUTO salvo en pruebas.
 
+## La curva tiene que CABER: girar_bajo_mm contra parar_bajo_mm
+
+El sintoma era "se acerca muchisimo a la pared antes de girar, y a veces
+retrocede ahi mismo". No era el sensor ni el control: era aritmetica.
+
+`girar_bajo_mm` es la distancia a la que la vision dispara la esquina, y la
+maniobra **consume pasillo**:
+
+| | |
+|---|---|
+| radio de giro con `dir_pct` 90 % (150 mm entre ejes, 26 grados a tope) | **347 mm** |
+| avance del morro durante los 90 grados (`hypot(R, 200) − 200`) | **200 mm** |
+| avance del pre-giro (`retardo_giro_ms` 220 ms a `vel_giro` 44) | **82 mm** |
+| **pasillo que se come la maniobra** | **282 mm** |
+
+Con `girar_bajo_mm` en **483** quedaban 483 − 282 = **201 mm** al acabar la
+curva, por debajo de `parar_bajo_mm` (300): **el escape saltaba en mitad de
+todas las curvas**, siempre, por construccion. Con 700 quedan 418 mm y la
+curva entra entera. El selftest hace ahora esa cuenta sobre el perfil activo,
+asi que el numero no se puede volver a bajar sin que salte una prueba.
+
+Y hay un segundo escape que no debia estar: **el pasillo se mide recto delante
+del carro**, asi que en mitad de un giro de 90 el morro barre hacia la pared y
+la medida baja sola aunque el carro este rotando perfectamente. Dentro de un
+giro comprometido el umbral se reduce a `escape.factor_en_giro` (0,6) de
+`parar_bajo_mm`; con el muro de verdad encima el escape sigue mandando igual.
+
+Aparte, `escape.salir_mm` separa "cuando doy el escape por bueno" de
+`girar_bajo_mm * 0.8`, que era de donde salia: subir la distancia de disparo de
+la curva alargaba tambien todas las reversas, que no tienen nada que ver.
+
+## Mantener el carril: distancia al muro, no hueco medio
+
+`centrado` equilibra el **espacio libre** de las dos bandas laterales, y eso no
+es lo mismo que ir por el medio del carril: cuando el muro interno se acaba, el
+hueco de ese lado crece aunque el carro no se haya movido. Por eso el carro se
+acercaba a las paredes en las rectas, sobre todo despues de una curva.
+
+`estrategia: pared` mide de verdad: sigue el **muro interno identificado**
+(`interna_mm`, en mm) a `pared_objetivo_mm`. Y hay una razon geometrica para
+elegir ese numero: para rodear una esquina de 90 grados **manteniendo la
+distancia d al muro interno, el radio de giro necesario ES d**. Si la distancia
+de seguimiento y el radio de la curva coinciden, la curva sale exacta: se entra
+a d de un muro y se sale a d del siguiente. Con `dir_pct` 90 el radio es 347 mm,
+asi que `pared_objetivo_mm` va a 347.
+
+Cuidado con el fallback, que estaba mal: sin pared interna identificada se caia
+a `banda * alcance_mm`, y eso **no es una distancia lateral** — es el hueco
+medio *hacia delante* en ese lado de la imagen, que en recta vale 600-700 mm.
+El error contra `pared_objetivo_mm` salia de casi 300 mm y el volante se iba al
+65 % contra el muro interno por un numero que no media lo que decia. Ahora sin
+pared identificada se cae al centrado, y el seguimiento va topado en
+`pared_max_pct`: mantener el carril es una correccion, no una maniobra.
+
+## El zocalo del muro no es una linea azul
+
+Al bajar `c_min` para que entrara la azul (C=678) tambien empezo a entrar la
+**sombra de la base del muro**. Ahi el canal claro cae a 200-400 y pasan dos
+cosas a la vez: el negro del tapete tira a azulado, y con el claro tan bajo los
+ratios son ruido (a C=300 un solo conteo mueve el ratio 0,85 puntos, asi que la
+diferencia b−r baila +-6 sola). Con `azul_dif_min` en 12 eso clasifica como
+azul. El carro "veia color" antes de tiempo y —ahora que la linea dispara el
+giro— **doblaba ahi mismo**.
+
+`c_min` sube a 400: sigue muy por debajo de la linea (678, margen de 1,7x) y
+deja fuera la sombra. Y `muestras_min` pasa de 1 a 2, que a 24 ms de
+integracion y con el freno ante linea encendido siguen sobrando muestras sobre
+una linea de verdad, pero matan el pico suelto. El selftest comprueba las dos
+cosas sobre el perfil activo: la azul real entra, la sombra del zocalo no.
+
 ## Cuatro cosas que hacian que el carro se quedara pegado en la curva
 
 Todas salen del mismo sitio —**que pasa cuando la curva no sale perfecta**— y
@@ -942,6 +1012,11 @@ Detalles que importan:
 | `navegacion.tras_giro_ms` | Tiempo tras una curva en el que la vision no puede abrir otra. Subelo si el carro encadena dos giros en la misma esquina. |
 | `esquina_color.max_ms` / `dir_pct` | Cuanto tiempo tiene la curva y cuanto volante puede meter. Si `giros_vencidos` sube en la web, la curva no cabe: mas `max_ms` o mas `dir_pct`. |
 | `navegacion.apertura_pct` | Cuanto se abre hacia la pared EXTERNA antes de doblar. Con radio de sobra en el carril, dejalo bajo. |
+| `navegacion.girar_bajo_mm` | Distancia a la que la vision dispara la curva. **No puede bajar de `parar_bajo_mm` + lo que consume la maniobra** (~282 mm con esta geometria) o el escape salta en mitad de todas las curvas. |
+| `navegacion.estrategia` | `pared` mide la distancia al muro interno; `centrado` equilibra huecos. Si el carro se acerca a las paredes en recta, es esto. |
+| `navegacion.pared_objetivo_mm` | Distancia al muro interno. Ponla **igual al radio de giro** (`dir_pct`) y la curva sale exacta. |
+| `escape.factor_en_giro` | Cuanto se relaja el escape dentro de una curva comprometida. Subelo a 1 para volver al comportamiento de antes. |
+| `tcs.c_min` / `muestras_min` | Si el carro "ve color" antes de tiempo (sombra del zocalo), sube `c_min` — sin pasar del claro de la linea— o sube `muestras_min`. |
 | `esquina_color.ignoradas_para_invertir` | Lineas del otro color ignoradas, sin contar ni una esquina, antes de aceptar que el sentido salio al reves y corregirlo. |
 | `carrera.vueltas` / `autostop` | 3 y encendido para una ronda de verdad. Revisalos antes de cada tanda: un perfil de pruebas con 1 vuelta o con el autostop apagado parece "el carro no para". |
 | `tcs.c_min` | Claro minimo para clasificar. **Tiene que quedar por debajo del claro de la LINEA**, no del piso: es la trampa que dejo al carro sin ver las azules. |

@@ -145,6 +145,7 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "kp": _p("float", 95.0, "Ganancia proporcional del centrado. Subela si corrige lento; bajala si serpentea.", 0.0, 400.0),
         "kd": _p("float", 22.0, "Ganancia derivativa del centrado. Subela si oscila al corregir.", 0.0, 200.0),
         "pared_objetivo_mm": _p("float", 320.0, "(estrategia 'pared') distancia objetivo al muro interno, en mm.", 100.0, 900.0),
+        "pared_max_pct": _p("float", 60.0, "Tope de volante que puede pedir el seguimiento de pared. Mantener el carril es una correccion, no una maniobra: si se satura aqui no queda margen para el rumbo ni para el esquive, que se suman despues.", 10.0, 100.0),
         "kp_pared": _p("float", 0.22, "PD del seguimiento de pared: % de direccion por mm de error.", 0.0, 2.0),
         "kd_pared": _p("float", 0.05, "Derivativa del seguimiento de pared.", 0.0, 1.0),
         "girar_bajo_mm": _p("float", 650.0, "Pasillo por debajo de esto (mm) = hay esquina delante: entrar en giro.", 150.0, 2000.0),
@@ -225,6 +226,8 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "escape_min_ms": _p("int", 750, "Compromiso minimo de la marcha atras. Retrocesos cortos frente a un muro no ganan espacio: ir y venir cada 500 ms es como se choca.", 200, 3000),
         "escape_k_ms_por_mm": _p("float", 3.0, "ms extra de reversa por cada mm que falte de espacio (escala el compromiso segun el deficit).", 0.0, 20.0),
         "escape_dir": _p("float", 80.0, "Direccion durante la reversa, en %. Se gira HACIA el muro para que el morro se separe (como al salir de un estacionamiento).", 0.0, 100.0),
+        "salir_mm": _p("float", 520.0, "Pasillo con el que se da por bueno el escape y se vuelve a recta. Antes salia de girar_bajo_mm * 0.8, asi que mover la distancia a la que se dispara la curva alargaba tambien todas las reversas, que no tienen nada que ver.", 150.0, 2000.0),
+        "factor_en_giro": _p("float", 0.6, "Dentro de un giro comprometido el escape solo salta a este FACTOR de parar_bajo_mm. El pasillo se mide recto delante del carro y en mitad de un giro de 90 el morro barre hacia la pared aunque el carro rote perfectamente: sin esto el escape se metia encima de curvas que iban bien y el carro se quedaba pegado en la esquina.", 0.2, 1.0),
         "escape_max_intentos": _p("int", 4, "Reversas seguidas antes de rendirse y probar giro hacia adelante.", 1, 10),
     },
 

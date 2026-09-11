@@ -51,13 +51,13 @@
      "recta_largo_min_mm": 120.0
     },
     "navegacion": {
-     "estrategia": "centrado",
+     "estrategia": "pared",
      "kp": 151.2,
      "kd": 144.0,
-     "pared_objetivo_mm": 320.0,
+     "pared_objetivo_mm": 347.0,
      "kp_pared": 0.22,
      "kd_pared": 0.14,
-     "girar_bajo_mm": 483.0,
+     "girar_bajo_mm": 700.0,
      "salir_giro_mm": 950.0,
      "frenar_bajo_mm": 1000.0,
      "parar_bajo_mm": 300.0,
@@ -71,7 +71,7 @@
      "giro_max_ms": 3000,
      "min_recto_ms": 700,
      "cobertura_esquina": 0.22,
-     "giro_por_linea": true,
+     "giro_por_linea": false,
      "linea_dispara_esquina": true,
      "bloqueo_esquina": true,
      "usar_rectas": true,
@@ -84,7 +84,8 @@
      "reanclar_desde_deg": 65.0,
      "reanclar_max_deg": 135.0,
      "reanclar_ms": 400,
-     "tras_giro_ms": 1200
+     "tras_giro_ms": 1200,
+     "pared_max_pct": 60.0
     },
     "giro2t": {
      "activo": false,
@@ -117,7 +118,9 @@
      "escape_min_ms": 771,
      "escape_k_ms_por_mm": 3.0,
      "escape_dir": 100.0,
-     "escape_max_intentos": 2
+     "escape_max_intentos": 2,
+     "salir_mm": 420.0,
+     "factor_en_giro": 0.6
     },
     "lineas": {
      "naranja_es_horario": true,
@@ -136,14 +139,14 @@
      "sugerencia_votos": 3
     },
     "tcs": {
-     "c_min": 250,
+     "c_min": 400,
      "naranja_dif_min": 30,
      "azul_dif_min": 12,
      "naranja_r_min": 105,
      "naranja_b_max": 95,
      "azul_b_min": 82,
      "azul_r_max": 121,
-     "muestras_min": 1,
+     "muestras_min": 2,
      "refractario_ds": 3,
      "atime": 246,
      "int_umbral_pct": 55,

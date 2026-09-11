@@ -306,16 +306,21 @@ vn["navegacion"]["estrategia"] = "pared"
 nav_p = Navegador(vn["navegacion"], vn["limites"], vn["escape"], vn["giro2t"])
 d = nav_p.paso(pr, 0.0, 1)
 prueba("la estrategia 'pared' sigue la recta identificada",
-       "pared int(recta)" in d.motivo, d.motivo)
+       "pared int " in d.motivo, d.motivo)
+prueba("y el volante que pide va topado", abs(d.direccion) <= 60, str(d.direccion))
 
-# sin clasificacion (sin rectas) cae a la banda, sin romperse
+# Sin pared interna identificada cae al CENTRADO, no a la media de la banda:
+# banda * alcance no es una distancia lateral, es el hueco medio hacia delante
+# en ese lado de la imagen. En recta vale 600-700 mm, asi que el error contra
+# pared_objetivo_mm salia de casi 300 mm y el volante se iba al 65 % contra el
+# muro interno por un numero que no medía lo que decía.
 vn2 = params_mod.valores_por_defecto()
 vn2["navegacion"]["estrategia"] = "pared"
 vn2["navegacion"]["usar_rectas"] = False
 nav_b = Navegador(vn2["navegacion"], vn2["limites"], vn2["escape"], vn2["giro2t"])
 d2 = nav_b.paso(pr, 0.0, 1)
-prueba("con usar_rectas apagado vuelve a la banda", "pared int(banda)" in d2.motivo,
-       d2.motivo)
+prueba("sin pared interna identificada cae al centrado, no a la banda",
+       "sin pared interna" in d2.motivo and "centrado" in d2.motivo, d2.motivo)
 
 # error_de_rumbo: lo que alimenta toda la clasificacion
 nav_r = Navegador(vn["navegacion"], vn["limites"], vn["escape"], vn["giro2t"])
@@ -944,6 +949,42 @@ n_v.paso(p_libre, 90.0, 1)
 prueba("curva a medias: alcanzada la recta, se puede apuntar la siguiente",
        n_v._giro_incompleto is False)
 
+# --- el escape no puede secuestrar una curva que va bien -------------------
+### El pasillo se mide RECTO DELANTE del carro. En mitad de un giro de 90 el
+### morro barre hacia la pared aunque el carro rote perfectamente: la medida
+### baja sola, sin peligro nuevo, y el escape se metia encima de la curva.
+### Reversa, reanudar, reversa... y pegado en la esquina.
+p_medio_cerca = muro.perfil(escena(int(H * 0.80)), geo, mcfg)   # ~211 mm
+prueba("(premisa) el pasillo del caso queda entre los dos umbrales",
+       180 < p_medio_cerca.pasillo_mm < 300, f"{p_medio_cerca.pasillo_mm:.0f}")
+n_sec, g_sec, v_sec = nav_color()
+g_sec.evento_tcs("naranja")
+g_sec.tomar_disparo(); n_sec.rearmar_esquina()
+n_sec.paso(p_libre, 0.0, 1, en_esquina=True)          # PRE_GIRO
+n_sec.paso(p_libre, 10.0, 1, en_esquina=True)         # GIRO_COLOR
+d_sec = n_sec.paso(p_medio_cerca, 20.0, 1, en_esquina=True)
+prueba("en mitad de la curva el escape no salta por el barrido del morro",
+       n_sec.estado == GIRO_COLOR and d_sec.vel > 0,
+       f"{n_sec.estado} vel={d_sec.vel} pasillo={p_medio_cerca.pasillo_mm:.0f}")
+n_sec2, g_sec2, _ = nav_color()
+n_sec2.esc = dict(n_sec2.esc, factor_en_giro=1.0)     # como estaba antes
+g_sec2.evento_tcs("naranja")
+g_sec2.tomar_disparo(); n_sec2.rearmar_esquina()
+n_sec2.paso(p_libre, 0.0, 1, en_esquina=True)
+n_sec2.paso(p_libre, 10.0, 1, en_esquina=True)
+n_sec2.paso(p_medio_cerca, 20.0, 1, en_esquina=True)
+prueba("(control) con factor_en_giro en 1 la curva se la comia el escape",
+       n_sec2.estado == ESCAPE, n_sec2.estado)
+# y el muro DE VERDAD encima sigue cortando el giro
+n_sec3, g_sec3, _ = nav_color()
+g_sec3.evento_tcs("naranja")
+g_sec3.tomar_disparo(); n_sec3.rearmar_esquina()
+n_sec3.paso(p_libre, 0.0, 1, en_esquina=True)
+n_sec3.paso(p_libre, 10.0, 1, en_esquina=True)
+n_sec3.paso(p_cerca, 20.0, 1, en_esquina=True)
+prueba("pero con el muro de verdad encima el escape sigue mandando",
+       n_sec3.estado == ESCAPE, f"{n_sec3.estado} pasillo={p_cerca.pasillo_mm:.0f}")
+
 # --- una curva, una esquina: la vision no puede abrir otra al salir -------
 ### Al terminar el giro el carro sigue dentro de la geometria de la curva y el
 ### pasillo aun mide menos que girar_bajo_mm, asi que la vision disparaba OTRA
@@ -1282,6 +1323,46 @@ if _act["valores"]["esquina_color"]["activo"]:
     prueba("perfil activo: en modo color la linea del piso dispara el giro",
            _act["valores"]["navegacion"]["linea_dispara_esquina"] is True,
            "linea_dispara_esquina apagado con esquina_color encendido")
+### LA CURVA TIENE QUE CABER. girar_bajo_mm es la distancia a la que la vision
+### dispara la esquina, y la maniobra CONSUME pasillo: primero el pre-giro
+### recto (retardo_giro_ms a vel_giro) y luego el avance del morro durante los
+### 90 grados. Si lo que queda despues cae por debajo de parar_bajo_mm, el
+### escape salta EN MITAD de la curva: el carro se planta contra la pared y
+### retrocede. Con girar_bajo_mm en 483 eso pasaba SIEMPRE (quedaban 201 mm
+### contra un umbral de 300), y es el "se acerca muchisimo a la pared antes de
+### girar" que se veia en pista.
+### Medidas fisicas del carro (README): 150 mm entre ejes, ~26 grados a tope de
+### direccion, ~200 mm del eje trasero al morro.
+ENTRE_EJES_MM, LOCK_DEG, EJE_A_MORRO_MM = 150.0, 26.0, 200.0
+_nv, _lm, _ec = (_act["valores"]["navegacion"], _act["valores"]["limites"],
+                 _act["valores"]["esquina_color"])
+_tope = min(float(_ec["dir_pct"]), float(_lm["dir_max"]))
+_radio = ENTRE_EJES_MM / math.tan(math.radians(LOCK_DEG * _tope / 100.0))
+_avance_morro = math.hypot(_radio, EJE_A_MORRO_MM) - EJE_A_MORRO_MM
+_vel_giro_mms = float(_lm["vel_giro"]) / 100.0 * float(
+    _act["valores"]["velocidad"]["vel_max_mm_s"])
+_avance_pre = _vel_giro_mms * float(_nv["retardo_giro_ms"]) / 1000.0
+_queda = float(_nv["girar_bajo_mm"]) - _avance_morro - _avance_pre
+prueba("perfil activo: la curva cabe entre girar_bajo_mm y parar_bajo_mm",
+       _queda > float(_nv["parar_bajo_mm"]),
+       f"radio={_radio:.0f} consume={_avance_morro + _avance_pre:.0f} "
+       f"quedan={_queda:.0f} contra parar_bajo={_nv['parar_bajo_mm']:.0f}")
+
+### Y EL ZOCALO NO ES UNA LINEA. Al bajar el c_min para que entrara la azul, la
+### sombra de la base del muro tambien empezo a entrar: ahi el canal claro cae
+### mucho y los ratios se vuelven ruido (a C=300 un solo conteo mueve el ratio
+### 0,85 puntos), ademas de que el negro del tapete tira a azulado. El carro
+### "veia color" antes de tiempo y disparaba el giro. c_min tiene que quedar
+### por debajo de la LINEA (678) pero bien por encima de la sombra.
+_ZOCALO = (300, 96, 100, 113)          # sombra del muro: C bajo, tirando a azul
+prueba("perfil activo: la sombra del zocalo NO se clasifica como linea",
+       _clase_tcs(*_ZOCALO, _tcs_activo) == "-",
+       f"c_min={_tcs_activo['c_min']} -> {_clase_tcs(*_ZOCALO, _tcs_activo)}")
+prueba("(control) con el c_min de antes esa sombra si colaba como azul",
+       _clase_tcs(*_ZOCALO, dict(_tcs_activo, c_min=250)) == "azul")
+prueba("perfil activo: y el c_min sigue por debajo de la linea azul real",
+       _tcs_activo["c_min"] < _AZUL_PISTA[0], str(_tcs_activo["c_min"]))
+
 prueba("perfil activo: la linea azul medida en pista se clasifica azul",
        _clase_tcs(*_AZUL_PISTA, _tcs_activo) == "azul",
        f"c_min={_tcs_activo['c_min']} -> {_clase_tcs(*_AZUL_PISTA, _tcs_activo)}")
