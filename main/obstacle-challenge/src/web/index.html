@@ -569,12 +569,17 @@ function refrescar(){
     // delante de un pilar: es la comprobacion barata de la regla, y pasar por
     // el lado incorrecto termina la ronda.
     const ob = s.obstaculo || {};
-    if(ob.color)
+    if(ob.estado === "siguiendo")
       fila(t, "pilar", ob.color + " a " + ob.dist_mm + " mm — paso por su " +
-           (ob.lado > 0 ? "DERECHA" : "IZQUIERDA") + " (peso " + ob.peso + ")",
-           ob.sin_sitio ? "avi" : "ok");
-    else if(ob.adelantando_s)
-      fila(t, "pilar", "adelantando " + ob.adelantando_s + " s (" + ob.ultimo + ")", "avi");
+           (ob.lado > 0 ? "DERECHA" : "IZQUIERDA") + " · le falta " + ob.falta_pct +
+           "% de imagen · dir " + ob.dir + " · peso " + ob.peso +
+           (ob.empuje ? " · EMPUJE" : ""), "ok");
+    else if(ob.estado === "adelantando")
+      fila(t, "pilar", "adelantando " + ob.color + " " + ob.adelantando_s +
+           " s — rumbo fijo " + (ob.rumbo_fijo === null || ob.rumbo_fijo === undefined ?
+           "(sin giroscopio: recto)" : ob.rumbo_fijo), "avi");
+    else if(ob.fin)
+      fila(t, "pilar", "libre (" + ob.ultimo + ": " + ob.fin + ")");
     // Rescate de esquina: los numeros del triangulo, SIEMPRE, aunque el carro
     // este desarmado, para poder ajustar los umbrales a mano en el rincon.
     const at = s.atrapado || {};

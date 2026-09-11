@@ -30,8 +30,10 @@ from src import muro                    # noqa: E402
 from src.lineas import (GestorLineas, HORARIO, ANTIHORARIO,          # noqa: E402
                         clase_tcs, umbrales_desde_muestra)
 from src.botones import Pulsador, CORTA, LARGA                     # noqa: E402
-from src.navegacion import Navegador, RECTO, ESCAPE, RESCATE       # noqa: E402
-from src.obstaculos import Esquivador, LADO                        # noqa: E402
+from src.navegacion import (Navegador, RECTO, PRE_GIRO, GIRO,      # noqa: E402
+                            ESCAPE, RESCATE)
+from src.obstaculos import (Esquivador, Maniobra, LADO,            # noqa: E402
+                            LIBRE, SIGUIENDO, ADELANTANDO)
 from src.vision import Deteccion                                   # noqa: E402
 
 FALLOS = []
@@ -331,73 +333,287 @@ else:
     prueba("con a pared a un lado navega o gira", d4.vel != 0, d4.estado)
 
 # ===========================================================================
-print("== esquivar pilares ==")
+print("== esquivar pilares (servo visual, como ANTi) ==")
 MORRO = 60.0
 
 
 def pilar(color: str, dist_mm: float, lat_mm: float):
-    """Una deteccion puesta donde la geometria pondria un pilar a esa
-    distancia y ese desplazamiento lateral."""
+    """Una deteccion puesta donde la geometria pondria un pilar de 50 mm a
+    esa distancia y ese desplazamiento lateral, con el ancho en pixeles que
+    tendria a esa distancia."""
     u, v = geo.suelo_a_pixel(lat_mm, dist_mm + MORRO)
-    return Deteccion(color=color, x=int(u) - 12, y=int(v) - 40, w=24, h=40,
-                     area=900, llenado=0.9, aspecto=1.7, cx=float(u),
-                     cy=float(v) - 20)
+    w = max(6, int(round(50.0 * geo._fx / (dist_mm + MORRO))))
+    h = 2 * w
+    return Deteccion(color=color, x=int(u) - w // 2, y=int(v) - h, w=w, h=h,
+                     area=w * h, llenado=0.9, aspecto=2.0, cx=float(u),
+                     cy=float(v) - h / 2.0)
+
+
+def pilar_px(color: str, x: int, base_y: int, w: int = 20, h: int = 40):
+    """Una deteccion puesta directamente en pixeles."""
+    return Deteccion(color=color, x=x, y=base_y - h, w=w, h=h, area=w * h,
+                     llenado=0.9, aspecto=h / w, cx=x + w / 2.0,
+                     cy=base_y - h / 2.0)
 
 
 ocfg = params_mod.valores_por_defecto()
-esq = Esquivador(ocfg["obstaculos"], ocfg["geometria"], ocfg["velocidad"])
 
-### LA REGLA. Rojo -> se pasa por SU derecha; verde -> por SU izquierda. Y no
-### se invierte con el sentido de la ronda: son la derecha y la izquierda DEL
-### VEHICULO, y aqui se trabaja en el marco del carro.
-esq.reiniciar()
-esq.paso({"rojo": [pilar("rojo", 900.0, -150.0)]}, None, geo, 50.0, ahora=1000.0)
-prueba("rojo: el punto de paso queda a SU DERECHA",
-       esq.info["objetivo_mm"] > esq.info["lat_mm"], str(esq.info))
-esq2 = Esquivador(ocfg["obstaculos"], ocfg["geometria"], ocfg["velocidad"])
-esq2.paso({"verde": [pilar("verde", 900.0, 150.0)]}, None, geo, 50.0, ahora=1000.0)
-prueba("verde: el punto de paso queda a SU IZQUIERDA",
-       esq2.info["objetivo_mm"] < esq2.info["lat_mm"], str(esq2.info))
+
+def esquivador(**cambios):
+    return Esquivador(dict(ocfg["obstaculos"], **cambios), ocfg["geometria"],
+                      ocfg["velocidad"], ocfg["limites"])
+
+
+### LA REGLA. Rojo -> se pasa por SU derecha: se le empuja al canto IZQUIERDO
+### de la imagen y la direccion que pide es a la DERECHA (+). Verde, todo al
+### reves. Y no se invierte con el sentido: son la derecha y la izquierda DEL
+### VEHICULO, y trabajar en pixeles de la camara es trabajar en ese marco.
+e1 = esquivador(rampa_dir_pct_s=0.0)
+m1 = e1.paso({"rojo": [pilar("rojo", 800.0, 0.0)]}, geo, yaw=0.0, vel_pct=50,
+             ahora=1000.0)
+prueba("rojo de frente: pide DERECHA", m1.direccion > 0 and m1.peso > 0,
+       f"dir={m1.direccion:.0f} peso={m1.peso:.2f}")
+prueba("rojo: se le empuja al canto IZQUIERDO",
+       e1.info["obj_px"] < geo.W / 2 and e1.info["borde_px"] > e1.info["obj_px"],
+       str(e1.info))
+prueba("rojo: hay un pilar en juego y su lado es +1 (paso por su derecha)",
+       e1.en_juego and e1.lado_en_juego == 1 and m1.estado == SIGUIENDO)
+e2 = esquivador(rampa_dir_pct_s=0.0)
+m2 = e2.paso({"verde": [pilar("verde", 800.0, 0.0)]}, geo, yaw=0.0, vel_pct=50,
+             ahora=1000.0)
+prueba("verde de frente: pide IZQUIERDA", m2.direccion < 0, f"{m2.direccion:.0f}")
+prueba("verde: se le empuja al canto DERECHO", e2.info["obj_px"] > geo.W / 2)
 prueba("los lados estan declarados una sola vez",
        LADO["rojo"] == 1 and LADO["verde"] == -1)
 
-### EL LADO NO SE CRUZA NI AUNQUE NO QUEPA. Pilar pegado a la pared: el
-### recorte al hueco libre puede apretar el punto de paso hasta rozar, pero
-### cruzarlo al otro lado del pilar termina la ronda (9.25.5).
-esq3 = Esquivador(ocfg["obstaculos"], ocfg["geometria"], ocfg["velocidad"])
-esq3.paso({"rojo": [pilar("rojo", 700.0, 380.0)]}, p_mitad, geo, 50.0,
-          ahora=1000.0)
-minimo = ocfg["geometria"]["ancho_carro_mm"] / 2.0 + \
-    ocfg["obstaculos"]["semi_pilar_mm"]
-prueba("pilar pegado a la pared: se aprieta pero NO se cruza",
-       esq3.info["objetivo_mm"] >= esq3.info["lat_mm"] + minimo - 1,
-       str(esq3.info))
+### ASIMETRICO. Un pilar que ya esta mas afuera que la columna objetivo no
+### pide nada. Un servo simetrico giraria HACIA el para "mantenerlo" en el
+### canto, y eso es un rumbo de colision con angulo fijo.
+e3 = esquivador(rampa_dir_pct_s=0.0)
+m3 = e3.paso({"rojo": [pilar_px("rojo", 0, 280)]}, geo, yaw=0.0, vel_pct=50,
+             ahora=1000.0)
+prueba("rojo ya fuera del camino (pegado al canto izquierdo): no pide volver hacia el",
+       m3.direccion == 0.0 and m3.estado == SIGUIENDO and e3.info["falta_pct"] == 0,
+       f"dir={m3.direccion:.0f} {e3.info}")
 
-### EL VOLANTAZO. Acercandose al mismo pilar, la direccion que pide el esquive
-### no puede dispararse: el suelo de mirada y el tope son justo para eso.
-esq4 = Esquivador(dict(ocfg["obstaculos"], rampa_dir_pct_s=0.0),
-                  ocfg["geometria"], ocfg["velocidad"])
-dirs = []
-for dm in (1200.0, 800.0, 500.0, 300.0):
-    esq4.paso({"rojo": [pilar("rojo", dm, -120.0)]}, None, geo, 50.0,
-              ahora=1000.0)
-    dirs.append(abs(esq4.info["dir"]))
-prueba("el esquive nunca pide mas que dir_max_pct",
-       max(dirs) <= ocfg["obstaculos"]["dir_max_pct"] + 1, str(dirs))
+### EL EMPUJON DE CERCA. Con el pilar encima y todavia en cuadro, aunque ya
+### este en el canto se pide un poco mas hacia el lado de paso: el borde de
+### la imagen no da holgura para un carro de 20 cm.
+e4 = esquivador(rampa_dir_pct_s=0.0)
+m4 = e4.paso({"rojo": [pilar_px("rojo", 0, 400)]}, geo, yaw=0.0, vel_pct=50,
+             ahora=1000.0)
+prueba("pilar cerca y en el canto: empujon hacia el lado de paso",
+       m4.direccion > 0 and e4.info["empuje"] and
+       e4.info["dist_mm"] < ocfg["obstaculos"]["empuje_bajo_mm"],
+       str(e4.info))
 
-### EL COMPROMISO DE ADELANTAMIENTO. Cuando el pilar sale del cuadro por estar
-### muy cerca, el esquive no puede desaparecer de golpe: el centrado tiraria
-### del carro al medio y la rueda trasera barreria el pilar.
-esq5 = Esquivador(ocfg["obstaculos"], ocfg["geometria"], ocfg["velocidad"])
-esq5.paso({"rojo": [pilar("rojo", 300.0, -120.0)]}, None, geo, 50.0,
-          ahora=1000.0)
-d_sin, peso_sin = esq5.paso({}, None, geo, 50.0, ahora=1000.3)
-prueba("pilar que desaparece de cerca: sigue mandando un rato",
-       peso_sin > 0.0 and abs(d_sin) > 0.0,
-       f"dir={d_sin:.0f} peso={peso_sin:.2f}")
-prueba("y se sabe que hay un pilar en juego", esq5.en_juego)
-_, peso_tarde = esq5.paso({}, None, geo, 50.0, ahora=1010.0)
-prueba("pero el compromiso caduca", peso_tarde == 0.0 and not esq5.en_juego)
+### MAS CERCA, MAS PESO: de lejos el pilar solo insinua; de cerca manda.
+e5 = esquivador(rampa_dir_pct_s=0.0)
+m_lejos = e5.paso({"rojo": [pilar("rojo", 1400.0, 0.0)]}, geo, ahora=1000.0)
+m_cerca = e5.paso({"rojo": [pilar("rojo", 700.0, 0.0)]}, geo, ahora=1000.1)
+prueba("mas cerca, mas peso", m_cerca.peso > m_lejos.peso,
+       f"{m_lejos.peso:.2f} -> {m_cerca.peso:.2f}")
+prueba("dentro de mandar_desde_mm el peso es 1", abs(m_cerca.peso - 1.0) < 1e-6)
+prueba("con un pilar en juego se limita la velocidad",
+       m_cerca.vel_pct == ocfg["obstaculos"]["vel_pct"])
+
+### EL MAS CERCANO MANDA, con ventaja para el que ya se venia siguiendo.
+e6 = esquivador(rampa_dir_pct_s=0.0)
+e6.paso({"rojo": [pilar("rojo", 1200.0, -100.0)],
+         "verde": [pilar("verde", 600.0, 100.0)]}, geo, ahora=1000.0)
+prueba("dos pilares: manda el mas cercano", e6.info["color"] == "verde",
+       str(e6.info))
+e7 = esquivador(rampa_dir_pct_s=0.0)
+e7.paso({"rojo": [pilar("rojo", 900.0, -100.0)]}, geo, ahora=1000.0)
+e7.paso({"rojo": [pilar("rojo", 900.0, -100.0)],
+         "verde": [pilar("verde", 800.0, 100.0)]}, geo, ahora=1000.1)
+prueba("no se cambia de pilar por 10 cm de diferencia",
+       e7.info["color"] == "rojo", str(e7.info))
+
+### EL COMPROMISO DE ADELANTAMIENTO. Perdido de CERCA, el pilar esta en el
+### punto ciego de delante del carro: se congela el rumbo con el que se
+### perdio, sin centrado, hasta que la cola lo haya pasado.
+e8 = esquivador()
+e8.paso({"rojo": [pilar("rojo", 300.0, -120.0)]}, geo, yaw=10.0, vel_pct=50,
+        ahora=1000.0)
+m8 = e8.paso({}, geo, yaw=12.0, vel_pct=50, ahora=1000.05)
+prueba("perdido de cerca: se congela el rumbo en el que quedo",
+       m8.estado == ADELANTANDO and m8.rumbo_fijo is not None and
+       abs(m8.rumbo_fijo - 12.0) < 1e-6 and m8.peso == 1.0 and m8.direccion == 0.0,
+       str(m8))
+prueba("y se sabe que hay un pilar en juego (lado +1)",
+       e8.en_juego and e8.lado_en_juego == 1)
+seg = e8._fin_compromiso - 1000.05
+v_real = ocfg["velocidad"]["vel_max_mm_s"] * ocfg["limites"]["vmax"] / 255.0 * 0.5
+esperado = (300.0 + ocfg["geometria"]["largo_carro_mm"]) / v_real
+prueba("dura lo que tarda el carro ENTERO en pasarlo, a la velocidad REAL (con vmax)",
+       abs(seg - min(esperado, ocfg["obstaculos"]["compromiso_max_ms"] / 1000.0)) < 0.05,
+       f"{seg:.2f}s vs {esperado:.2f}s")
+m8b = e8.paso({}, geo, yaw=12.0, vel_pct=50, ahora=1000.5)
+prueba("sigue congelado mientras dure", m8b.estado == ADELANTANDO and
+       m8b.rumbo_fijo == m8.rumbo_fijo)
+m8c = e8.paso({}, geo, yaw=12.0, vel_pct=50, ahora=1010.0)
+prueba("el compromiso caduca y se suelta el rumbo",
+       m8c.estado == LIBRE and m8c.rumbo_fijo is None and m8c.peso == 0.0 and
+       not e8.en_juego, str(m8c))
+
+### Perdido de LEJOS no hay compromiso: salio por el canto porque el carro ya
+### giro de sobra, y el rumbo lo volvera a traer a la vista.
+e9 = esquivador()
+e9.paso({"rojo": [pilar("rojo", 900.0, -120.0)]}, geo, yaw=0.0, ahora=1000.0)
+m9 = e9.paso({}, geo, yaw=0.0, ahora=1000.05)
+prueba("perdido de lejos: libre, sin compromiso",
+       m9.estado == LIBRE and m9.rumbo_fijo is None and not e9.en_juego, str(m9))
+
+### Sin giroscopio el compromiso es "recto": direccion 0 y centrado apagado.
+e10 = esquivador()
+e10.paso({"verde": [pilar("verde", 300.0, 120.0)]}, geo, yaw=None, ahora=1000.0)
+m10 = e10.paso({}, geo, yaw=None, ahora=1000.05)
+prueba("sin giroscopio: compromiso recto (peso 1, direccion 0, sin rumbo)",
+       m10.estado == ADELANTANDO and m10.rumbo_fijo is None and
+       m10.peso == 1.0 and m10.direccion == 0.0 and e10.lado_en_juego == -1)
+
+### Lo VISIBLE manda: otro pilar cerca interrumpe el compromiso; uno lejos no.
+e11 = esquivador(rampa_dir_pct_s=0.0)
+e11.paso({"rojo": [pilar("rojo", 300.0, -120.0)]}, geo, yaw=0.0, ahora=1000.0)
+e11.paso({}, geo, yaw=0.0, ahora=1000.05)
+m11 = e11.paso({"verde": [pilar("verde", 1300.0, 0.0)]}, geo, yaw=0.0, ahora=1000.1)
+prueba("un pilar lejano NO interrumpe el compromiso", m11.estado == ADELANTANDO)
+m11b = e11.paso({"verde": [pilar("verde", 500.0, 0.0)]}, geo, yaw=0.0, ahora=1000.15)
+prueba("un pilar cercano SI lo interrumpe y se le sigue",
+       m11b.estado == SIGUIENDO and m11b.color == "verde" and m11b.direccion < 0,
+       str(m11b))
+
+### El MURO manda: si el pasillo se cierra durante el compromiso, se suelta.
+e12 = esquivador()
+e12.paso({"rojo": [pilar("rojo", 300.0, -120.0)]}, geo, yaw=0.0, ahora=1000.0)
+e12.paso({}, geo, yaw=0.0, pasillo_mm=1500.0, ahora=1000.05)
+m12 = e12.paso({}, geo, yaw=0.0, pasillo_mm=400.0, ahora=1000.1)
+prueba("pasillo cerrado durante el compromiso: se suelta",
+       m12.estado == LIBRE and e12.info.get("fin") == "pasillo cerrado", str(e12.info))
+
+### LOS PILARES NO SON MURO. Un pilar en el pasillo NO lo cierra: de el se
+### ocupa el esquivador. Si lo cerrara, dispararia frenada, giro de esquina
+### de 90 (y su conteo) o escape en reversa, que son solo para muros.
+p_base = muro.perfil(escena(300), geo, mcfg)
+esc_pilar = escena(300)
+esc_pilar["blanco"][380:440, 300:340] = 0            # el pilar no es blanco
+esc_pilar["rojo"] = np.zeros((H, W), np.uint8)
+esc_pilar["rojo"][380:440, 300:340] = 255
+p_pilar = muro.perfil(esc_pilar, geo, mcfg)
+prueba("un pilar en el pasillo NO lo cierra",
+       abs(p_pilar.pasillo_mm - p_base.pasillo_mm) < 30,
+       f"{p_pilar.pasillo_mm:.0f} vs {p_base.pasillo_mm:.0f}")
+sin_rojo = dict(esc_pilar)
+del sin_rojo["rojo"]
+p_sin = muro.perfil(sin_rojo, geo, mcfg)
+prueba("(sin la mascara del pilar si lo cerraria: esa era la trampa)",
+       p_sin.pasillo_mm < p_base.pasillo_mm - 100,
+       f"{p_sin.pasillo_mm:.0f} vs {p_base.pasillo_mm:.0f}")
+
+### LA NAVEGACION CON UN PILAR EN JUEGO
+ncfg2 = params_mod.valores_por_defecto()
+
+
+def navegador(**cambios):
+    return Navegador(dict(ncfg2["navegacion"], **cambios), ncfg2["limites"],
+                     ncfg2["escape"], ncfg2["rescate"])
+
+
+# pared LEJANA a la izquierda (1.3 m): el centrado pide derecha, no hay esquina
+lado220 = escena(220)
+lado220["blanco"][:, W // 2:] = 255
+p_lado = muro.perfil(lado220, geo, mcfg)
+nv0 = navegador()
+d_sin = nv0.paso(p_lado, None, 0)
+prueba("sin pilar, el centrado se aparta de la pared (derecha)",
+       d_sin.direccion > 0 and d_sin.estado == RECTO,
+       f"{d_sin.direccion} {d_sin.estado} {d_sin.motivo}")
+nv1 = navegador()
+d_con = nv1.paso(p_lado, None, 0,
+                 maniobra=Maniobra(direccion=-40.0, peso=1.0,
+                                   estado=SIGUIENDO, color="verde"))
+prueba("con peso 1 manda el servo del pilar y el centrado calla",
+       d_con.direccion < 0 and d_con.estado == RECTO,
+       f"{d_con.direccion} {d_con.motivo}")
+
+### Adelantando: se mantiene el rumbo congelado; ni el centrado ni la recta
+### tiran del carro mientras la cola pasa el pilar.
+nv2 = navegador()
+nv2.paso(p_lado, 0.0, 1)                          # rumbo de la recta = 0
+d_ad = nv2.paso(p_lado, 0.0, 1,
+                maniobra=Maniobra(direccion=0.0, peso=1.0, rumbo_fijo=-20.0,
+                                  estado=ADELANTANDO, color="rojo"))
+prueba("adelantando: se sigue el rumbo congelado aunque el centrado diga otra cosa",
+       d_ad.direccion < 0 and "rumbo fijo" in d_ad.motivo,
+       f"{d_ad.direccion} {d_ad.motivo}")
+
+### Mientras el pilar manda, del rumbo solo sobrevive yaw_al_esquivar.
+nv3 = navegador()
+nv3.paso(p_libre, 0.0, 1)                         # rumbo 0
+d_y1 = nv3.paso(p_libre, 30.0, 1,                 # el carro va 30 torcido
+                maniobra=Maniobra(direccion=40.0, peso=1.0, yaw_factor=0.3,
+                                  estado=SIGUIENDO, color="rojo"))
+d_y2 = nv3.paso(p_libre, 30.0, 1,
+                maniobra=Maniobra(direccion=40.0, peso=1.0, yaw_factor=1.0,
+                                  estado=SIGUIENDO, color="rojo"))
+prueba("el rumbo cede al pilar segun yaw_al_esquivar",
+       d_y1.direccion > 0 and d_y1.direccion > d_y2.direccion,
+       f"{d_y1.direccion} vs {d_y2.direccion}")
+d_v = nv3.paso(p_libre, 0.0, 1,
+               maniobra=Maniobra(direccion=0.0, peso=1.0, vel_pct=45.0,
+                                 estado=SIGUIENDO, color="rojo"))
+prueba("con pilar se va a la velocidad del esquive", d_v.vel <= 45, str(d_v.vel))
+
+### EL GIRO DE ESQUINA CEDE ANTE EL PILAR Y SE REANUDA, sin sumar 90 en cada
+### reintento y sin contar la esquina dos veces.
+contados = []
+nv4 = navegador(min_recto_ms=0)
+nv4.al_completar_giro = lambda lado: contados.append(lado)
+nv4.paso(p_libre, 0.0, 1)                         # rumbo 0
+nv4.estado = GIRO
+nv4.lado_giro = 1
+nv4.rumbo_objetivo = 90.0
+nv4.t_estado = time.time()
+man_v = Maniobra(direccion=-30.0, peso=1.0, estado=SIGUIENDO, color="verde")
+nv4.paso(p_libre, 0.0, 1, maniobra=man_v, lado_pilar=-1)
+prueba("el giro cede ante el pilar: RECTO sin contar",
+       nv4.estado == RECTO and not contados and nv4._giro_suelto, nv4.estado)
+nv4.paso(p_libre, 0.0, 1, maniobra=man_v, lado_pilar=-1)
+prueba("mientras el pilar manda no se vuelve a sumar 90",
+       nv4.rumbo_objetivo == 90.0 and nv4.estado == RECTO,
+       str(nv4.rumbo_objetivo))
+d_re = nv4.paso(p_libre, 10.0, 1)                 # el pilar se fue, faltan 80
+prueba("sin pilar el giro se reanuda hacia la recta nueva",
+       nv4.estado == GIRO and d_re.direccion > 0, f"{nv4.estado} {d_re.direccion}")
+nv4.paso(p_libre, 88.0, 1)                        # ya clavado
+prueba("el giro reanudado termina SIN contar la esquina (ya la contaron las lineas)",
+       nv4.estado == RECTO and not contados and not nv4._giro_suelto,
+       f"{nv4.estado} {contados}")
+
+### Tras el ESCAPE el rumbo se ancla a una recta valida, no al yaw en el que
+### quedo mirando (asi se fue el carro en sentido contrario tras varios escapes).
+nv5 = navegador()
+nv5.paso(p_libre, 0.0, 1)                         # rumbo 0
+nv5.estado = ESCAPE
+nv5._t_fin_escape = 0.0
+nv5.paso(p_libre, 80.0, 1)
+prueba("tras el escape se ancla a la recta mas cercana (90), no al yaw (80)",
+       nv5.estado == RECTO and abs(nv5.rumbo_objetivo - 90.0) < 1e-6,
+       f"{nv5.estado} {nv5.rumbo_objetivo}")
+
+### Torcido respecto a la recta (esquivando), un pasillo cerrado NO es una
+### esquina: es el muro de la propia recta visto de lado.
+nv6 = navegador(min_recto_ms=0)
+nv6.paso(p_libre, 0.0, 1)
+d6 = nv6.paso(p_mitad, 40.0, 1)                   # pared a 40 cm, carro 40 torcido
+prueba("torcido 40 grados, el pasillo cerrado NO dispara la esquina",
+       nv6.estado == RECTO, f"{nv6.estado} {d6.motivo}")
+nv7 = navegador(min_recto_ms=0)
+nv7.paso(p_libre, 0.0, 1)
+nv7.paso(p_mitad, 5.0, 1)
+prueba("derecho, el mismo pasillo SI dispara la esquina",
+       nv7.estado == PRE_GIRO, nv7.estado)
 
 # ===========================================================================
 print("== rescate de esquina (el triangulo) ==")

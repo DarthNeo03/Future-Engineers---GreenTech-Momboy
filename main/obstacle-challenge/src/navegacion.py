@@ -1,20 +1,31 @@
 """
-navegacion.py — Decidir velocidad y direccion a partir del perfil del muro.
+navegacion.py — Decidir velocidad y direccion a partir del perfil del muro,
+el giroscopio y lo que pide el esquivador de pilares.
 
 Maquina de estados:
 
     RECTO -> PRE_GIRO -> GIRO -> RECTO        y ESCAPE por encima de todo
       |________________________________|
 
-  * RECTO      el centrado manda (compara espacio libre izquierda/derecha) y
-               el giroscopio corrige el rumbo (acotado: ayuda, no manda).
+  * RECTO      el giroscopio mantiene el rumbo de la recta y el centrado
+               (espacio libre izquierda/derecha) corrige la posicion. Si hay
+               un PILAR en juego, manda el servo visual del esquivador: el
+               centrado cede segun el peso del pilar y del rumbo solo
+               sobrevive una fraccion (obstaculos.yaw_al_esquivar). Si se
+               esta ADELANTANDO un pilar que ya no se ve, se mantiene el
+               rumbo CONGELADO que trae el esquivador y el centrado se apaga
+               del todo: es lo que impide que la cola barra el pilar.
   * PRE_GIRO   la esquina ya se disparo pero: (1) se frena ANTES de doblar,
                (2) se espera retardo_giro_ms para que las ruedas TRASERAS
                pasen el canto del muro interno, y (3) si hay sitio, se abre
                hacia el lado contrario (giro abierto, como un camion en un
                cruce de 90) para no cortar la esquina con la cola.
   * GIRO       con giroscopio: rumbo objetivo +-90 y a clavarlo. Sin el:
-               direccion fija hasta que el pasillo abre.
+               direccion fija hasta que el pasillo abre. Si aparece un pilar
+               el giro se SUELTA (vuelve a RECTO con el rumbo ya apuntando a
+               la recta nueva) y se REANUDA cuando el pilar deja de mandar;
+               el rumbo objetivo se avanza UNA sola vez por esquina, no en
+               cada reintento.
   * RESCATE    la esquina se cerro y el piso quedo en TRIANGULO: reversa
                corta y giro comprometido hacia adentro. Va por encima de todo,
                incluido el escape, porque ahi el escape no sirve (retrocede,
@@ -25,6 +36,12 @@ Maquina de estados:
                frente a un muro es exactamente como se choca; el compromiso
                es la cura. La direccion va HACIA el muro para que el morro
                se separe, como al salir de un estacionamiento.
+
+Tras cualquier maniobra que deje el carro torcido (escape, rescate, giro
+vencido) el rumbo de referencia se ANCLA a una recta valida (la de antes o
+sus vecinas de +-90), nunca al rumbo en el que quedo mirando: adoptar ese
+rumbo fue lo que hizo que el carro se fuera en sentido contrario tras varios
+escapes.
 
 Sentido de la ronda: geometria pura. HORARIO = el centro de la pista queda a
 la DERECHA del carro = muro interno a la derecha = las esquinas doblan a la
@@ -39,6 +56,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from .muro import PerfilMuro, DetectorEsquinaInterna
+from .obstaculos import Maniobra, LIBRE
 
 RECTO = "recto"
 PRE_GIRO = "pre_giro"
@@ -109,6 +127,7 @@ class Navegador:
         self._lado_rescate = 0
         self._fin_reversa = 0.0
         self._motivo_rescate = ""
+        self._giro_suelto = False     # el giro de esquina cedio ante un pilar
 
     # ------------------------------------------------------------------
     def reiniciar(self):
@@ -121,6 +140,7 @@ class Navegador:
         self._pasillo_prev = None
         self._rumbo_rescate = None
         self._lado_rescate = 0
+        self._giro_suelto = False
 
     def _cambiar(self, estado: str):
         if estado != self.estado:
@@ -130,14 +150,15 @@ class Navegador:
     # ------------------------------------------------------------------
     def paso(self, p: PerfilMuro, yaw: Optional[float], sentido: int,
              linea_reciente: bool = False,
-             bias_obstaculo: Tuple[float, float] = (0.0, 0.0),
+             maniobra: Optional[Maniobra] = None,
              atrapado: bool = False, lado_pilar: int = 0) -> Decision:
         """sentido: +1 horario, -1 antihorario, 0 desconocido.
-        bias_obstaculo: (direccion_pct, peso 0..1) que pide el esquivador.
+        maniobra: lo que pide el esquivador (direccion, peso, rumbo fijo...).
         atrapado: el detector del triangulo dice que la esquina se cerro.
         lado_pilar: +1/-1 si hay un pilar mandando ahora mismo, 0 si no."""
         ahora = time.time()
         cfg, lim, esc = self.cfg, self.lim, self.esc
+        man = maniobra if maniobra is not None else Maniobra()
         vel_crucero = float(lim.get("vel_crucero", 55))
         vel_giro = float(lim.get("vel_giro", 38))
         dir_max = float(lim.get("dir_max", 100))
@@ -174,6 +195,7 @@ class Navegador:
         parar_bajo = float(cfg.get("parar_bajo_mm", 300.0))
         if self.estado != ESCAPE and pasillo < parar_bajo:
             self._cambiar(ESCAPE)
+            self._giro_suelto = False
             deficit = parar_bajo - pasillo
             comp = float(esc.get("escape_min_ms", 750)) + \
                 float(esc.get("escape_k_ms_por_mm", 3.0)) * deficit
@@ -186,8 +208,8 @@ class Navegador:
                     self._escape_intentos = 0
                     self._cambiar(RECTO)
                     self.pd.reiniciar()
-                    if usar_yaw:
-                        self.rumbo_objetivo = yaw   # el rumbo viejo ya no vale
+                    # A una recta VALIDA, no al rumbo en que quedo mirando.
+                    self._anclar_recta_mas_cercana(yaw, usar_yaw)
                 elif self._escape_intentos > int(esc.get("escape_max_intentos", 4)):
                     # La reversa no gana espacio (algo detras): giro adelante
                     # HACIA DONDE HAY MAS PISO. Aqui no vale mirar distancias:
@@ -236,43 +258,53 @@ class Navegador:
 
         # =================== GIRO =========================================
         if self.estado == GIRO:
-            venc = (ahora - self.t_estado) * 1000 > float(cfg.get("giro_max_ms", 3000))
-            # El giro de esquina CEDE si aparece un pilar. Un giro comprometido
-            # de 90 grados con un pilar delante se lo lleva por delante o lo
-            # pasa por el lado prohibido, y eso termina la ronda; perder la
-            # esquina solo cuesta que la cuente el TCS mas tarde. El rumbo
-            # objetivo ya esta apuntando a la recta nueva, asi que mientras
-            # esquiva el giroscopio sigue tirando hacia adentro.
             if lado_pilar != 0 and bool(cfg.get("giro_cede_ante_pilar", True)):
-                self._terminar_giro()
-            elif usar_yaw and self.rumbo_objetivo is not None:
-                err = _norm_ang(self.rumbo_objetivo - yaw)
-                if abs(err) < float(cfg.get("giro_tolerancia_deg", 8.0)) or venc:
-                    if venc:
-                        self.rumbo_objetivo = yaw
-                    self._terminar_giro()
-                else:
-                    d = _lim(err * float(cfg.get("yaw_kp", 1.6)) * 3.0,
-                             -dir_max, dir_max)
-                    return self._salida(vel_giro, d, p, yaw, sentido,
-                                        f"giro yaw err={err:+.0f}")
+                # El giro de esquina CEDE si aparece un pilar. Un giro
+                # comprometido de 90 grados con un pilar delante se lo lleva
+                # por delante o lo pasa por el lado prohibido, y eso termina
+                # la ronda. El rumbo objetivo ya apunta a la recta nueva, asi
+                # que mientras esquiva el giroscopio sigue tirando hacia
+                # adentro; el giro se reanuda cuando el pilar deje de mandar,
+                # SIN volver a sumar 90.
+                self._soltar_giro()
             else:
-                if pasillo > float(cfg.get("salir_giro_mm", 950.0)) or venc:
-                    self._terminar_giro()
-                else:
-                    d = self.lado_giro * float(cfg.get("dir_giro", 85.0))
-                    return self._salida(vel_giro, d, p, yaw, sentido,
-                                        f"giro vision pasillo={pasillo:.0f}")
+                d = self._paso_giro(p, yaw, sentido, ahora, usar_yaw)
+                if d is not None:
+                    return d
 
         # =================== RECTO ========================================
+        desvio = None
+        if usar_yaw and self.rumbo_objetivo is not None:
+            desvio = abs(_norm_ang(self.rumbo_objetivo - yaw))
+
+        # --- giro suelto: reanudarlo cuando el pilar ya no manda ----------
+        # _giro_suelto se queda puesto hasta que el giro termine: asi el giro
+        # reanudado sabe que NO tiene que contar la esquina.
+        if self._giro_suelto and lado_pilar == 0 and man.estado == LIBRE:
+            if desvio is not None and desvio < float(cfg.get("giro_tolerancia_deg", 8.0)):
+                self._terminar_giro(contar=False)
+            else:
+                self._cambiar(GIRO)
+                d = self._paso_giro(p, yaw, sentido, ahora, usar_yaw,
+                                    etiqueta="giro reanudado")
+                if d is not None:
+                    return d
+
         recto_estable = (ahora - self.t_estado) * 1000 >= float(
             cfg.get("min_recto_ms", 700))
 
+        # Con el carro torcido respecto a la recta (esquivando), un pasillo
+        # que se cierra o un muro lateral que desaparece casi nunca son una
+        # esquina: son el muro de la propia recta visto de lado. Girar 90 ahi
+        # es meterse contra el. La linea del piso si sigue valiendo.
+        desvio_ok = desvio is None or desvio <= float(
+            cfg.get("esquina_max_desvio_deg", 25.0))
+
         disparo = ""
-        if recto_estable:
-            if pasillo < float(cfg.get("girar_bajo_mm", 650.0)):
+        if recto_estable and not self._giro_suelto:
+            if pasillo < float(cfg.get("girar_bajo_mm", 650.0)) and desvio_ok:
                 disparo = f"pasillo {pasillo:.0f}mm"
-            elif aviso_interna is not None:
+            elif aviso_interna is not None and desvio_ok:
                 lado_aviso = 1 if aviso_interna == "der" else -1
                 # si conocemos el sentido, solo cuenta si desaparecio el lado
                 # INTERNO (el externo casi nunca desaparece; si lo hace, es ruido)
@@ -293,29 +325,40 @@ class Navegador:
 
         # --- centrado -------------------------------------------------------
         direccion, motivo = self._dir_centrado(p, ahora)
+        if self._giro_suelto:
+            motivo = "giro suelto por pilar; " + motivo
 
-        # --- esquive de pilares (sesgo ponderado) --------------------------
-        bias_dir, peso = bias_obstaculo
-        if peso > 0.0:
-            direccion = (1.0 - peso) * direccion + peso * bias_dir
-            motivo += f" esq({bias_dir:+.0f}x{peso:.2f})"
+        yaw_kp = float(cfg.get("yaw_kp", 1.6))
+        yaw_max = float(cfg.get("yaw_max", 45.0))
 
-        # --- rumbo por giroscopio -----------------------------------------
-        if usar_yaw and self.rumbo_objetivo is not None:
-            err = _norm_ang(self.rumbo_objetivo - yaw)
-            corr = _lim(err * float(cfg.get("yaw_kp", 1.6)),
-                        -float(cfg.get("yaw_max", 45.0)),
-                        float(cfg.get("yaw_max", 45.0)))
-            # La correccion de rumbo se SUMA despues de mezclar el esquive, y
-            # al esquivar el carro se sale del rumbo a proposito. Asi que o se
-            # suma (55 % de esquive + 45 % de yaw = volantazo y la cola se
-            # lleva el pilar) o se resta (no esquiva bastante). Se desvanece
-            # con el peso del pilar: medido, de +87/+23 segun como estuviera
-            # cruzado, a +55 en los dos casos.
-            if bool(cfg.get("yaw_cede_al_esquivar", True)):
-                corr *= (1.0 - peso)
-            direccion += corr
-            motivo += f" yaw{err:+.0f}"
+        if man.rumbo_fijo is not None and usar_yaw:
+            # --- ADELANTANDO: rumbo congelado, sin centrado ----------------
+            # El pilar ya no se ve (esta en el punto ciego de delante del
+            # carro). Se mantiene EXACTAMENTE el rumbo con el que se perdio
+            # hasta que la cola lo haya pasado. Ni el centrado ni la recta
+            # tiran del carro hacia el pilar mientras tanto.
+            err = _norm_ang(man.rumbo_fijo - yaw)
+            direccion = _lim(err * yaw_kp, -yaw_max, yaw_max)
+            motivo = f"adelantando {man.color}: rumbo fijo err={err:+.0f}"
+        else:
+            # --- esquive de pilares: el servo visual manda ------------------
+            if man.peso > 0.0:
+                direccion = man.direccion + (1.0 - man.peso) * direccion
+                motivo += f" pilar({man.direccion:+.0f}x{man.peso:.2f})"
+
+            # --- rumbo por giroscopio -----------------------------------
+            if usar_yaw and self.rumbo_objetivo is not None:
+                err = _norm_ang(self.rumbo_objetivo - yaw)
+                corr = _lim(err * yaw_kp, -yaw_max, yaw_max)
+                # Al esquivar el carro se sale del rumbo A PROPOSITO. La
+                # correccion se desvanece con el peso del pilar hasta la
+                # fraccion que pide el esquivador (ANTi conserva mas o menos
+                # un tercio): bastante para no cruzarse, poco para no volver
+                # hacia el pilar.
+                if man.peso > 0.0:
+                    corr *= 1.0 - man.peso * (1.0 - man.yaw_factor)
+                direccion += corr
+                motivo += f" yaw{err:+.0f}"
 
         # --- velocidad -----------------------------------------------------
         frenar = float(cfg.get("frenar_bajo_mm", 1000.0))
@@ -334,10 +377,48 @@ class Navegador:
                 vel = min(vel, vel_giro * _lim(ttc / ttc_min, 0.35, 1.0))
                 motivo += f" ttc={ttc:.1f}s"
 
+        # con un pilar en juego se va a la velocidad del esquive
+        if man.vel_pct is not None:
+            vel = min(vel, float(man.vel_pct))
+
         # girar fuerte y correr a la vez es como se sale de la pista
         vel *= 1.0 - 0.45 * min(1.0, abs(direccion) / max(1.0, dir_max))
 
         return self._salida(vel, direccion, p, yaw, sentido, motivo)
+
+    # ------------------------------------------------------------------
+    def _paso_giro(self, p: PerfilMuro, yaw: Optional[float], sentido: int,
+                   ahora: float, usar_yaw: bool,
+                   etiqueta: str = "giro") -> Optional[Decision]:
+        """La salida del GIRO mientras dure, o None cuando termina (y el
+        resto del paso() sigue en RECTO)."""
+        cfg, lim = self.cfg, self.lim
+        vel_giro = float(lim.get("vel_giro", 38))
+        dir_max = float(lim.get("dir_max", 100))
+        venc = (ahora - self.t_estado) * 1000 > float(cfg.get("giro_max_ms", 3000))
+        if usar_yaw and self.rumbo_objetivo is not None:
+            err = _norm_ang(self.rumbo_objetivo - yaw)
+            if abs(err) < float(cfg.get("giro_tolerancia_deg", 8.0)) or venc:
+                if venc:
+                    self._anclar_recta_mas_cercana(yaw, usar_yaw)
+                self._terminar_giro(contar=not self._giro_suelto)
+                return None
+            d = _lim(err * float(cfg.get("yaw_kp", 1.6)) * 3.0, -dir_max, dir_max)
+            return self._salida(vel_giro, d, p, yaw, sentido,
+                                f"{etiqueta} yaw err={err:+.0f}")
+        if p.pasillo_mm > float(cfg.get("salir_giro_mm", 950.0)) or venc:
+            self._terminar_giro(contar=not self._giro_suelto)
+            return None
+        d = self.lado_giro * float(cfg.get("dir_giro", 85.0))
+        return self._salida(vel_giro, d, p, yaw, sentido,
+                            f"{etiqueta} vision pasillo={p.pasillo_mm:.0f}")
+
+    def _soltar_giro(self) -> None:
+        """El giro cede ante un pilar: a RECTO sin contar la esquina y sin
+        tocar el rumbo objetivo (ya apunta a la recta nueva)."""
+        self._giro_suelto = True
+        self._cambiar(RECTO)
+        self.pd.reiniciar()
 
     # ------------------------------------------------------------------
     def _iniciar_rescate(self, yaw: Optional[float], sentido: int,
@@ -365,6 +446,7 @@ class Navegador:
             self._lado_rescate = 1 if p.piso_der > p.piso_izq else -1
             motivo = "piso"
         self._cambiar(RESCATE)
+        self._giro_suelto = False
         self._fin_reversa = time.time() + \
             float(self.res.get("reversa_ms", 400)) / 1000.0
         if usar_yaw and yaw is not None:
@@ -433,10 +515,16 @@ class Navegador:
         self.rumbo_objetivo = min(candidatas,
                                   key=lambda c: abs(_norm_ang(c - yaw)))
 
-    def _terminar_giro(self):
+    def _terminar_giro(self, contar: bool = True):
+        """contar=False: el giro se habia soltado por un pilar y se reanuda
+        mas tarde; para entonces las lineas ya contaron esa esquina y volver
+        a sumarla seria contar una de mentira. Mejor perder una que sumar."""
         lado = self.lado_giro
         self._cambiar(RECTO)
         self.pd.reiniciar()
+        self._giro_suelto = False
+        if not contar:
+            return
         try:
             self.al_completar_giro(lado)
         except Exception:
@@ -474,6 +562,7 @@ class Navegador:
             "cob_der": round(p.cobertura_der, 2),
             "cierre_mms": round(self._vel_cierre, 0),
             "sentido": sentido,
+            "giro_suelto": self._giro_suelto,
         }
         if yaw is not None:
             m["yaw"] = round(yaw, 1)

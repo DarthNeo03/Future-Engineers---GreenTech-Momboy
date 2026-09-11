@@ -220,10 +220,20 @@ def perfil(masks: Dict[str, np.ndarray], geo: Geometria,
 # ---------------------------------------------------------------------------
 def _mascara_piso(masks: Dict[str, np.ndarray]) -> np.ndarray:
     """Piso = blanco + las lineas naranja/azul de las esquinas, que estan
-    PINTADAS en el piso. El magenta NO: los delimitadores del estacionamiento
-    2026 son muros fisicos de 10 cm y deben salir como obstaculo."""
+    PINTADAS en el piso, + LOS PILARES rojo y verde.
+
+    Los pilares se cuentan como piso A PROPOSITO: de ellos se ocupa el
+    esquivador (obstaculos.py), que los ve por su color. Si entraran en el
+    perfil como muro, un pilar a 60 cm de frente cerraria el "pasillo" y
+    dispararia lo que solo debe disparar un muro: frenada, giro de esquina
+    de 90 grados (y su conteo) o escape en reversa. Con el pilar como piso,
+    el contacto de esa columna es el muro que hay DETRAS del pilar, que es lo
+    que de verdad cierra el paso.
+
+    El magenta NO: los delimitadores del estacionamiento 2026 son muros
+    fisicos de 10 cm y deben salir como obstaculo."""
     piso = masks["blanco"].astype(bool)
-    for extra in ("naranja", "azul"):
+    for extra in ("naranja", "azul", "rojo", "verde"):
         m = masks.get(extra)
         if m is not None:
             piso |= m.astype(bool)

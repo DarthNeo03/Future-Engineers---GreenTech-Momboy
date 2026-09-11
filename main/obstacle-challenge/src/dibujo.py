@@ -122,32 +122,41 @@ def anotar(frame: np.ndarray,
                             (det.x, det.base_y + 12),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, bgr, 1, cv2.LINE_AA)
 
-    # --- por donde hay que pasar el pilar ----------------------------------
-    # Se dibuja el punto de paso Y una flecha con el lado, para poder
-    # comprobar la regla con el carro PARADO delante de un pilar, que es la
-    # unica forma barata de asegurarse: pasar por el lado incorrecto termina
-    # la ronda.
-    if obst and obst.get("color"):
-        col = (0, 0, 230) if obst["color"] == "rojo" else (40, 190, 40)
-        try:
-            u, v = geo.suelo_a_pixel(float(obst["objetivo_mm"]),
-                                     float(obst["dist_mm"]) + morro)
-            cv2.drawMarker(frame, (u, v), col, cv2.MARKER_CROSS, 18, 2)
-            lado = int(obst.get("lado", 0))
-            cv2.arrowedLine(frame, (u - lado * 26, v), (u + lado * 8, v),
-                            col, 2, cv2.LINE_AA, tipLength=0.4)
-        except Exception:
-            pass
-        txt = f"{obst['color']} -> paso por su {'derecha' if obst.get('lado', 0) > 0 else 'izquierda'}"
-        if obst.get("sin_sitio"):
-            txt += " (JUSTO)"
+    # --- el pilar y hacia donde se le empuja -------------------------------
+    # Se dibuja la columna objetivo (pegada al canto por el que el pilar
+    # tiene que salir) y una flecha desde el borde interior del pilar hasta
+    # ella. Sirve para comprobar la regla con el carro PARADO delante de un
+    # pilar, que es la unica forma barata de asegurarse: pasar por el lado
+    # incorrecto termina la ronda. Rojo -> flecha hacia la izquierda (el
+    # carro pasa por su derecha); verde -> hacia la derecha.
+    if obst and obst.get("estado") == "siguiendo":
+        col = (0, 0, 230) if obst.get("color") == "rojo" else (40, 190, 40)
+        x_obj = int(obst.get("obj_px", 0))
+        x_int = int(obst.get("borde_px", 0))
+        y = int(obst.get("borde_y", H // 2))
+        cv2.line(frame, (x_obj, max(0, y_h)), (x_obj, H - 60), col, 1,
+                 cv2.LINE_AA)
+        if abs(x_int - x_obj) > 4:
+            cv2.arrowedLine(frame, (x_int, y), (x_obj, y), col, 2,
+                            cv2.LINE_AA, tipLength=0.15)
+        else:
+            cv2.circle(frame, (x_obj, y), 5, col, 2)
+        lado = "derecha" if int(obst.get("lado", 0)) > 0 else "izquierda"
+        txt = (f"{obst.get('color', '')} a {obst.get('dist_mm', 0)}mm -> paso "
+               f"por su {lado}: falta {obst.get('falta_pct', 0)}% "
+               f"dir {int(obst.get('dir', 0)):+d}")
+        if obst.get("empuje"):
+            txt += " EMPUJE"
         cv2.putText(frame, txt, (6, H - 90), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
                     col, 1, cv2.LINE_AA)
-    elif obst and obst.get("adelantando_s"):
-        cv2.putText(frame, f"adelantando {obst['adelantando_s']}s "
-                           f"({obst.get('ultimo', '')})",
-                    (6, H - 90), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
-                    (0, 200, 255), 1, cv2.LINE_AA)
+    elif obst and obst.get("estado") == "adelantando":
+        col = (0, 0, 230) if obst.get("color") == "rojo" else (40, 190, 40)
+        rf = obst.get("rumbo_fijo")
+        txt = (f"adelantando {obst.get('color', '')} "
+               f"{obst.get('adelantando_s', 0)}s, rumbo fijo "
+               + (f"{rf:+.0f}" if rf is not None else "(sin giroscopio: recto)"))
+        cv2.putText(frame, txt, (6, H - 90), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                    col, 1, cv2.LINE_AA)
 
     # --- rescate de esquina: los numeros del triangulo ---------------------
     # Se pintan SIEMPRE (aunque el carro este desarmado) para poder ajustar
@@ -211,12 +220,13 @@ def anotar(frame: np.ndarray,
 def vista_piso(masks: Dict[str, np.ndarray],
                perfil: Optional[PerfilMuro]) -> Optional[np.ndarray]:
     """Vista de depuracion del detector de muros: que se considero piso
-    (gris claro), que no (oscuro) y la linea de contacto encontrada."""
+    (gris claro; los pilares cuentan como piso a proposito), que no (oscuro)
+    y la linea de contacto encontrada."""
     blanco = masks.get("blanco")
     if blanco is None:
         return None
     piso = blanco.copy()
-    for extra in ("naranja", "azul"):
+    for extra in ("naranja", "azul", "rojo", "verde"):
         m = masks.get(extra)
         if m is not None:
             piso = cv2.bitwise_or(piso, m)

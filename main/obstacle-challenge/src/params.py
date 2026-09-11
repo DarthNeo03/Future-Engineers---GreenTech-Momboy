@@ -107,8 +107,8 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
         "usar_yaw": _p("bool", True, "Usar el giroscopio: la camara decide CUANDO girar, el giroscopio decide CUANTO (90 grados clavados)."),
         "yaw_kp": _p("float", 1.6, "Correccion de rumbo en recta: % de direccion por grado de error.", 0.0, 10.0),
         "yaw_max": _p("float", 45.0, "Tope de la correccion por rumbo (que el giroscopio ayude, no que mande).", 0.0, 100.0),
-        "yaw_cede_al_esquivar": _p("bool", True, "Desvanecer la correccion de rumbo mientras manda un pilar. La correccion se SUMA despues de mezclar el esquive, y al esquivar el carro se sale del rumbo a proposito: sin esto, o se suma (55 % de esquive + 45 % de yaw = volante al tope, y la cola se lleva el pilar) o se resta (y no esquiva bastante)."),
-        "giro_cede_ante_pilar": _p("bool", True, "Soltar el giro de 90 de la esquina en cuanto aparece un pilar. Un giro comprometido con un pilar delante lo atropella o lo pasa por el lado prohibido, y eso termina la ronda; perder la esquina solo cuesta que la cuente el TCS un poco mas tarde."),
+        "giro_cede_ante_pilar": _p("bool", True, "Soltar el giro de 90 de la esquina en cuanto aparece un pilar. Un giro comprometido con un pilar delante lo atropella o lo pasa por el lado prohibido, y eso termina la ronda. El giro se REANUDA cuando el pilar deja de mandar (sin volver a sumar 90 al rumbo) y esa reanudacion no cuenta esquina: para entonces las lineas ya la contaron."),
+        "esquina_max_desvio_deg": _p("float", 25.0, "Con el carro desviado de la recta mas que esto (o sea, esquivando un pilar), un pasillo que se cierra o un muro lateral que desaparece NO disparan la esquina: lo mas probable es que sea el muro de la propia recta visto de lado, y girar 90 ahi es meterse contra el. La linea del piso sigue disparando siempre.", 5.0, 90.0),
     },
 
     "escape": {
@@ -152,27 +152,30 @@ ESQUEMA: Dict[str, Dict[str, Dict[str, Any]]] = {
     },
 
     # =======================================================================
-    # ESQUIVAR PILARES. La regla es una sola y no se invierte con el sentido:
-    # el pilar ROJO se pasa por SU DERECHA y el VERDE por SU IZQUIERDA, con la
-    # derecha y la izquierda DEL VEHICULO. Ver src/obstaculos.py.
+    # ESQUIVAR PILARES. Servo visual como el de ANTi (WRO 2025): el pilar se
+    # EMPUJA hacia el canto de la imagen por el que tiene que salir. La regla
+    # es una sola y no se invierte con el sentido: el ROJO se pasa por SU
+    # DERECHA (sale por el canto izquierdo) y el VERDE por SU IZQUIERDA (sale
+    # por el derecho). Ver src/obstaculos.py.
     # =======================================================================
     "obstaculos": {
         "activo": _p("bool", True, "Esquivar los pilares de colores. Apagalo para probar solo la conduccion, como en el Open Challenge."),
-        "activar_desde_mm": _p("float", 1600.0, "Distancia a la que un pilar empieza a influir en la direccion.", 300.0, 4000.0),
-        "mandar_desde_mm": _p("float", 700.0, "Distancia a la que el pilar ya manda al maximo sobre la direccion.", 100.0, 2000.0),
+        "activar_desde_mm": _p("float", 1500.0, "Distancia a la que un pilar empieza a mandar sobre la direccion. Mas lejos se ignora.", 300.0, 4000.0),
+        "mandar_desde_mm": _p("float", 800.0, "Distancia a la que el pilar ya manda del todo (peso 1): el centrado del muro se apaga y del rumbo solo sobrevive yaw_al_esquivar.", 100.0, 2000.0),
         "lateral_max_mm": _p("float", 900.0, "Un pilar desplazado mas que esto hacia un lado no es de este carril: se ignora.", 200.0, 2000.0),
-        "margen_mm": _p("float", 70.0, "Holgura que se PIDE entre el costado del carro y el pilar al pasarlo. Si no cabe se aprieta hasta rozar, pero NUNCA se cruza al otro lado del pilar.", 0.0, 300.0),
-        "semi_pilar_mm": _p("float", 25.0, "Medio ancho del pilar (son de 50x50 mm).", 10.0, 60.0),
-        "k_dir": _p("float", 1.4, "Ganancia hacia el punto de paso: % de direccion por grado de desvio.", 0.1, 10.0),
-        "dir_max_pct": _p("float", 55.0, "TOPE de direccion que puede pedir el esquive. El pilar nunca deberia mandar el volante a fondo: eso es lo que hace que el carro gire de golpe y se cruce. Si necesitas mas, acercate mas tarde (mandar_desde_mm) en vez de subir esto.", 10.0, 100.0),
-        "mirada_min_mm": _p("float", 350.0, "Mirada minima al calcular el angulo hacia el punto de paso. Es lo que impide el volantazo al acercarse: sin ella, el mismo desvio lateral pide cada vez mas angulo hasta llegar al tope. Subela si el carro esquiva demasiado brusco.", 150.0, 1200.0),
-        "rampa_dir_pct_s": _p("float", 220.0, "Cuanto puede cambiar la direccion del esquive por segundo. Evita el volantazo en un solo frame.", 40.0, 1000.0),
-        "peso_max": _p("float", 0.8, "Peso maximo del esquive frente al centrado. Con 1 el muro deja de contar: no lo pongas en 1.", 0.0, 1.0),
-        "ceder_ante_muro": _p("bool", True, "Cuando el pasillo se cierra, el esquive cede el mando a la evitacion de muros. Sin esto, un pilar pegado a la pared interior puede llevarse el carro de frente contra la esquina."),
-        "ceder_bajo_mm": _p("float", 700.0, "Pasillo por debajo del cual el esquive empieza a ceder ante el muro.", 200.0, 2000.0),
-        "compromiso_bajo_mm": _p("float", 500.0, "A partir de esta cercania se arma el COMPROMISO de adelantamiento: el pilar esta a punto de salir del cuadro (la camara no llega tan abajo) y si el esquive desapareciera de golpe, el centrado tiraria del carro al medio y la rueda trasera barreria el pilar.", 150.0, 1200.0),
-        "peso_compromiso": _p("float", 0.7, "Cuanto manda ese 'ir recto' mientras se adelanta un pilar que ya no se ve.", 0.0, 1.0),
-        "compromiso_max_ms": _p("int", 2500, "Tope del compromiso. Es una red: si la velocidad estimada fuera absurda, el carro no se queda yendo recto para siempre.", 300, 8000),
+        "borde_frac": _p("float", 0.06, "Columna objetivo, como fraccion del ancho de imagen medida desde el canto: el BORDE INTERIOR del pilar tiene que llegar hasta ahi (el rojo al canto izquierdo, el verde al derecho). Mas pequeño = mas holgura al pasar, pero el pilar sale antes de cuadro.", 0.0, 0.4),
+        "k_borde": _p("float", 300.0, "Ganancia del servo visual: % de direccion por cada ancho de imagen entero que le falte al pilar para llegar a la columna objetivo. Con 300, un pilar a un quinto de imagen del canto pide 60 %. Es ASIMETRICO: el pilar solo pide alejarse de el, nunca volver hacia el.", 50.0, 1000.0),
+        "dir_max_pct": _p("float", 75.0, "TOPE de direccion que puede pedir el esquive.", 10.0, 100.0),
+        "rampa_dir_pct_s": _p("float", 400.0, "Cuanto puede cambiar la direccion del esquive por segundo. Evita el volantazo en un solo frame.", 40.0, 2000.0),
+        "peso_lejos": _p("float", 0.35, "Peso del pilar frente al centrado cuando acaba de entrar en alcance (en activar_desde_mm). Sube hasta 1 en mandar_desde_mm.", 0.0, 1.0),
+        "yaw_al_esquivar": _p("float", 0.3, "Cuanta correccion de rumbo sobrevive mientras un pilar manda del todo. ANTi conserva mas o menos un tercio: bastante para no cruzarse, poco para no volver hacia el pilar.", 0.0, 1.0),
+        "empuje_bajo_mm": _p("float", 450.0, "Con el pilar mas cerca que esto y todavia en cuadro, se añade empuje_pct de direccion hacia el lado de paso aunque el borde ya este en la columna objetivo: el canto de la imagen no da holgura para un carro de 20 cm.", 100.0, 1200.0),
+        "empuje_pct": _p("float", 20.0, "El empujon extra de cerca, en % de direccion.", 0.0, 60.0),
+        "compromiso_bajo_mm": _p("float", 450.0, "Si el pilar se pierde de vista MAS CERCA que esto, entra el COMPROMISO de adelantamiento: rumbo congelado, sin centrado, hasta que la cola lo haya pasado (largo del carro / velocidad real). Perdido mas lejos, es que salio por el canto porque el carro ya giro de sobra, y no hace falta nada.", 150.0, 1200.0),
+        "compromiso_max_ms": _p("int", 3000, "Tope del compromiso. Es una red: si la velocidad estimada fuera absurda, el carro no se queda con el rumbo congelado para siempre.", 300, 8000),
+        "soltar_pasillo_mm": _p("float", 600.0, "Durante el compromiso, si el pasillo baja de esto se suelta: el muro manda.", 200.0, 2000.0),
+        "vel_pct": _p("int", 45, "Velocidad mientras un pilar manda o se adelanta, en % de vmax (como vel_crucero).", 10, 100),
+        "preferir_mm": _p("float", 150.0, "Ventaja en mm que se le da al pilar que ya se venia siguiendo frente a otro mas cercano, para no cambiar de pilar por ruido.", 0.0, 600.0),
     },
 
     # =======================================================================

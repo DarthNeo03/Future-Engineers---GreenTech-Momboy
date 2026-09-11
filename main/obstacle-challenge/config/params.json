@@ -65,8 +65,8 @@
      "usar_yaw": true,
      "yaw_kp": 1.6,
      "yaw_max": 45.0,
-     "yaw_cede_al_esquivar": true,
-     "giro_cede_ante_pilar": true
+     "giro_cede_ante_pilar": true,
+     "esquina_max_desvio_deg": 25.0
     },
     "escape": {
      "escape_min_ms": 750,
@@ -106,21 +106,22 @@
     },
     "obstaculos": {
      "activo": true,
-     "activar_desde_mm": 1600.0,
-     "mandar_desde_mm": 700.0,
+     "activar_desde_mm": 1500.0,
+     "mandar_desde_mm": 800.0,
      "lateral_max_mm": 900.0,
-     "margen_mm": 70.0,
-     "semi_pilar_mm": 25.0,
-     "k_dir": 1.4,
-     "dir_max_pct": 55.0,
-     "mirada_min_mm": 350.0,
-     "rampa_dir_pct_s": 220.0,
-     "peso_max": 0.8,
-     "ceder_ante_muro": true,
-     "ceder_bajo_mm": 700.0,
-     "compromiso_bajo_mm": 500.0,
-     "peso_compromiso": 0.7,
-     "compromiso_max_ms": 2500
+     "borde_frac": 0.06,
+     "k_borde": 300.0,
+     "dir_max_pct": 75.0,
+     "rampa_dir_pct_s": 400.0,
+     "peso_lejos": 0.35,
+     "yaw_al_esquivar": 0.3,
+     "empuje_bajo_mm": 450.0,
+     "empuje_pct": 20.0,
+     "compromiso_bajo_mm": 450.0,
+     "compromiso_max_ms": 3000,
+     "soltar_pasillo_mm": 600.0,
+     "vel_pct": 45,
+     "preferir_mm": 150.0
     },
     "rescate": {
      "activo": true,

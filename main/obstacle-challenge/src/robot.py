@@ -11,8 +11,9 @@ En competencia el start no se da desde la web sino con el PULSADOR, que cuelga
 del ESP32 y llega en la trama de sensores; botones.py decide si fue pulsacion
 corta (armar/desarmar) o larga.
 
-ESTE PROGRAMA ES SOLO EL OPEN CHALLENGE: no mira pilares rojos ni verdes. El
-reto de obstaculos vive aparte, en main/obstacle-challenge/.
+ESTE PROGRAMA ES EL RETO DE OBSTACULOS: ademas de conducir como el Open
+Challenge, esquiva los pilares rojos y verdes (obstaculos.py, servo visual
+como el de ANTi) y rescata al carro de una esquina cerrada (rescate).
 """
 
 from __future__ import annotations
@@ -57,7 +58,7 @@ class Robot:
                                    self.p["escape"], self.p["rescate"],
                                    al_completar_giro=self._giro_completado)
         self.esquivador = Esquivador(self.p["obstaculos"], self.p["geometria"],
-                                     self.p["velocidad"])
+                                     self.p["velocidad"], self.p["limites"])
         self.detector_atrapado = muro.DetectorAtrapado()
         self.enlace = Enlace(self.p["enlace"], simulado=simulado, al_log=self.log)
         # El pulsador de competencia. Cuelga del ESP32 y llega por la trama de
@@ -458,8 +459,12 @@ class Robot:
             debe_parar = self.carrera.paso()
 
             # --- pilares y esquina cerrada --------------------------------
-            bias = self.esquivador.paso(dets, perfil, self.geo,
-                                        abs(self.decision.vel))
+            # El esquivador recibe el yaw (lo congela al adelantar), la
+            # velocidad que lleva el carro (para saber cuanto dura el
+            # adelantamiento) y el pasillo (si se cierra, el muro manda).
+            maniobra = self.esquivador.paso(
+                dets, self.geo, yaw=yaw, vel_pct=abs(self.decision.vel),
+                pasillo_mm=None if perfil is None else perfil.pasillo_mm)
             # El detector del triangulo se evalua SIEMPRE, aunque el carro
             # este desarmado: asi se pueden ajustar los umbrales viendo los
             # numeros en vivo con el carro puesto a mano en la esquina.
@@ -477,7 +482,7 @@ class Robot:
                                  motivo="carrera terminada: parado en meta")
                 else:
                     d = self.navegador.paso(
-                        perfil, yaw, sentido, linea_reciente, bias,
+                        perfil, yaw, sentido, linea_reciente, maniobra,
                         atrapado=atrapado,
                         lado_pilar=self.esquivador.lado_en_juego)
             elif self.modo == "manual" and self.armado:

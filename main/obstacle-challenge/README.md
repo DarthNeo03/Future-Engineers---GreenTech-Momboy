@@ -4,14 +4,18 @@ Este programa es una COPIA de `main/open-challenge/` con dos cosas mas:
 
 1. **Esquivar pilares**: el ROJO se pasa por SU DERECHA y el VERDE por SU
    IZQUIERDA. Nada mas: no hay modos de esquive alternativos ni inversion por
-   sentido.
+   sentido. Desde 2026-09-11 es un **servo visual en pixeles** tomado del
+   piloto de ANTi (WRO 2025): el pilar se empuja hacia el canto de la imagen
+   por el que tiene que salir. Ver "Los pilares".
 2. **Rescate de esquina**: cuando el piso queda en TRIANGULO -el carro metido
    en el rincon, con las dos paredes cerrando por los dos lados- se da un giro
    comprometido hacia adentro. Ahi la reversa del escape no saca al carro.
 
 Todo lo demas (navegacion centrada, conteo de esquinas por las lineas del piso,
 sentido deducido solo, parada en meta, calibracion, web) es identico al Open
-Challenge y esta documentado igual mas abajo. Si arreglas un fallo en uno,
+Challenge y esta documentado igual mas abajo, salvo tres retoques de la
+navegacion que exige el pilar (ver "Lo que la navegacion hace distinto con un
+pilar en juego"). Si arreglas un fallo en uno,
 miralo tambien en el otro: son dos copias a proposito, para que un experimento
 de obstaculos no pueda romper una ronda limpia de Open Challenge la vispera de
 una competencia.
@@ -32,7 +36,7 @@ el programa de obstaculos: el mismo binario sirve para los dos retos.
 ```bash
 python3 -m venv .venv && source .venv/bin/activate    # en Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python tools/selftest.py            # 74 pruebas, sin hardware
+python tools/selftest.py            # 103 pruebas, sin hardware
 python main.py                      # camara + ESP32 + web
 python main.py --simulado           # sin ESP32 (pruebas en el PC)
 python main.py --imagen foto.jpg    # sin camara, sobre una foto
@@ -84,58 +88,110 @@ secuencia sin cablear nada.
 
 ## Los pilares
 
-    pilar ROJO   -> se pasa por SU DERECHA
-    pilar VERDE  -> se pasa por SU IZQUIERDA
+    pilar ROJO   -> se pasa por SU DERECHA   -> se le empuja al canto IZQUIERDO de la imagen
+    pilar VERDE  -> se pasa por SU IZQUIERDA -> se le empuja al canto DERECHO
 
 Y esos lados **no se invierten con el sentido de la ronda**. El reglamento habla
 de la derecha y la izquierda DEL VEHICULO ("el lado del carril por el que debe
-circular"), y como aqui se trabaja en el marco del carro -la camara mira hacia
-adelante- sale solo en los dos sentidos. No hay interruptor para invertirlo:
-pasar por el lado incorrecto termina la ronda (9.25.5) y un interruptor asi solo
-puede estar mal puesto.
+circular"), y como la camara mira hacia adelante, trabajar en pixeles de la
+imagen ES trabajar en el marco del carro: sale solo en los dos sentidos. No hay
+interruptor para invertirlo: pasar por el lado incorrecto termina la ronda
+(9.25.5).
 
-El punto de paso se calcula en milimetros: el costado correcto del pilar + medio
-pilar + medio carro + `obstaculos.margen_mm`. Luego se aprieta contra el hueco
-libre que ve el perfil del muro, **pero nunca se cruza al otro lado del pilar**:
-si no cabe con holgura se aprieta hasta el minimo fisico y la web lo avisa
-(`sin_sitio`), pero el lado es intocable. Esto costo una ronda: con el recorte
-antiguo, un pilar pegado a la pared podia acabar con el punto de paso del lado
-prohibido.
+### Como se esquiva (servo visual, tomado del piloto de ANTi)
+
+El esquive se reescribio (2026-09-11) tomando como referencia el piloto de
+[ANTi, WRO 2025](https://github.com/atakanersoy/WRO2025_FE_ANTi) (35 s de reto
+de obstaculos con puntuacion completa). Su receta es corta: el giroscopio
+mantiene el rumbo de la recta y, cuando la camara ve un pilar, se le EMPUJA
+hacia el canto de la imagen por el que tiene que salir, con una direccion
+proporcional a cuantos pixeles le faltan. Ni puntos de paso en milimetros, ni
+recorte contra el hueco del muro, ni pesos que compiten con el muro: eso era lo
+que generaba los tres fallos de pista del esquive anterior (volantazo, cola que
+barre el pilar, pilar que manda sobre el muro).
+
+Tres estados (`src/obstaculos.py`; se ven en la web y sobre el video):
+
+1. **LIBRE.** Sin pilar: centrado por el muro + rumbo por giroscopio, igual que
+   en el Open Challenge.
+2. **SIGUIENDO.** Se ve un pilar a menos de `activar_desde_mm`. Se mide cuanto
+   le falta al **borde interior** del pilar (el que da al centro de la imagen)
+   para llegar a la columna objetivo, pegada al canto (`borde_frac`), y se pide
+   direccion proporcional (`k_borde`) **hacia el lado de paso**. Es
+   asimetrico: el pilar solo puede pedir alejarse de el; si ya esta mas afuera
+   que la columna objetivo no pide nada, y volver a la recta es trabajo del
+   rumbo (un servo simetrico lo "mantendria" en el canto girando hacia el, que
+   es un rumbo de colision con angulo fijo). El peso del pilar sube de
+   `peso_lejos` a 1 entre `activar_desde_mm` y `mandar_desde_mm`: con peso 1 el
+   centrado calla y del rumbo solo sobrevive `yaw_al_esquivar` (ANTi conserva
+   mas o menos un tercio). Con el pilar a menos de `empuje_bajo_mm` y todavia en
+   cuadro se suma `empuje_pct`: el canto de la imagen no da holgura para un
+   carro de 20 cm. Se va a `obstaculos.vel_pct`.
+3. **ADELANTANDO.** El pilar se perdio de vista a menos de `compromiso_bajo_mm`
+   (salio por el canto o por abajo: la camara no llega tan abajo). Se
+   **congela el rumbo** en el que quedo el carro, sin centrado, el tiempo que
+   tarda el carro entero en pasarlo (distancia + `geometria.largo_carro_mm`, a
+   la velocidad real, contando `limites.vmax`). Es lo que impide que la cola
+   barra el pilar: con Ackermann la rueda trasera corta por dentro si se vuelve
+   hacia la recta antes de tiempo. Se suelta antes si aparece otro pilar a
+   menos de `mandar_desde_mm` (lo visible manda) o si el pasillo baja de
+   `soltar_pasillo_mm` (el muro manda). Perdido mas lejos no hay compromiso:
+   salio por el canto porque el carro ya giro de sobra, y el rumbo lo vuelve a
+   traer a la vista.
+
+Si hay dos pilares manda el MAS CERCANO, con `preferir_mm` de ventaja para el
+que ya se venia siguiendo (no cambiar de pilar por ruido).
+
+**Los pilares ya no son muro.** `muro._mascara_piso` cuenta el rojo y el verde
+como piso a proposito: de ellos se ocupa el esquivador. Si entraran en el
+perfil como muro, un pilar a 60 cm de frente cerraria el pasillo y dispararia
+lo que solo debe disparar un muro: frenada, giro de esquina de 90 (y su conteo)
+o escape en reversa. Con el pilar como piso, el contacto de esa columna es el
+muro que hay detras, que es lo que de verdad cierra el paso. La vista "piso" de
+la web lo enseña (los pilares salen claros, como el piso).
 
 **Como se comprueba sin arriesgar una ronda**: con el carro PARADO delante de un
-pilar, el video dibuja una cruz en el punto de paso, una flecha con el lado y
-escribe "rojo -> paso por su derecha". Mirarlo antes de cada sesion.
+pilar, el video dibuja la columna objetivo pegada al canto y una flecha desde el
+borde del pilar hasta ella, y escribe por ejemplo "rojo a 355mm -> paso por su
+derecha: falta 46% dir +55". La flecha del rojo apunta a la IZQUIERDA (el carro
+va a la derecha) y la del verde a la DERECHA. Mirarlo antes de cada sesion.
 
-### Los tres fallos que ya se pagaron en pista
+### Lo que la navegacion hace distinto con un pilar en juego
 
-1. **El volantazo.** El angulo al punto de paso se calculaba con la distancia al
-   pilar, asi que al acercarse el MISMO desvio lateral pedia cada vez mas angulo:
-   medido, 96 % de volante a 600 mm y 100 % a 400. Curado con `mirada_min_mm`
-   (suelo de la distancia que se usa para el angulo), `dir_max_pct` (techo de lo
-   que el esquive puede pedir) y `rampa_dir_pct_s`.
-2. **La cola se llevaba el pilar.** Muy cerca, el pilar sale del cuadro porque la
-   camara no llega tan abajo; el esquive desaparecia, el centrado tiraba del
-   carro al medio y con direccion Ackermann la rueda trasera corta por dentro.
-   Curado con el COMPROMISO de adelantamiento: desde que el pilar deja de verse
-   se sigue recto el tiempo que hace falta para que pase el carro entero,
-   calculado con `geometria.largo_carro_mm` y la velocidad real.
-3. **El pilar mandaba mas que el muro.** Uno pegado al muro interior llevaba el
-   carro de frente contra la esquina. Curado con `ceder_ante_muro`: el peso del
-   pilar se desvanece segun se cierra el pasillo.
+- **El giro de esquina cede ante el pilar y se reanuda.**
+  `navegacion.giro_cede_ante_pilar` (encendido). Un giro comprometido de 90
+  grados con un pilar delante lo atropella o lo pasa por el lado prohibido, y
+  eso termina la ronda. Al soltar, el rumbo objetivo ya apunta a la recta
+  NUEVA, asi que mientras esquiva el giroscopio sigue tirando hacia adentro; el
+  giro se reanuda cuando el pilar deja de mandar, **sin volver a sumar 90** al
+  rumbo (el programa anterior sumaba 90 en cada reintento y acababa apuntando a
+  la pared) y sin contar la esquina (para entonces ya la contaron las lineas;
+  mejor perder una que sumar una).
+- **Torcido no hay esquina por pasillo.** Esquivando, el carro va cruzado
+  respecto a la recta; un pasillo que se cierra o un muro lateral que
+  desaparece son entonces el muro de la propia recta visto de lado, no una
+  esquina, y girar 90 ahi es meterse contra el. Con mas de
+  `navegacion.esquina_max_desvio_deg` de desvio esos dos disparadores se
+  callan; la linea del piso sigue disparando siempre.
+- **Tras un escape (o un giro vencido) el rumbo se ancla a una recta valida**
+  (la de antes o sus vecinas de +-90, la mas cercana al yaw real), nunca al
+  rumbo en que quedo mirando: adoptar ese rumbo fue lo que hizo que el carro
+  se fuera en sentido contrario tras varios escapes.
 
-Y uno mas, del giroscopio: la correccion de rumbo se SUMA despues de mezclar el
-esquive, y al esquivar el carro se sale del rumbo a proposito. Sin
-`yaw_cede_al_esquivar`, o se suma (55 % de esquive + 45 % de yaw = volante al
-tope) o se resta (no esquiva bastante). Medido: de +87/+23 segun como estuviera
-cruzado, a +55 en los dos casos.
+### Lo que se dejo fuera a proposito
 
-### El giro de esquina cede ante un pilar
+- La busqueda del pilar perdido de lejos (ANTi: `lost_color`): el rumbo ya lo
+  vuelve a traer a la vista.
+- El filtro de pilares por detras de la linea del piso (`limitar_por_lineas`
+  del programa combinado). Si en pista el carro se pega a la esquina interna
+  por hacer caso a un pilar del tramo siguiente, ESO es lo que hay que volver a
+  poner.
+- El estacionamiento: este programa no aparca.
 
-`navegacion.giro_cede_ante_pilar` (encendido). Un giro comprometido de 90 grados
-con un pilar delante lo atropella o lo pasa por el lado prohibido, y eso termina
-la ronda; perder la esquina solo cuesta que la cuente el TCS un poco mas tarde.
-Al soltar, el rumbo de referencia ya apunta a la recta NUEVA, asi que mientras
-esquiva el giroscopio sigue tirando hacia adentro.
+**Sin probar en pista todavia**: el servo esta comprobado con imagenes
+sinteticas y 103 pruebas sin hardware. Lo primero que hay que mirar en pista es
+`borde_frac` (holgura al pasar) y `k_borde` (que el pilar llegue al canto antes
+de estar encima); despues `compromiso_bajo_mm` si la cola roza.
 
 ---
 
@@ -265,9 +321,12 @@ distancias fisicas y valen igual en pista ancha (1000 mm) o angosta (600 mm).
 | `muro.k_transicion` | Filas no-piso seguidas para creer el muro (sube si hay muros fantasma). |
 | `lineas.cierre_max_ms` | Cuanto se espera la segunda linea del par. Solo bajalo si dos esquinas de verdad quedan muy seguidas. |
 | `tcs.naranja_dif_min` / `azul_dif_min` | Los discriminadores del sensor de piso. Son cocientes, asi que no cambian con la luz ni con el tiempo de integracion: son los que hay que tocar. |
-| `obstaculos.margen_mm` | Holgura que se PIDE al pasar un pilar. Si no cabe se aprieta, pero nunca se cruza de lado. |
-| `obstaculos.dir_max_pct` | Techo del volante al esquivar. Si te falta, acercate mas tarde (`mandar_desde_mm`) en vez de subir esto. |
-| `obstaculos.mirada_min_mm` | Suelo de la mirada. Subelo si el esquive sale brusco al acercarse. |
+| `obstaculos.borde_frac` | Columna objetivo pegada al canto. Mas pequeño = mas holgura al pasar el pilar, pero sale antes de cuadro. |
+| `obstaculos.k_borde` | Ganancia del servo visual. Sube si el pilar no llega al canto antes de estar encima; baja si serpentea. |
+| `obstaculos.empuje_pct` / `empuje_bajo_mm` | El empujon extra con el pilar encima. Si la rueda delantera roza el pilar, sube esto. |
+| `obstaculos.compromiso_bajo_mm` | Desde que cercania un pilar perdido congela el rumbo. Si la cola barre el pilar, sube esto o `geometria.largo_carro_mm`. |
+| `obstaculos.yaw_al_esquivar` | Cuanto rumbo sobrevive mientras el pilar manda. Sube si el carro se cruza demasiado; baja si vuelve hacia el pilar. |
+| `navegacion.esquina_max_desvio_deg` | Desvio a partir del cual un pasillo cerrado ya no cuenta como esquina (es el muro de la recta visto de lado). |
 | `rescate.confirmar_ms` | **El** parametro del rescate. Si salta en curvas buenas, subelo antes que nada. |
 | `rescate.grados` | Cuanto gira el rescate. Un poco mas de 90 para salir apuntando a la recta, sin pasarse. |
 
@@ -287,7 +346,7 @@ obstacle-challenge/
 │   ├── lineas.py           sentido / esquinas / vueltas (TCS + camara + giros)
 │   ├── navegacion.py       RECTO / PRE_GIRO / GIRO / ESCAPE / RESCATE
 │   ├── carrera.py          director de la ronda (3 vueltas y parada en meta)
-│   ├── obstaculos.py       el esquive: rojo por su derecha, verde por su izquierda
+│   ├── obstaculos.py       el esquive: servo visual (rojo al canto izquierdo, verde al derecho) + compromiso
 │   ├── botones.py          el pulsador de competencia (cuelga del ESP32)
 │   ├── protocolo.py        trama binaria v3 (gemela de protocolo.h)
 │   ├── enlace.py           hilo serie; sensores del ESP32 -> eventos
@@ -295,7 +354,7 @@ obstacle-challenge/
 │   ├── dibujo.py           overlay del video
 │   ├── servidor.py         http.server + MJPEG
 │   └── web/index.html      la interfaz
-└── tools/selftest.py       74 pruebas sin hardware
+└── tools/selftest.py       103 pruebas sin hardware
 ```
 
 ## Notas practicas (heredadas a golpes)
