@@ -478,6 +478,90 @@ def prueba_carril() -> None:
           f"{girando.direccion:.1f} vs {quieto.direccion:.1f}")
 
 
+# ================================ compromiso: mantener rumbo, no volante
+def prueba_compromiso() -> None:
+    print("compromiso de adelantamiento")
+    from src.config import DEFECTOS
+    from src.carril import SalidaCarril, guardia_muro
+    from src.senales import FASE_COMPROMISO, Esquivador
+    from src.vision import Deteccion, Escena
+
+    def escena(color, dist, lat=0.0):
+        e = Escena()
+        e.pilares = [Deteccion(color=color, x=300, y=200, w=40, h=90,
+                               area=3600, dist_mm=dist, lat_mm=lat,
+                               confianza=1.0)]
+        return e
+
+    def armar(yaw=0.0):
+        """Aproxima a un pilar verde hasta que arranca el compromiso."""
+        esq = Esquivador(dict(DEFECTOS["senales"]), 130.0)
+        for d in (900.0, 700.0, 500.0, 380.0):
+            m = esq.paso(escena("verde", d), {}, False, 900.0, yaw=yaw)
+        return esq, m
+
+    esq, m = armar()
+    check("al acercarse, gira a la izquierda por el verde", m.direccion < -10,
+          f"dir={m.direccion:.1f}")
+    volante_al_armar = m.direccion
+
+    # Ya no se ve el pilar: empieza el compromiso. MISMO rumbo que al armar.
+    m0 = esq.paso(Escena(), {}, False, 900.0, yaw=0.0)
+    check("sin pilar visible entra en compromiso", m0.fase == FASE_COMPROMISO,
+          m0.fase)
+    # ESTE es el fallo que se vio en pista: antes se congelaba el volante y el
+    # carro seguia trazando el arco hacia el lado del pilar.
+    check("en rumbo, el volante se suelta (no sigue el arco)",
+          abs(m0.direccion) < abs(volante_al_armar) * 0.35,
+          f"al armar {volante_al_armar:.1f} -> ahora {m0.direccion:.1f}")
+
+    # Si el carro se ha desviado a la izquierda del rumbo guardado, tiene que
+    # corregir a la DERECHA para volver a el.
+    esq, _ = armar()
+    esq.paso(Escena(), {}, False, 900.0, yaw=0.0)
+    m_izq = esq.paso(Escena(), {}, False, 900.0, yaw=-12.0)
+    check("desviado a la izquierda: corrige a la derecha", m_izq.direccion > 0,
+          f"dir={m_izq.direccion:.1f}  err={m_izq.err_rumbo_deg:.1f} deg")
+
+    esq, _ = armar()
+    esq.paso(Escena(), {}, False, 900.0, yaw=0.0)
+    m_der = esq.paso(Escena(), {}, False, 900.0, yaw=+12.0)
+    check("desviado a la derecha: corrige a la izquierda", m_der.direccion < 0,
+          f"dir={m_der.direccion:.1f}")
+
+    # El envoltorio de +-180: cruzar el limite no puede dar un volantazo.
+    esq, _ = armar(yaw=179.0)
+    esq.paso(Escena(), {}, False, 900.0, yaw=179.0)
+    m_env = esq.paso(Escena(), {}, False, 900.0, yaw=-179.0)
+    check("cruzar +-180 no dispara un volantazo", abs(m_env.direccion) < 15,
+          f"dir={m_env.direccion:.1f}  err={m_env.err_rumbo_deg:.1f} deg")
+
+    # Sin MPU no hay rumbo: el volante se suelta poco a poco, nunca se congela.
+    esq = Esquivador(dict(DEFECTOS["senales"]), 130.0)
+    for d in (900.0, 700.0, 500.0, 380.0):
+        m = esq.paso(escena("verde", d), {}, False, 900.0, yaw=None)
+    sin_mpu = [abs(esq.paso(Escena(), {}, False, 900.0, yaw=None).direccion)
+               for _ in range(3)]
+    check("sin MPU el volante decae en vez de congelarse",
+          sin_mpu[0] > sin_mpu[-1], str([round(v, 1) for v in sin_mpu]))
+
+    # --- guardia anti-muro --------------------------------------------
+    cfg = DEFECTOS["carril"]
+    libre = SalidaCarril(lat_izq_mm=500.0, lat_der_mm=500.0)
+    check("con sitio de sobra, la guardia calla",
+          abs(guardia_muro(libre, cfg)) < 1e-6)
+    pegado_izq = SalidaCarril(lat_izq_mm=90.0, lat_der_mm=700.0)
+    check("muro izquierdo encima: empuja a la derecha",
+          guardia_muro(pegado_izq, cfg) > 20,
+          f"{guardia_muro(pegado_izq, cfg):.1f}")
+    pegado_der = SalidaCarril(lat_izq_mm=700.0, lat_der_mm=90.0)
+    check("muro derecho encima: empuja a la izquierda",
+          guardia_muro(pegado_der, cfg) < -20,
+          f"{guardia_muro(pegado_der, cfg):.1f}")
+    check("un solo muro visible y lejos: tampoco molesta",
+          abs(guardia_muro(SalidaCarril(lat_der_mm=600.0), cfg)) < 1e-6)
+
+
 def main() -> int:
     prueba_protocolo()
     prueba_reglas()
@@ -486,6 +570,7 @@ def main() -> int:
     prueba_fsm()
     prueba_esquive()
     prueba_carril()
+    prueba_compromiso()
     print()
     if fallos:
         print(f"{fallos} prueba(s) FALLARON")

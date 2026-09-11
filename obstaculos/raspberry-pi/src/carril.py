@@ -252,6 +252,31 @@ class SeguidorCarril:
         return max(v_min * 0.6, v)
 
 
+def guardia_muro(s: SalidaCarril, cfg: Dict[str, Any]) -> float:
+    """Empujon para no rozar un muro. NO centra: solo evita el golpe.
+
+    Existe por un caso muy concreto. Mientras se adelanta un pilar, el
+    seguidor de carril esta callado a proposito: si opinara, tiraria del carro
+    hacia el centro del carril y la rueda trasera barreria el pilar. Pero
+    callarlo del todo deja al carro sin nadie que mire los muros justo cuando
+    va desviado hacia uno de ellos, que es como se acaba contra la pared
+    despues de un esquive limpio.
+
+    La solucion no es devolverle la voz al centrado —eso reintroduce el
+    problema del pilar— sino dejar SOLO esta guardia, que se calla mientras
+    haya sitio y solo habla cuando de verdad no lo hay.
+
+    Devuelve % con signo (+ = empujar a la derecha).
+    """
+    umbral = float(cfg.get("guardia_muro_mm", 240.0))
+    err = 0.0
+    if s.lat_izq_mm is not None and s.lat_izq_mm < umbral:
+        err += (umbral - s.lat_izq_mm) / umbral        # muro izq cerca -> derecha
+    if s.lat_der_mm is not None and s.lat_der_mm < umbral:
+        err -= (umbral - s.lat_der_mm) / umbral        # muro der cerca -> izquierda
+    return float(np.clip(err, -1.0, 1.0)) * float(cfg.get("k_guardia", 70.0))
+
+
 def margen_magenta(esc: Escena, semiancho_mm: float) -> Optional[float]:
     """Correccion extra para NO TOCAR los delimitadores del cajon.
 

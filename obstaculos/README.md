@@ -61,8 +61,8 @@ ESP32) y la bandera `F_ARMADO` de la Pi. Ninguna de las dos basta por sí sola.
 ## Estructura
 
 ```
-firmware/esp32/
-  esp32_obstaculos.ino   pines, PWM, tareas FreeRTOS, failsafe
+firmware/esp32/esp32_obstaculos/     (la carpeta debe llamarse como el .ino:
+  esp32_obstaculos.ino   pines, PWM, tareas FreeRTOS, failsafe   lo exige el IDE)
   protocolo.h            trama binaria  ← gemelo de src/protocolo.py
   seguridad.h            topes del servo, rampas, protección de inversión
   sensores_i2c.h         MPU-6050 y TCS34725 a registro
@@ -92,7 +92,7 @@ raspberry-pi/
 
 **1. Firmware.** Arduino IDE con el core **ESP32 3.x** (la API `ledcAttach` /
 `ledcWrite(pin, ...)` es de la 3.x; con la 2.x no compila). Abrir
-`firmware/esp32/esp32_obstaculos.ino` y subir. No hace falta ninguna librería
+`firmware/esp32/esp32_obstaculos/esp32_obstaculos.ino` y subir. No hace falta ninguna librería
 externa: los dos sensores están escritos a registro sobre `Wire`.
 
 **2. Pi.**
@@ -175,6 +175,33 @@ Dicho antes de que lo descubra la pista:
   pero el `.ino` hay que abrirlo en el IDE para confirmarlo.
 - **Los rangos HSV del `pista.json` son un punto de partida**, no una
   calibración. Ninguna tabla de colores sobrevive a un pabellón nuevo.
+
+---
+
+## Qué pasa justo después de esquivar
+
+Es el momento más delicado de la vuelta. El pilar ya no se ve —la cámara no
+llega tan abajo— y el carro va apuntando hacia el lado por el que lo rebasa.
+
+- **El seguidor de carril está callado a propósito.** Si opinara, tiraría del
+  carro hacia el centro del carril y la rueda trasera barrería el pilar: con
+  dirección Ackermann la cola corta por dentro.
+- **Lo que se sostiene es el rumbo, no el volante.** Se congela el *yaw* del
+  MPU del instante en que el pilar entró en zona ciega y un proporcional
+  devuelve el carro a él. Un volante fijo no traza una recta, traza un arco:
+  con el modelo Ackermann simplificado, congelarlo 0,8 s desviaba **537 mm**,
+  más de medio carril, directo al muro.
+- **La guardia anti-muro sí sigue despierta** (`guardia_muro` en `carril.py`).
+  No centra: se calla mientras haya sitio y solo empuja cuando la separación
+  lateral baja de `guardia_muro_mm`. Su autoridad crece con el progreso del
+  adelantamiento, porque al principio el pilar sigue al costado y al final ya
+  quedó atrás.
+- **Cumplido el compromiso**, manda otra vez el carril completo y el carro se
+  recentra y encara la curva con lo que se describe abajo.
+
+Si sin MPU (`mpu_ok` falso) el carro se sigue desviando, es porque el respaldo
+solo puede soltar el volante progresivamente; revisa el I²C antes que las
+ganancias.
 
 ---
 

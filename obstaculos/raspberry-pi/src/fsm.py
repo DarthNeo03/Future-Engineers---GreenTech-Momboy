@@ -83,6 +83,9 @@ class Contexto:
     vel_mm_s: float = 0.0
     direccion_mezclada: float = 0.0
     velocidad_sugerida: float = 0.0
+    # Empujon anti-muro. Solo se usa en los estados donde el seguidor de
+    # carril esta callado (ESQUIVE, CORRECCION): ver carril.guardia_muro.
+    guardia_muro: float = 0.0
 
 
 @dataclass
@@ -225,8 +228,13 @@ class MaquinaEstados:
             self._ir(Estado.PISTA, "compromiso cumplido")
             return self._pista(c)
         v = min(c.velocidad_sugerida, float(self.cfg.get("vel_esquive", 30.0)))
-        return Orden(vel=v, direccion=c.maniobra.direccion, armado=True,
-                     parada=False, centrar=False,
+        # La guardia sube con el progreso del adelantamiento: al principio el
+        # pilar sigue al costado y corregir hacia el seria barrerlo con la
+        # cola; al final ya quedo atras y lo unico que importa es el muro.
+        peso = 0.3 + 0.7 * c.maniobra.progreso
+        direccion = c.maniobra.direccion + peso * c.guardia_muro
+        return Orden(vel=v, direccion=max(-100.0, min(100.0, direccion)),
+                     armado=True, parada=False, centrar=False,
                      nota=f"compromiso {c.maniobra.color}")
 
     def _correccion(self, c: Contexto) -> Orden:
@@ -239,8 +247,9 @@ class MaquinaEstados:
         # cruzar el radio del pilar, no hasta tocarlo. Ir lento alarga ese
         # margen en tiempo, que es lo unico que se puede comprar aqui.
         v = float(self.cfg.get("vel_correccion", 22.0))
-        return Orden(vel=v, direccion=c.maniobra.direccion, armado=True,
-                     parada=False, centrar=False,
+        direccion = c.maniobra.direccion + c.guardia_muro
+        return Orden(vel=v, direccion=max(-100.0, min(100.0, direccion)),
+                     armado=True, parada=False, centrar=False,
                      nota=f"corrigiendo lado de {c.maniobra.color}")
 
     def _entrar_reversa(self, motivo: str) -> Orden:

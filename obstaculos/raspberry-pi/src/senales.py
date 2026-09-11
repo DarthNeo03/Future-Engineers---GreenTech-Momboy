@@ -26,9 +26,21 @@ LOS TRES ACTOS DE UN REBASE
      llega tan abajo. Si en ese momento el esquive desapareciera, el seguidor
      de carril tiraria del carro hacia el centro y la RUEDA TRASERA barreria
      el pilar — con direccion Ackermann la cola corta por dentro. Asi que
-     desde que se pierde de vista se MANTIENE el rumbo, sin volver hacia el
+     desde que se pierde de vista se MANTIENE EL RUMBO, sin volver hacia el
      pilar, el tiempo que el carro necesita para adelantarlo con todo su
      largo. Ese tiempo se calcula con la velocidad real, no es un valor fijo.
+
+     MANTENER EL RUMBO NO ES MANTENER EL VOLANTE, y confundirlo cuesta la
+     ronda. Un volante fijo describe un ARCO: en la primera version se
+     congelaban los ~59 % del ultimo frame con pilar a la vista y el carro
+     seguia cerrando la curva hacia el lado por el que acababa de esquivar
+     hasta comerse el muro. Lo que se congela es el YAW del MPU, y un
+     proporcional devuelve el carro a el. Sin MPU, se suelta el volante
+     progresivamente: peor, pero sigue sin cerrar el arco.
+
+     Durante el compromiso el carril esta callado —si opinara, barreria el
+     pilar— pero NO el todo: queda la guardia anti-muro de carril.py, que se
+     calla mientras haya sitio y solo habla cuando de verdad no lo hay.
 
   3. SALIDA. Cumplido el compromiso, vuelve a mandar el seguidor de carril.
 
@@ -53,12 +65,20 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+
 from .geometria import DIST_MAX_MM
 from .vision import Deteccion, Escena
 
 # +1 = el carro debe quedar a la DERECHA del pilar; -1 = a su izquierda.
 LADO_OBLIGADO = {"rojo": +1, "verde": -1}
 MITAD_PILAR_MM = 25.0        # el pilar mide 50 x 50 mm en planta
+
+def _envolver(grados: float) -> float:
+    """Diferencia de rumbos llevada a -180..180. Sin esto, cruzar el +-180
+    del yaw se lee como un giro de 350 grados y el carro da un volantazo."""
+    return (float(grados) + 180.0) % 360.0 - 180.0
+
 
 FASE_NADA = "nada"
 FASE_APROXIMACION = "aproximacion"
@@ -78,6 +98,9 @@ class Maniobra:
     objetivo_mm: float = 0.0     # lateral del punto de paso
     lado_incorrecto: bool = False
     pedir_reversa: bool = False
+    rumbo_objetivo: Optional[float] = None  # yaw que se sostiene al adelantar
+    err_rumbo_deg: float = 0.0
+    progreso: float = 0.0                   # 0..1 dentro del compromiso
     info: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -91,7 +114,9 @@ class Esquivador:
         self._fase = FASE_NADA
         self._dir_prev = 0.0
         self._comp_hasta = 0.0
+        self._comp_dur = 1.0
         self._comp_dir = 0.0
+        self._comp_yaw: Optional[float] = None
         self._comp_color = ""
         self._mem_color = ""
         self._mem_lado = 0
@@ -139,7 +164,8 @@ class Esquivador:
 
     # ---------------------------------------------------------------- paso
     def paso(self, esc: Escena, lineas_mm: Dict[str, Optional[float]],
-             en_curva: bool, vel_mm_s: float) -> Maniobra:
+             en_curva: bool, vel_mm_s: float,
+             yaw: Optional[float] = None, gz: float = 0.0) -> Maniobra:
         ahora = time.time()
         m = Maniobra()
         objetivo = self.elegir(esc, lineas_mm, en_curva)
@@ -150,15 +176,46 @@ class Esquivador:
         if objetivo is None and ahora < self._comp_hasta:
             m.fase = FASE_COMPROMISO
             m.color = self._comp_color
-            m.direccion = self._comp_dir
             m.peso = 1.0
-            m.info = {"queda_s": round(self._comp_hasta - ahora, 2)}
+            m.progreso = float(np.clip(
+                1.0 - (self._comp_hasta - ahora) / max(1e-3, self._comp_dur),
+                0.0, 1.0))
+
+            # MANTENER EL RUMBO NO ES MANTENER EL VOLANTE.
+            #
+            # Aqui habia un fallo que se veia clarisimo en pista: se congelaba
+            # el ANGULO DE VOLANTE del ultimo frame en que se vio el pilar
+            # —unos 59 %— y se sostenia tres cuartos de segundo. Un volante
+            # fijo no traza una recta: traza un ARCO. El carro seguia girando
+            # hacia el lado por el que acababa de esquivar y se comia el muro.
+            #
+            # Lo que hay que congelar es el RUMBO: se guarda el yaw del
+            # instante en que el pilar entro en la zona ciega y se vuelve a
+            # el con un proporcional. Asi el carro sigue DERECHO en la
+            # direccion que llevaba, que es lo que hace falta para adelantar
+            # al pilar sin barrerlo con la rueda trasera.
+            if self._comp_yaw is not None and yaw is not None:
+                err = _envolver(self._comp_yaw - yaw)
+                m.rumbo_objetivo = self._comp_yaw
+                m.err_rumbo_deg = err
+                direccion = (float(self.cfg.get("kp_rumbo_compromiso", 2.6)) * err
+                             - float(self.cfg.get("kd_rumbo_compromiso", 0.22)) * gz)
+            else:
+                # Sin MPU no hay rumbo que sostener. Lo siguiente mejor es
+                # soltar el volante progresivamente: sigue sin volver hacia el
+                # pilar, pero deja de cerrar el arco.
+                direccion = self._comp_dir * (1.0 - m.progreso)
+                m.info["sin_mpu"] = True
+
+            m.direccion = float(np.clip(direccion, -100.0, 100.0))
+            m.info["queda_s"] = round(self._comp_hasta - ahora, 2)
             self._fase = FASE_COMPROMISO
             self._dir_prev = m.direccion
             return m
 
         if objetivo is None:
             self._fase = FASE_NADA
+            self._comp_yaw = None        # el compromiso termino: rumbo libre
             self._dir_prev *= 0.6        # suelta el volante sin dar un tiron
             return m
 
@@ -242,7 +299,11 @@ class Esquivador:
             v = max(120.0, vel_mm_s)      # nunca dividir por una velocidad ~0
             dur = min(float(self.cfg.get("compromiso_max_s", 1.6)), recorrido / v)
             self._comp_hasta = ahora + dur
+            self._comp_dur = dur
             self._comp_dir = m.direccion
+            # El rumbo de AHORA es el que hay que sostener mientras se adelanta.
+            if yaw is not None and self._comp_yaw is None:
+                self._comp_yaw = yaw
             self._comp_color = objetivo.color
 
         self._fase = m.fase

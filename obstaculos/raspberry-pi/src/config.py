@@ -102,6 +102,11 @@ DEFECTOS: Dict[str, Any] = {
         "kp_centrado": 55.0,
         "kp_rumbo": 70.0,
         "kd_giro": 0.28,
+        # GUARDIA ANTI-MURO. Solo actua mientras se adelanta un pilar, que es
+        # cuando el centrado esta callado. Por debajo de esta separacion
+        # lateral empuja hacia el otro lado.
+        "guardia_muro_mm": 240.0,
+        "k_guardia": 70.0,
         "suavizado": 0.45,
         # VELOCIDADES. Subidas respecto a la primera version porque el carro
         # iba sobrado de margen. Si al subirlas se empieza a comer pilares en
@@ -127,6 +132,10 @@ DEFECTOS: Dict[str, Any] = {
         "morro_mm": 60.0,             # del eje de la camara al morro
         "mirada_min_mm": 420.0,
         "ganancia": 2.1,
+        # Proporcional del rumbo durante el adelantamiento a ciegas. Manda
+        # sobre el RUMBO (yaw del MPU), no sobre el volante.
+        "kp_rumbo_compromiso": 2.6,
+        "kd_rumbo_compromiso": 0.22,
         "suavizado": 0.5,
         "holgura_linea_mm": 80.0,     # margen al descartar pilares de la
                                       #   seccion siguiente

@@ -30,7 +30,7 @@ from typing import Any, Dict, Optional
 
 from . import protocolo as proto
 from .camara import Camara, explicar_fallo
-from .carril import SeguidorCarril, margen_magenta
+from .carril import SeguidorCarril, guardia_muro, margen_magenta
 from .enlace import Enlace
 from .fsm import Contexto, Estado, MaquinaEstados, Orden
 from .geometria import Geometria
@@ -137,8 +137,12 @@ class Piloto:
         # por su cuenta y deja de depender de ese parametro.
         sal_carril = self.carril.paso(esc, gz=sens.gz,
                                       sentido_pista=self.contador.e.sentido)
-        maniobra = self.esquivador.paso(esc, esc.lineas_mm,
-                                        sal_carril.en_curva, vel_mm_s)
+        # El yaw entra en el esquive para que el compromiso sostenga el RUMBO
+        # y no el angulo de volante: un volante fijo describe un arco y el
+        # carro se iba girando hacia el lado del pilar que acababa de pasar.
+        maniobra = self.esquivador.paso(
+            esc, esc.lineas_mm, sal_carril.en_curva, vel_mm_s,
+            yaw=(sens.yaw if sens.mpu_ok else None), gz=sens.gz)
         empujon = margen_magenta(esc, self.geo.semiancho_mm())
         direccion = combinar(sal_carril.direccion, maniobra, empujon)
 
@@ -154,6 +158,7 @@ class Piloto:
             sens=sens, escena=esc, carril=sal_carril, maniobra=maniobra,
             vueltas=ev, vel_mm_s=vel_mm_s,
             direccion_mezclada=direccion,
+            guardia_muro=guardia_muro(sal_carril, self.cfg["carril"]),
             velocidad_sugerida=self.carril.velocidad(sal_carril))
         orden = self.fsm.paso(ctx)
 
@@ -188,6 +193,8 @@ class Piloto:
             "rumbo_hueco": round(sal_carril.rumbo_hueco_deg, 1),
             "sentido_curva": sal_carril.sentido_curva,
             "carril_motivo": sal_carril.motivo,
+            "guardia": round(guardia_muro(sal_carril, self.cfg["carril"]), 1),
+            "comp_err_rumbo": round(maniobra.err_rumbo_deg, 1),
             "magenta": round(empujon, 1) if empujon is not None else None,
             "yaw": round(sens.yaw, 1),
             "vueltas": ev.vueltas,
