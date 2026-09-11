@@ -223,6 +223,54 @@ prueba("borde detectado en el cambio",
 prueba("segmentos ajustados", len(p.segmentos) >= 1, str(len(p.segmentos)))
 
 # ===========================================================================
+print("== una linea del piso no es un muro (tampoco con metodo 'negro') ==")
+### Visto en pista: al pasar por encima de una linea de esquina el carro daba
+### un volantazo y "rapidamente corregia", acercandose a la pared externa.
+### El metodo 'piso' tiene escrito desde el principio que naranja y azul son
+### PISO (estan pintadas en el), pero el metodo 'negro' se limita a buscar el
+### pixel negro mas bajo de la columna, y el rango de negro acepta cualquier
+### tono y saturacion: solo pide valor bajo. Una linea oscura cae dentro, y al
+### pasarle por encima aparecia un MURO FANTASMA a la distancia de la linea,
+### justo bajo el morro: el pasillo se cerraba de golpe.
+###
+### Y no pega igual en los dos sentidos: la linea que se cruza en el momento
+### critico es de otro color en cada uno (naranja de entrada en horario, azul
+### en antihorario) y la azul es mucho mas oscura.
+def escena_con_linea(fila_muro=200, fila_linea=400, alto_linea=16):
+    """Muro lejos + una linea de piso oscura cruzando cerca del morro."""
+    m = escena(fila_muro)
+    # la linea es oscura: entra en la mascara de NEGRO...
+    m["negro"] = m["negro"].copy()
+    m["negro"][fila_linea:fila_linea + alto_linea, :] = 255
+    # ...y deja de ser blanco
+    m["blanco"] = m["blanco"].copy()
+    m["blanco"][fila_linea:fila_linea + alto_linea, :] = 0
+    # pero la vision SI la reconoce como linea azul del piso
+    azul = np.zeros((H, W), np.uint8)
+    azul[fila_linea:fila_linea + alto_linea, :] = 255
+    m["azul"] = azul
+    return m
+
+mneg = dict(mcfg, metodo="negro")
+p_lin = muro.perfil(escena_con_linea(), geo, mneg)
+p_sin = muro.perfil(escena(200), geo, mneg)
+prueba("con metodo 'negro', la linea del piso ya no se toma por muro",
+       abs(p_lin.pasillo_mm - p_sin.pasillo_mm) < 60,
+       f"con linea {p_lin.pasillo_mm:.0f} mm vs sin linea {p_sin.pasillo_mm:.0f} mm")
+# control: sin decirle que es una linea, si la ve como muro (el fallo de pista)
+m_ciego = escena_con_linea()
+m_ciego.pop("azul")
+p_ciego = muro.perfil(m_ciego, geo, mneg)
+prueba("(control) sin la mascara de la linea si aparecia el muro fantasma",
+       p_ciego.pasillo_mm < p_sin.pasillo_mm - 200,
+       f"{p_ciego.pasillo_mm:.0f} mm contra {p_sin.pasillo_mm:.0f}")
+# y el metodo 'piso' seguia estando bien, que es la referencia
+p_piso = muro.perfil(escena_con_linea(), geo, dict(mcfg, metodo="piso"))
+p_piso0 = muro.perfil(escena(200), geo, dict(mcfg, metodo="piso"))
+prueba("el metodo 'piso' ya lo hacia bien",
+       abs(p_piso.pasillo_mm - p_piso0.pasillo_mm) < 60,
+       f"{p_piso.pasillo_mm:.0f} vs {p_piso0.pasillo_mm:.0f}")
+
 print("== el perfil tiene que ser SIMETRICO AL ESPEJO ==")
 ### El problema de pista: los MISMOS parametros funcionaban en horario y no en
 ### antihorario. La pista es simetrica y el codigo tiene que serlo tambien: la

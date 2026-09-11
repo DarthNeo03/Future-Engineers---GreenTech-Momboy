@@ -235,7 +235,8 @@ def perfil(masks: Dict[str, np.ndarray], geo: Geometria,
     y_fin = max(y_hor + 2, min(H, y_fin))
 
     if metodo == "negro" and negro is not None:
-        y_cont, valido = _contacto_negro(negro, y_hor, y_fin, cfg)
+        y_cont, valido = _contacto_negro(negro, y_hor, y_fin, cfg,
+                                         _mascara_lineas(masks))
     else:
         y_cont, valido = _contacto_piso(masks, y_hor, y_fin, cfg)
 
@@ -351,12 +352,46 @@ def _contacto_piso(masks: Dict[str, np.ndarray], y_hor: int, y_fin: int,
     return y_cont, tiene
 
 
+def _mascara_lineas(masks: Dict[str, np.ndarray]) -> Optional[np.ndarray]:
+    """Las lineas naranja y azul de las esquinas: estan PINTADAS en el piso,
+    asi que son piso, nunca muro. (El magenta NO: los delimitadores del
+    estacionamiento 2026 son muros fisicos de 10 cm.)"""
+    acum: Optional[np.ndarray] = None
+    for color in ("naranja", "azul"):
+        m = masks.get(color)
+        if m is None:
+            continue
+        b = m.astype(bool)
+        acum = b if acum is None else (acum | b)
+    return acum
+
+
 def _contacto_negro(negro: np.ndarray, y_hor: int, y_fin: int,
-                    cfg: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
+                    cfg: Dict[str, Any],
+                    lineas: Optional[np.ndarray] = None
+                    ) -> Tuple[np.ndarray, np.ndarray]:
     """Metodo viejo (pixel negro mas bajo), con el corte de horizonte añadido.
-    Se conserva seleccionable para comparar en pista."""
+    Se conserva seleccionable para comparar en pista.
+
+    LAS LINEAS DEL PISO NO SON MURO, Y ESTE METODO NO LO SABIA. El metodo
+    'piso' lo tiene escrito desde el principio -suma naranja y azul al piso,
+    porque estan pintadas en el-, pero 'negro' se limitaba a buscar el pixel
+    negro mas bajo de la columna. Una linea de color oscura cae dentro del
+    rango de negro (que acepta cualquier tono y saturacion, solo pide valor
+    bajo), asi que al pasarle el carro por encima aparecia un MURO FANTASMA a
+    la distancia de la linea, justo bajo el morro: el pasillo se cerraba de
+    golpe y el carro daba un volantazo, o se iba al escape.
+
+    Y no pega igual en los dos sentidos. La linea que se cruza en el momento
+    critico es de otro color en cada uno -naranja de entrada en horario, azul
+    en antihorario- y la azul es MUCHO mas oscura: devuelve un quinto de la luz
+    del piso blanco contra casi la mitad de la naranja. Por eso el mismo perfil
+    se porta distinto segun el sentido de la ronda.
+    """
     H, W = negro.shape[:2]
     m = negro[y_hor:y_fin] > 0
+    if lineas is not None:
+        m &= ~lineas[y_hor:y_fin]
     cuenta = m.sum(axis=0)
     idx = (y_fin - 1 - y_hor) - np.argmax(m[::-1], axis=0)
     valido = cuenta >= int(cfg.get("px_min_columna", 4))

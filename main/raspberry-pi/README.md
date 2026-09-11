@@ -87,6 +87,66 @@ calcula en mm reales y se recorta al hueco libre del perfil.
 
 ---
 
+## Una linea del piso no es un muro (el volantazo al pisarla)
+
+Sintoma en pista: al pasar por encima de una linea de esquina el carro daba un
+volantazo y **rapidamente corregia**, y con eso se acercaba a la pared externa
+lo suficiente como para acabar retrocediendo o rozando.
+
+El metodo `piso` tiene escrito desde el principio que naranja y azul son PISO
+—estan pintadas en el—, pero el metodo **`negro`** se limita a buscar el pixel
+negro mas bajo de cada columna, y el rango de negro acepta **cualquier tono y
+saturacion: solo pide valor bajo**. Una linea de color oscura cae dentro. Al
+pasarle el carro por encima aparecia un **muro fantasma a la distancia de la
+linea, justo bajo el morro**: el pasillo se cerraba de golpe y la navegacion
+reaccionaba como ante una pared.
+
+Ahora el metodo `negro` tambien descuenta las lineas del piso. Medido en el
+selftest: sin descontarlas el pasillo se hundia mas de 200 mm al pisar una
+linea; descontandolas queda igual que sin linea.
+
+**Y no pega igual en los dos sentidos**, que es lo que lo hacia parecer un
+problema de antihorario: la linea que se cruza en el momento critico es de otro
+color en cada uno —naranja de entrada en horario, azul en antihorario— y la
+azul es mucho mas oscura (devuelve un quinto de la luz del piso blanco, contra
+casi la mitad de la naranja), asi que entra en el rango de negro con mucha mas
+facilidad.
+
+## Por que la azul se reconoce mas tarde que la naranja
+
+El otro sintoma: en antihorario el carro **tarda un poco mas en girar desde que
+reconoce la linea, y se abre mas en la curva**. Esto no es un fallo, es fisica
+del sensor, y sale en numeros con los umbrales del propio perfil.
+
+El TCS integra durante `atime` (24 ms). Con el carro en marcha casi ninguna
+ventana cae entera sobre la linea: mezcla linea y piso, y el piso blanco manda
+porque devuelve mucha mas luz. Asi que hace falta una cobertura minima de
+ventana para que la clase salga:
+
+| | diferencia de partida | umbral | **cobertura necesaria** |
+|---|---|---|---|
+| naranja | ~105 | `naranja_dif_min` 30 | **52 %** |
+| azul | 37 | `azul_dif_min` 12 | **70 %** |
+
+La azul necesita estar mucho mas metida en la ventana. Y como `muestras_min`
+pide 2 lecturas, lo que decide es cuanto tiempo esta la linea bajo el sensor:
+
+```
+a crucero (629 mm/s): 45 ms bajo el sensor -> 1.4 ventanas naranja / 1.2 azul  -> ninguna confirma
+frenado   (377 mm/s): 75 ms bajo el sensor -> 2.6 ventanas naranja / 2.4 azul  -> las dos confirman
+```
+
+O sea: **el margen existe solo si el carro cruza la linea frenado**, y la azul
+es la que se queda sin margen primero. Ahi entra `lineas.frenar_tras_ms`: si
+vale 0, el freno se suelta en cuanto la linea sale del cuadro de la camara, que
+es justo el instante en que va a pasar bajo el sensor (la camara ya no ve el
+suelo debajo del carro). El carro la cruza acelerando en vez de frenado. Ponlo
+en 1200-1500 ms para que el freno aguante todo el cruce.
+
+Los otros dos remedios, por orden de coste: bajar `tcs.azul_dif_min` (gratis,
+pero acerca el umbral al ruido) y bajar `tcs.atime` para tener ventanas mas
+cortas y mas numerosas (obliga a repetir la calibracion del TCS entera).
+
 ## Horario va y antihorario no: como se busca eso
 
 La pista es simetrica. Si los MISMOS parametros funcionan en un sentido y no en
