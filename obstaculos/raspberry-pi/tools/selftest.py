@@ -18,6 +18,7 @@ o incorrecto, es mejor o peor, y se mide en la pista con el cronometro.
 from __future__ import annotations
 
 import os
+import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -69,6 +70,25 @@ def prueba_protocolo() -> None:
     antes = lec.tramas_malas
     check("CRC roto descartado",
           lec.alimentar(bytes(malo)) == [] and lec.tramas_malas == antes + 1)
+
+    # La trama de SENSORES y sus cuatro bytes de diagnostico, que son
+    # opcionales: una Pi nueva con un ESP32 de firmware viejo tiene que
+    # seguir funcionando, porque reflashear pide cable y se hace despues.
+    p16 = struct.pack("<BhhHBBBBBHh", proto.S_TCS_OK, 123, -45, 700,
+                      3, 2, 0, 1, 1, 950, -146)
+    d = proto.decodificar_sensores(p16)
+    check("sensores: 16 bytes traen el diagnostico de lineas",
+          d is not None and d.blanco == 950 and d.separacion == -146 and
+          d.lineas_diag, str(d))
+    check("sensores: y lo de siempre sigue en su sitio",
+          abs(d.yaw - 12.3) < 0.01 and d.claro == 700 and
+          d.cruces_naranja == 3, str(d))
+    d12 = proto.decodificar_sensores(p16[:12])
+    check("sensores: con firmware viejo (12 B) se sigue leyendo",
+          d12 is not None and d12.claro == 700 and not d12.lineas_diag,
+          str(d12))
+    check("la trama de sensores cabe en el payload maximo",
+          16 <= proto.MAX_PAYLOAD, str(proto.MAX_PAYLOAD))
 
     # Basura delante no impide encontrar la trama siguiente (resincronismo).
     lec2 = proto.Lector()
@@ -348,14 +368,33 @@ def prueba_fsm() -> None:
                                          err_centrado=-0.8,
                                          rumbo_hueco_deg=-22.0,
                                          muro_encima=True),
+                     sens=proto.Sensores(estado=proto.S_MPU_OK, yaw=0.0),
                      direccion_mezclada=-60.0, guardia_muro=-30.0))
     check("esquive -> reincorporacion", fsm.estado == Estado.REINCORPORACION)
-    check("reincorporandose, la guardia anti-muro suma",
-          o.direccion < -60.0, f"dir={o.direccion}")
 
-    # Mientras no este centrado y enfilado, se queda reincorporandose.
+    # RECTO NO ES CENTRADO, y confundirlos era la desviacion que se seguia
+    # viendo. El carro sale del rebase desplazado; si se le manda centrarse
+    # hace una ese (cruza al centro, se pasa, vuelve). Aqui se le manda
+    # sostener el RUMBO: con el yaw en su sitio, lo unico que queda es la
+    # guardia anti-muro, aunque el carril este pidiendo -60 % de centrado.
+    check("con el rumbo en su sitio, no se cruza al centro",
+          abs(o.direccion - (-30.0)) < 1.0,
+          f"dir={o.direccion} (carril pedia -60, guardia -30)")
+
+    # Y si el carro SI se sale del rumbo, vuelve a el.
+    o = fsm.paso(ctx(carril=SalidaCarril(dist_frente_mm=600.0,
+                                         err_centrado=-0.8,
+                                         rumbo_hueco_deg=-22.0,
+                                         muro_encima=True),
+                     sens=proto.Sensores(estado=proto.S_MPU_OK, yaw=-10.0),
+                     direccion_mezclada=-60.0))
+    check("desviado 10 grados del rumbo, corrige hacia el",
+          o.direccion > 15.0, f"dir={o.direccion}")
+
+    # Mientras no este enfilado, se queda reincorporandose.
     fsm.paso(ctx(carril=SalidaCarril(dist_frente_mm=600.0, err_centrado=-0.8,
-                                     rumbo_hueco_deg=-22.0, muro_encima=True)))
+                                     rumbo_hueco_deg=-22.0, muro_encima=True),
+                 sens=proto.Sensores(estado=proto.S_MPU_OK)))
     check("sigue reincorporandose si aun va cruzado",
           fsm.estado == Estado.REINCORPORACION, fsm.estado.value)
 
@@ -444,20 +483,24 @@ def prueba_esquina() -> None:
     o = f.paso(ctx(frente=900.0, esquina=True))
     check("la linea dispara la curva", f.estado == Estado.ESQUINA,
           f.estado.value)
-    check("gira fuerte y hacia el sentido de la ronda", o.direccion > 70.0,
-          f"dir={o.direccion}")
+    check("gira fuerte y hacia el sentido de la ronda",
+          o.direccion >= float(cfg["dir_esquina"]) * 0.95,
+          f"dir={o.direccion} (dir_esquina={cfg['dir_esquina']})")
 
     # Sigue girando aunque el hueco se abra: eso es el compromiso. El carril
     # aflojaria aqui, y por eso el giro se quedaba a medias.
     o = f.paso(ctx(frente=3000.0, yaw=20.0))
     check("con 20 grados girados todavia no suelta",
-          f.estado == Estado.ESQUINA and o.direccion > 70.0,
+          f.estado == Estado.ESQUINA and
+          o.direccion >= float(cfg["dir_esquina"]) * 0.95,
           f"{f.estado.value} dir={o.direccion}")
 
-    # Girados 70 grados: hecho.
-    f.paso(ctx(frente=3000.0, yaw=72.0))
-    check("girados 70 grados, vuelve a pista", f.estado == Estado.PISTA,
-          f.estado.value)
+    # Girado lo que pide esquina_grados: hecho. El umbral se lee del config
+    # para que cerrar mas el giro no rompa la prueba.
+    hecho = float(cfg["esquina_grados"]) + 2.0
+    f.paso(ctx(frente=3000.0, yaw=hecho))
+    check(f"girados {cfg['esquina_grados']:.0f} grados, vuelve a pista",
+          f.estado == Estado.PISTA, f.estado.value)
 
     # --- una esquina, un giro ------------------------------------------
     # Las dos lineas de una curva caen dentro de los mismos 1000 mm. Si la
@@ -465,7 +508,7 @@ def prueba_esquina() -> None:
     f2 = arrancado()
     f2.paso(ctx(frente=900.0, esquina=True, dist=5000.0))
     check("primera linea: gira", f2.estado == Estado.ESQUINA)
-    f2.paso(ctx(frente=900.0, yaw=75.0, dist=5400.0))          # curva hecha
+    f2.paso(ctx(frente=900.0, yaw=hecho, dist=5400.0))         # curva hecha
     f2.paso(ctx(frente=900.0, esquina=True, dist=5600.0))      # 2a linea
     check("la segunda linea de la misma curva no encadena otro giro",
           f2.estado == Estado.PISTA, f2.estado.value)
@@ -492,7 +535,8 @@ def prueba_esquina() -> None:
     # --- antihorario gira al otro lado ----------------------------------
     f5 = arrancado()
     o = f5.paso(ctx(frente=900.0, esquina=True, sentido=-1))
-    check("en antihorario la curva va a la izquierda", o.direccion < -70.0,
+    check("en antihorario la curva va a la izquierda",
+          o.direccion <= -float(cfg["dir_esquina"]) * 0.95,
           f"dir={o.direccion}")
 
     # --- un pilar manda sobre la curva -----------------------------------
@@ -963,6 +1007,90 @@ def prueba_compromiso() -> None:
           abs(guardia_muro(SalidaCarril(lat_der_mm=600.0), cfg)) < 1e-6)
 
 
+# ============================== el muestreo del sensor de color ==========
+def prueba_muestreo_tcs() -> None:
+    """El hueco de 48 ms en el que cabe una linea entera.
+
+    ESTO NO PRUEBA EL FIRMWARE —esta en C++ y aqui no hay compilador— sino la
+    ARITMETICA DE LA PLANIFICACION, que es donde estaba el fallo y que es la
+    misma se escriba en el lenguaje que se escriba. El chip integra durante
+    T y el codigo preguntaba cada T. Dos relojes a la misma frecuencia sin
+    sincronizar derivan, y en cuanto derivan la pregunta cae siempre un pelo
+    antes de que el dato exista; como el hueco hasta la pregunta siguiente ya
+    estaba reservado, el periodo real pasa a ser 2T.
+    """
+    print("muestreo del sensor de color")
+
+    def simular(t_integracion_ms, periodo_sondeo_ms, reservar_hueco,
+                deriva_ms=0.7, ms_total=4000.0):
+        """Devuelve los instantes en que el codigo consigue una muestra nueva.
+
+        deriva_ms: lo que el reloj del chip se adelanta cada integracion
+        respecto al del micro. Con relojes RC de verdad esto es inevitable.
+        """
+        listo_en = t_integracion_ms          # cuando el chip tendra el dato
+        prox = 0.0                           # cuando el codigo preguntara
+        muestras = []
+        t = 0.0
+        while t < ms_total:
+            t = prox
+            if t >= listo_en:                # hay dato: se coge
+                muestras.append(t)
+                listo_en = t + t_integracion_ms + deriva_ms
+                prox = t + periodo_sondeo_ms
+            else:                            # todavia no
+                # AQUI ESTA EL FALLO: reservar el hueco entero aunque no
+                # hubiera dato es lo que dobla el periodo.
+                prox = t + (periodo_sondeo_ms if reservar_hueco else 1.0)
+        return muestras
+
+    def peor_hueco(m):
+        return max(b - a for a, b in zip(m, m[1:])) if len(m) > 1 else 1e9
+
+    # El caso de antes: integra 24 ms y se pregunta cada 24 ms.
+    antes = simular(24.0, 24.0, reservar_hueco=True)
+    # El de ahora: integra 12 ms y se sondea a 500 Hz (cada 2 ms).
+    ahora = simular(12.0, 2.0, reservar_hueco=False)
+
+    check("antes: el hueco entre muestras llegaba a doblarse",
+          peor_hueco(antes) > 40.0, f"peor hueco {peor_hueco(antes):.0f} ms")
+    check("ahora: el hueco no pasa del periodo de integracion + margen",
+          peor_hueco(ahora) < 20.0, f"peor hueco {peor_hueco(ahora):.0f} ms")
+
+    # Lo que importa de verdad: cuantas lineas se pierden. Una linea de 20 mm
+    # a 1 m/s dura 20 ms (reglamento 13.9); se cruza una cada 2 m de pista.
+    def lineas_vistas(muestras, dura_ms=20.0, cada_ms=2000.0, n=8):
+        vistas = 0
+        for i in range(n):
+            t0 = 120.0 + i * cada_ms
+            if any(t0 <= m <= t0 + dura_ms for m in muestras):
+                vistas += 1
+        return vistas
+
+    largo_antes = simular(24.0, 24.0, True, ms_total=18000.0)
+    largo_ahora = simular(12.0, 2.0, False, ms_total=18000.0)
+    v_antes = lineas_vistas(largo_antes)
+    v_ahora = lineas_vistas(largo_ahora)
+    check("antes se perdian lineas enteras", v_antes < 8,
+          f"{v_antes} de 8 lineas vistas")
+    check("ahora no se pierde ninguna", v_ahora == 8,
+          f"{v_ahora} de 8 lineas vistas")
+    # Y con dos muestras por linea el filtro de permanencia puede confirmarla.
+    def muestras_por_linea(m, dura_ms=20.0, cada_ms=2000.0, n=8):
+        return min(sum(1 for x in m if t0 <= x <= t0 + dura_ms)
+                   for t0 in (120.0 + i * cada_ms for i in range(n)))
+    # UNA muestra dentro de la linea tiene que bastar para contarla: el
+    # clasificador cuenta milisegundos de permanencia, no lecturas, y una
+    # lectura de 12 ms ES luz recogida durante 12 ms. Antes hacian falta dos
+    # seguidas, y el dia que solo caia una la linea no se contaba.
+    check("en la peor linea cae al menos una muestra",
+          muestras_por_linea(largo_ahora) >= 1,
+          f"{muestras_por_linea(largo_ahora)} muestras en la peor linea")
+    check("y esa muestra cubre de sobra la permanencia minima (8 ms)",
+          peor_hueco(largo_ahora) >= 8.0,
+          f"periodo real {peor_hueco(largo_ahora):.0f} ms")
+
+
 # ====================== vueltas fantasma (el fallo del boton)
 def prueba_vueltas_fantasma() -> None:
     print("vueltas fantasma")
@@ -1035,6 +1163,7 @@ def main() -> int:
     prueba_esquive()
     prueba_carril()
     prueba_compromiso()
+    prueba_muestreo_tcs()
     prueba_vueltas_fantasma()
     print()
     if fallos:

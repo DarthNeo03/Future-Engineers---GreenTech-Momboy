@@ -224,7 +224,17 @@ tocaban a la vez: bajar el centrado al 25 % —el único término que aparta al
 carro del muro— y empujar con `sesgo_curva` hacia el lado al que giran las
 curvas de la ronda.
 
-En `REINCORPORACION` el piloto le pasa al carril `tras_pilar=True`, y con eso:
+**Y va RECTA, no al centro.** Son cosas distintas, y confundirlas era la
+desviación que seguía viéndose después de cada esquive: el seguidor de carril
+no va recto, va al *centro*, así que a un carro que sale del rebase desplazado
+le manda cruzar — y el carro hace una ese (se cruza, se pasa, vuelve). Aquí se
+sostiene el **rumbo** con el yaw, igual que en el compromiso, y el rumbo bueno
+ya lo dejó puesto el propio compromiso al reenfilar hacia el pasillo. Lo único
+que se le suma es la guardia anti-muro: no centra, solo impide el golpe.
+Recentrarse es cosa de la recta siguiente, con sitio y sin prisa. Sin MPU no
+hay rumbo que sostener y manda el carril; se nota.
+
+El piloto además le pasa al carril `tras_pilar=True`, y con eso:
 
 | Qué se apaga | Por qué |
 |---|---|
@@ -232,9 +242,10 @@ En `REINCORPORACION` el piloto le pasa al carril `tras_pilar=True`, y con eso:
 | el aprendizaje del sentido | esos grados de rumbo no son de ninguna curva; si entraran en el promedio, el sentido "aprendido" sería el del último esquive |
 | la rebaja del centrado | es lo único que saca al carro del muro |
 
-Se sale a `PISTA` cuando el carro está de verdad centrado y enfilado
-(`reincorporado_err`, `reincorporado_deg`) o cuando se agota
-`reincorporacion_max_s`. Un pilar nuevo interrumpe el estado y manda a `SENAL`:
+Se sale a `PISTA` cuando el carro está **enfilado** y despegado del muro
+(`reincorporado_deg`) o cuando se agota `reincorporacion_max_s`. Enfilado, no
+centrado: exigir centrado mientras se va recto a propósito es pedir algo que
+este estado no hace, y se saldría siempre por tiempo. Un pilar nuevo interrumpe el estado y manda a `SENAL`:
 recolocarse no puede ser excusa para pasar de largo la señal siguiente.
 
 Medido en el escenario de prueba (carro a 150 mm del muro derecho después de
@@ -277,9 +288,16 @@ curva empieza de verdad. Así que el reparto es:
 | el sentido de la ronda | **HACIA DÓNDE**: naranja = horario = todas a la derecha |
 
 Entre esquina y esquina, el carro va **recto**. Con eso, `Estado.ESQUINA` hace
-un giro **comprometido**: `dir_esquina` (85 %) sostenido hasta haber girado
-`esquina_grados` (70°) de yaw, sin renegociar. Lo único que se le suma es la
+un giro **comprometido**: `dir_esquina` (100 %) sostenido hasta haber girado
+`esquina_grados` (78°) de yaw, sin renegociar. Lo único que se le suma es la
 guardia anti-muro, que no discute el giro — solo impide rozar.
+
+**El giro va a tope y despacio, y las dos cosas hacen falta.** Con Ackermann el
+radio lo fija el ángulo de las ruedas, así que «más cerrado» es literalmente
+más volante; y `vel_esquina` (26 %) entra porque un carro rápido desliza hacia
+fuera y el radio real sale mayor que el geométrico. Quedándose corto en
+cualquiera de los dos, el carro sale de la curva abierto y termina pegado al
+muro exterior de la recta siguiente.
 
 **Las cuatro redes**, cada una por un fallo concreto:
 
@@ -477,6 +495,64 @@ Y si sale el aviso de que **las líneas y las curvas no dicen el mismo
 sentido**, para y arregla `color_entrada_horario` antes de seguir rodando: el
 carro está funcionando con dos respuestas contradictorias a la pregunta de
 hacia dónde giran las curvas.
+
+---
+
+## Si el TCS no ve las líneas del piso
+
+Desde que la curva la dispara la línea, esto deja de ser un problema de
+contador y pasa a ser un problema de conducción: sin líneas, el carro gira solo
+por cámara y vuelve a recortar las curvas.
+
+### El hueco de 48 ms
+
+Era un fallo de aritmética, no de sensor, y no se ve mirando el TCS: se ve
+haciendo la cuenta. El chip integra durante `periodoMs()` y el firmware
+preguntaba **cada** `periodoMs()`. Dos relojes a la misma frecuencia y sin
+sincronizar derivan; y en cuanto derivan, la pregunta cae siempre un pelo
+*antes* de que el dato exista. Como el hueco hasta la pregunta siguiente ya
+estaba reservado, el periodo real pasaba a ser **el doble**. Una línea de 20 mm
+a 1 m/s dura 20 ms: en un hueco de 48 ms cabe entera sin dejar rastro.
+
+La solución no es afinar el periodo —dos relojes libres siempre acaban
+derivando— sino dejar de programarlo:
+
+| Antes | Ahora |
+|---|---|
+| integra 24 ms, pregunta cada 24 ms | integra **12 ms**, sondea cada **2 ms** y coge la muestra en cuanto el chip dice que vale |
+| `leerColor()` devolvía `true` aunque siguiera integrando, y el clasificador comía la muestra anterior otra vez | `true` **solo** si `c/r/g/b` se acaban de actualizar |
+| hacían falta **dos** lecturas seguidas para contar un cruce | la permanencia se cuenta en **milisegundos**: una lectura de 12 ms ya son 12 ms de luz recogida |
+| `blanco` arrancaba en 1 y subía a 1/64 por muestra: ~10 s ciego al encender | la primera lectura se adopta entera |
+
+La ganancia se queda en **x16** a propósito: los valores absolutos bajan con
+`atime`, y la tentación es subirla, pero con 12 ms y x60 el tapete blanco
+**satura** — y en cuanto satura, los ratios entre canales dejan de valer, que
+es justo el discriminador. No hay que recalibrar nada a mano: el nivel de
+blanco lo aprende el clasificador solo.
+
+**Hay que volver a subir el firmware.** El `.ino`, `lineas.h`, `sensores_i2c.h`
+y `protocolo.h` cambian todos.
+
+### Y si aun así no las ve
+
+`--ver` ahora imprime la línea del TCS y con ella el diagnóstico es una resta:
+
+```
+TCS: claro 640/900 = 71% (entra <78)   sep -146 -> azul (|sep|>60)
+```
+
+| Lo que sale | Qué falla | Qué mirar |
+|---|---|---|
+| el `%` no baja de 78 sobre la línea | la **puerta de luz** | el sensor va demasiado alto, hay reflejo, o el blanco aprendido se quedó bajo |
+| baja del 78 pero `sep` se queda corto | el **discriminante de color** | altura del sensor, lente sucia; `sep_min` está en 60 milésimas |
+| `sep` con el signo cambiado | naranja y azul intercambiados | revisa `color_entrada_horario`, que es lo que ata color y sentido |
+| `TCS: ausente` | el I²C no responde | cableado; las esquinas irán solo por cámara |
+| `firmware viejo` | el ESP32 no manda `blanco`/`separacion` | vuelve a subir el firmware |
+
+La trama de sensores creció de 12 a 16 bytes para poder decir esto, pero los
+cuatro nuevos son **opcionales**: una Pi actualizada con un ESP32 sin
+reflashear sigue funcionando, porque actualizar la Pi es copiar ficheros y
+reflashear pide cable — el orden en que pasa en la práctica.
 
 ---
 

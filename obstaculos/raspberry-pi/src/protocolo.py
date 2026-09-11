@@ -19,7 +19,7 @@ from typing import List, Optional, Tuple
 
 SYNC1 = 0xA5
 SYNC2 = 0x5A
-MAX_PAYLOAD = 16
+MAX_PAYLOAD = 24              # la trama de sensores usa 16
 VERSION_PROTOCOLO = 1
 
 # ------------------------------------------------------------- tipos de trama
@@ -156,9 +156,14 @@ class Sensores:
     claro: int = 0
     cruces_naranja: int = 0
     cruces_azul: int = 0
+    # Diagnostico del clasificador de lineas. Con un ESP32 de firmware viejo
+    # llegan a 0, que es lo que dice `lineas_diag`.
+    blanco: int = 0           # nivel de claro del tapete, aprendido
+    separacion: int = 0       # (r-b)/(r+g+b) en milesimas
     botones: int = 0
     pulsaciones: int = 0
     version: int = 0
+    lineas_diag: bool = False   # el firmware manda blanco/separacion
 
     @property
     def mpu_ok(self) -> bool:
@@ -193,10 +198,24 @@ def decodificar_telemetria(p: bytes) -> Optional[Telemetria]:
 
 
 def decodificar_sensores(p: bytes) -> Optional[Sensores]:
+    """Los doce primeros bytes son obligatorios; los cuatro del diagnostico
+    del clasificador de lineas son opcionales.
+
+    Se leen por separado A PROPOSITO. Si la Pi se actualiza antes que el
+    ESP32 —que es el orden en que pasa, porque reflashear pide cable— la
+    trama sigue midiendo doce bytes y todo lo demas tiene que seguir
+    funcionando. Exigir dieciseis convertiria una mejora de diagnostico en un
+    carro que no arranca.
+    """
     if len(p) < 12:
         return None
     est, yaw, gz, claro, cn, ca, bot, pul, ver = struct.unpack("<BhhHBBBBB", p[:12])
-    return Sensores(est, yaw / 10.0, gz / 10.0, claro, cn, ca, bot, pul, ver)
+    s = Sensores(est, yaw / 10.0, gz / 10.0, claro, cn, ca, 0, 0,
+                 bot, pul, ver)
+    if len(p) >= 16:
+        s.blanco, s.separacion = struct.unpack("<Hh", p[12:16])
+        s.lineas_diag = True
+    return s
 
 
 class Lector:

@@ -207,17 +207,29 @@ DEFECTOS: Dict[str, Any] = {
         # Se va despacio a proposito: es donde hay que recolocarse y donde
         # aparece el pilar siguiente, y las dos cosas piden frames por metro.
         "vel_reincorporacion": 34.0,
-        "reincorporacion_max_s": 1.2,   # red por si no se llega a centrar
-        "reincorporado_err": 0.30,      # error de centrado que ya vale
+        "reincorporacion_max_s": 1.2,   # red por si no se llega a enfilar
+        "reincorporado_err": 0.30,      # error de centrado (solo telemetria)
         "reincorporado_deg": 14.0,      # rumbo al hueco que ya vale
+        # Sostener el rumbo RECTO al salir del rebase. Mismo par que el del
+        # compromiso, y por el mismo motivo: el carril no va recto, va al
+        # centro, y pedirle centrarse a un carro que acaba de salir desplazado
+        # es pedirle la ese que se veia despues de cada esquive.
+        "kp_recto": 2.6,
+        "kd_recto": 0.22,
         # ---- la curva, disparada por la linea del piso ----
         # El giro se COMPROMETE: el volante se mantiene hasta haber girado de
         # verdad, en vez de renegociarse cada ciclo contra el centrado (que es
         # por lo que el giro se quedaba a medias).
-        "dir_esquina": 85.0,            # % de volante durante la curva
-        "esquina_grados": 70.0,         # yaw girado que da la curva por hecha
+        # EL GIRO VA A TOPE Y DESPACIO. Con Ackermann el radio lo fija el
+        # angulo de las ruedas, asi que "mas cerrado" es literalmente mas
+        # volante; y la velocidad entra porque un carro rapido desliza hacia
+        # fuera y el radio real sale mayor que el geometrico. Quedandose corto
+        # en cualquiera de los dos, el carro sale de la curva abierto y
+        # termina pegado al muro exterior de la recta siguiente.
+        "dir_esquina": 100.0,           # % de volante durante la curva
+        "esquina_grados": 78.0,         # yaw girado que da la curva por hecha
         "esquina_max_s": 2.5,           # red sin MPU, o si el yaw no cuadra
-        "vel_esquina": 30.0,
+        "vel_esquina": 26.0,
         # La linea dice CUANDO y la camara confirma QUE ESTA AHI: si el frente
         # no esta cerrado, esa linea es la de SALIDA de una curva cuya entrada
         # se perdio el sensor, y girar ahi es meterse en la pared.

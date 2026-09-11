@@ -318,12 +318,15 @@ void tareaSensores(void *) {
 
   uint32_t usPrevMpu = micros();
   uint32_t msPrevTcs = millis();
-  uint32_t msProxTcs = millis();
   uint32_t msProxSondeo = millis() + REINTENTO_I2C_MS;
 
   for (;;) {
     uint32_t aviso = 0;
-    xTaskNotifyWait(0, 0xFFFFFFFF, &aviso, pdMS_TO_TICKS(5));
+    // 2 ms, no 5. El sondeo del TCS sale de esta espera, y cada milisegundo
+    // que se tarda en preguntar se suma al periodo real de muestreo: con 12 ms
+    // de integracion y 5 de granularidad salen ~17 ms entre muestras, y en una
+    // linea de 20 mm eso deja UNA sola lectura. Con 2 quedan ~14 y caben dos.
+    xTaskNotifyWait(0, 0xFFFFFFFF, &aviso, pdMS_TO_TICKS(2));
     uint32_t ahora = millis();
 
     // ---- comandos de calibracion pedidos por la Pi ---------------------
@@ -347,10 +350,24 @@ void tareaSensores(void *) {
       if (dt > 0) { mpu.paso_us(dt); usPrevMpu = usAhora; }
     }
 
-    // ---- TCS: leer al ritmo de su integracion --------------------------
-    bool leerAhora = (aviso & AVISO_TCS) || (int32_t)(ahora - msProxTcs) >= 0;
-    if (tcs.presente && leerAhora) {
-      msProxTcs = ahora + tcs.periodoMs();
+    // ---- TCS: PREGUNTAR MUCHO, COGER LA MUESTRA EN CUANTO EXISTA -------
+    //
+    // Aqui habia un fallo que dejaba al carro ciego a las lineas la mitad de
+    // las veces, y no se ve mirando el sensor: se ve haciendo la cuenta. El
+    // chip integra durante `periodoMs()` y el codigo preguntaba CADA
+    // `periodoMs()`. Dos relojes a la misma frecuencia, sin sincronizar,
+    // derivan; y en cuanto derivan la pregunta cae siempre un pelo ANTES de
+    // que el dato exista. Como el hueco hasta la pregunta siguiente ya estaba
+    // reservado, el periodo real pasaba a ser el DOBLE. Una linea de 20 mm a
+    // 1 m/s dura 20 ms: en un hueco de 48 ms cabe entera sin dejar rastro.
+    //
+    // La solucion no es afinar el periodo —dos relojes libres siempre acaban
+    // derivando— sino dejar de programarlo: se sondea en cada vuelta de la
+    // tarea (~200 Hz) y se coge la muestra en el instante en que el chip dice
+    // que vale. Asi el periodo real ES el de integracion, sin depender de que
+    // dos relojes se lleven bien. Preguntar de mas cuesta una lectura de un
+    // byte por I2C: nada al lado de perderse una linea.
+    if (tcs.presente) {
       if (tcs.leerColor()) {
         uint16_t dt = (uint16_t)(ahora - msPrevTcs);
         msPrevTcs = ahora;
@@ -387,6 +404,8 @@ void tareaSensores(void *) {
     s.yaw_d10 = (int16_t)(mpu.yaw * 10.0f);
     s.gz_d10  = (int16_t)(mpu.gz * 10.0f);
     s.claro   = tcs.c;
+    s.blanco = lineas.blanco;
+    s.separacion = lineas.separacion;
     s.cruces_naranja = lineas.cruces_naranja;
     s.cruces_azul    = lineas.cruces_azul;
     s.botones     = bitsBoton;

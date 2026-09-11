@@ -63,6 +63,10 @@ class Clasificador {
   void configurar(const Config &c) { cfg_ = c; }
   const Config &config() const { return cfg_; }
 
+  // OJO: NO se reinicia `blanco`. Este reinicio lo pide la Pi al pulsar el
+  // boton (CAL_CERO_LINEAS) y lo que quiere es poner los contadores a cero,
+  // no volver a dejar el sensor ciego diez segundos justo al arrancar la
+  // ronda. El nivel de blanco es una propiedad de la sala, no de la carrera.
   void reiniciar() {
     clase = NADA;
     cruces_naranja = 0;
@@ -89,7 +93,18 @@ class Clasificador {
     separacion = suma ? (int16_t)(((int32_t)r - (int32_t)b) * 1000 / (int32_t)suma) : 0;
 
     // --- aprendizaje del blanco --------------------------------------
-    // Solo se aprende cuando NO estamos sobre color: si no, una linea larga
+    // LA PRIMERA MUESTRA SE ADOPTA ENTERA. Antes `blanco` arrancaba en 1 y
+    // subia con una media movil de 1/64: desde 1 hasta el nivel real del
+    // tapete son varios cientos de muestras, o sea del orden de diez segundos
+    // en los que `c` esta muy por encima de `blanco` y la puerta de claro
+    // nunca se abre. El carro empieza la ronda ciego a las lineas. Tomando la
+    // primera lectura como punto de partida, el filtro solo tiene que seguir
+    // la deriva de luz de la sala, que es para lo que esta.
+    if (!inicializado_) {
+      inicializado_ = true;
+      if (c > 0) blanco = c;
+    }
+    // Y solo se aprende cuando NO estamos sobre color: si no, una linea larga
     // se convertiria en el nuevo "blanco" y el sensor se quedaria ciego.
     bool color = (separacion > cfg_.sep_min) || (separacion < -cfg_.sep_min);
     if (!color && c > blanco / 2) {
@@ -118,12 +133,23 @@ class Clasificador {
       return NADA;
     }
 
+    // PERMANENCIA CONTADA EN MILISEGUNDOS, NO EN MUESTRAS.
+    //
+    // Antes la primera lectura de una clase nueva abria candidata y salia sin
+    // mirar el umbral, o sea que hacian falta DOS lecturas seguidas para
+    // contar un cruce. Con 12 ms de integracion y una linea de 20 mm caben
+    // una o dos lecturas dentro de la linea: exigir dos es exigir el caso
+    // bueno siempre, y el dia que solo cae una la linea no se cuenta. Eso no
+    // era lo que el filtro queria decir — `ms_minimo` esta en milisegundos —
+    // y ademas la ventana de integracion YA es el promediado: una lectura de
+    // 12 ms es luz recogida durante 12 ms, no una muestra instantanea que
+    // pueda ser ruido.
     if (ahora != candidata_) {          // empieza una candidata nueva
       candidata_ = ahora;
       ms_candidata_ = dt_ms;
-      return NADA;
+    } else {
+      ms_candidata_ += dt_ms;
     }
-    ms_candidata_ += dt_ms;
     clase = candidata_;
 
     // Un cruce solo cuenta si (a) la clase se sostuvo lo suficiente y (b)
@@ -146,6 +172,7 @@ class Clasificador {
   uint16_t ms_candidata_ = 0;
   uint16_t ms_limpio_ = 1000;
   bool     sobre_ = false;
+  bool     inicializado_ = false;
 };
 
 }  // namespace lin

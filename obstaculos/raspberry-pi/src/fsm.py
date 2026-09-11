@@ -139,6 +139,7 @@ class MaquinaEstados:
         self.t_arranque: Optional[float] = None
         self.t_fin: Optional[float] = None
         self._t_reversa_hasta = 0.0
+        self._yaw_recto: Optional[float] = None     # rumbo que se sostiene
         self._yaw_esquina: Optional[float] = None   # yaw al entrar en la curva
         self._dist_ultima_esquina_mm = -1e9         # una esquina, un giro
         self._sentido_esquina = 0
@@ -259,6 +260,10 @@ class MaquinaEstados:
         # deja que el carril opine, tira del carro hacia el centro y la rueda
         # trasera barre el pilar.
         if c.maniobra.fase != FASE_COMPROMISO:
+            # EL RUMBO QUE SE VA A SOSTENER. El compromiso termina reenfilando
+            # hacia el pasillo, asi que el rumbo de ESTE instante es el bueno:
+            # se congela aqui y no se vuelve a tocar hasta salir del estado.
+            self._yaw_recto = c.sens.yaw if c.sens.mpu_ok else None
             self._ir(Estado.REINCORPORACION, "compromiso cumplido")
             return self._reincorporacion(c)
         v = min(c.velocidad_sugerida, float(self.cfg.get("vel_esquive", 30.0)))
@@ -272,20 +277,28 @@ class MaquinaEstados:
                      nota=f"compromiso {c.maniobra.color}")
 
     def _reincorporacion(self, c: Contexto) -> Orden:
-        """Ya se rebaso el pilar. Ahora hay que volver al carril SIN inventarse
-        una curva.
+        """Ya se rebaso el pilar. Ahora TOCA IR RECTO.
 
-        El carro llega aqui descolocado hacia el lado por el que rebaso y con
-        el morro apuntando al muro. Mientras dura este estado el piloto le dice
-        al seguidor de carril `tras_pilar=True`, y con eso el carril deja de
-        leer el frente cerrado como una esquina: no aprende el sentido de las
-        curvas con estos grados, no aplica el sesgo de curva, y el centrado
-        recupera toda su autoridad. Encima se suma la guardia anti-muro, que
-        aqui sigue haciendo falta tanto como durante el compromiso.
+        Y "recto" hay que tomarselo al pie de la letra, porque la version
+        anterior no lo hacia: dejaba mandar al seguidor de carril, y el carril
+        no va recto — va al CENTRO. Son cosas distintas. Un carro que sale del
+        rebase desplazado hacia un lado y recibe la orden de centrarse hace
+        una ese: se cruza hacia el centro, se pasa, y vuelve. Eso es la
+        desviacion que se seguia viendo justo despues de esquivar, y no venia
+        de que el carril estuviera mal, sino de haberle pedido lo que no era.
 
-        Se sale cuando el carro esta centrado y enfilado —que es lo que de
-        verdad significa "reincorporado"— o cuando se acaba el tiempo, que es
-        la red para que un tramo raro no deje el estado enganchado.
+        Asi que aqui se sostiene el RUMBO con el yaw, igual que en el
+        compromiso. El rumbo bueno ya lo dejo puesto el propio compromiso, que
+        termina reenfilando hacia el pasillo libre. Lo unico que se le suma es
+        la guardia anti-muro: no centra, solo impide el golpe. Recentrarse es
+        cosa de la recta siguiente, con sitio y sin prisa.
+
+        Sin MPU no hay rumbo que sostener y no queda mas remedio que dejar
+        mandar al carril; se nota, y es otro motivo para tener el I2C sano.
+
+        Se sale cuando el carro esta enfilado y despegado del muro, cuando la
+        linea del piso dice que empieza una curva, o cuando se acaba el
+        tiempo.
         """
         if self._parada_por_vueltas(c):
             return self._meta(c)
@@ -308,23 +321,33 @@ class MaquinaEstados:
         if self._toca_esquina(c):
             return self._entrar_esquina(c)
 
-        centrado = abs(c.carril.err_centrado) < float(
-            self.cfg.get("reincorporado_err", 0.30))
+        # SE SALE POR ESTAR ENFILADO, NO POR ESTAR CENTRADO. Exigir centrado
+        # mientras se va recto a proposito es pedir algo que este estado no
+        # hace: se saldria siempre por tiempo. Centrarse es cosa de la recta.
         enfilado = abs(c.carril.rumbo_hueco_deg) < float(
             self.cfg.get("reincorporado_deg", 14.0))
         agotado = self.en_estado_s > float(
             self.cfg.get("reincorporacion_max_s", 1.2))
-        if (centrado and enfilado and not c.carril.muro_encima) or agotado:
+        if (enfilado and not c.carril.muro_encima) or agotado:
+            self._yaw_recto = None
             self._ir(Estado.PISTA,
-                     "tiempo de reincorporacion" if agotado else "carril recuperado")
+                     "tiempo de reincorporacion" if agotado else "enfilado")
             return self._pista(c)
 
         v = min(c.velocidad_sugerida,
                 float(self.cfg.get("vel_reincorporacion", 34.0)))
-        direccion = c.direccion_mezclada + c.guardia_muro
+        if self._yaw_recto is not None and c.sens.mpu_ok:
+            err = envolver_grados(self._yaw_recto - c.sens.yaw)
+            direccion = (float(self.cfg.get("kp_recto", 2.6)) * err
+                         - float(self.cfg.get("kd_recto", 0.22)) * c.sens.gz
+                         + c.guardia_muro)
+            nota = f"recto ({err:+.0f} deg)"
+        else:
+            # Sin MPU no hay rumbo que sostener: manda el carril y se nota.
+            direccion = c.direccion_mezclada + c.guardia_muro
+            nota = "reincorporandose sin MPU"
         return Orden(vel=v, direccion=max(-100.0, min(100.0, direccion)),
-                     armado=True, parada=False, centrar=False,
-                     nota="reincorporandose al carril")
+                     armado=True, parada=False, centrar=False, nota=nota)
 
     # ---------------------------------------------------------- esquinas
     def _toca_esquina(self, c: Contexto) -> bool:

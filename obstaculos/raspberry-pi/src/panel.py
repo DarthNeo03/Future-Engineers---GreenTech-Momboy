@@ -63,6 +63,33 @@ def _sentido(u: Dict[str, Any]) -> str:
     return f"{nombre} (provisional)"
 
 
+def _tcs(u: Dict[str, Any]) -> str:
+    """Lo que el clasificador de lineas esta viendo, en una linea.
+
+    "El carro no ve las lineas" es una queja, no un diagnostico. Con estos
+    dos numeros pasa a ser una resta:
+
+      claro por encima del 78 % del blanco  -> falla la PUERTA DE LUZ: el
+          sensor va demasiado alto, o hay reflejo, o el blanco aprendido se
+          quedo bajo.
+      claro por debajo pero |sep| < 60      -> falla el DISCRIMINANTE: el
+          color no llega, casi siempre por altura o por suciedad en la lente.
+
+    `sep` positivo es naranja y negativo azul, asi que tambien dice si el
+    sensor esta confundiendo los dos colores.
+    """
+    if not u.get("tcs_ok"):
+        return "TCS: ausente (las esquinas iran solo por camara)"
+    if not u.get("lineas_diag"):
+        return (f"TCS: claro {u.get('claro')} "
+                f"(firmware viejo: sin blanco ni separacion)")
+    pct = u.get("pct_claro")
+    sep = u.get("separacion", 0)
+    quien = "naranja" if sep > 0 else ("azul" if sep < 0 else "-")
+    return (f"TCS: claro {u.get('claro')}/{u.get('blanco')} = {pct}% "
+            f"(entra <78)   sep {sep:+} -> {quien} (|sep|>60)")
+
+
 def dibujar(frame: np.ndarray, piloto: Any, esc: Escena) -> np.ndarray:
     img = frame.copy()
     alto, ancho = img.shape[:2]
@@ -133,6 +160,7 @@ def dibujar(frame: np.ndarray, piloto: Any, esc: Escena) -> np.ndarray:
         f"yaw {u.get('yaw',0):>6}  vuelta {u.get('vueltas',0)}"
         f"  seccion {u.get('secciones',0)}  sentido {_sentido(u)}",
     ]
+    lineas.append(_tcs(u))
     if u.get("esquina_abierta"):
         lineas.append(f"LINEA {u.get('linea','').upper()}: empieza la curva")
     if u.get("tras_pilar"):

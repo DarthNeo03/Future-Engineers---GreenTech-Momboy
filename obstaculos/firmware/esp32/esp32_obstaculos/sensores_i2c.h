@@ -161,11 +161,21 @@ class Tcs34725 {
   uint16_t umbral_int = 0;       // por debajo de este claro, salta la INT
   uint16_t c = 0, r = 0, g = 0, b = 0;
 
-  // atime: 0xFF = 2.4 ms, 0xF6 = 24 ms, 0xEB = 50 ms. gain: 0=x1 1=x4 2=x16
-  // 3=x60. Bajar ATIME multiplica las muestras por linea (que es lo que hace
-  // falta para cruzarlas rapido) pero baja los valores absolutos: hay que
-  // repetir la calibracion del TCS despues de tocarlo.
-  bool detectar(uint8_t atime = 0xF6, uint8_t gain = 2) {
+  // atime: 0xFF = 2.4 ms, 0xFB = 12 ms, 0xF6 = 24 ms, 0xEB = 50 ms.
+  // gain: 0=x1 1=x4 2=x16 3=x60.
+  //
+  // POR QUE 12 ms Y NO 24. Una linea de 20 mm a 1 m/s dura 20 ms. Con 24 ms
+  // de integracion cabe entera entre dos muestras y el sensor no la ve nunca;
+  // con 12 salen dos o tres lecturas por linea a velocidad de crucero, que es
+  // lo que hace falta para que el filtro de permanencia la confirme.
+  //
+  // Y POR QUE LA GANANCIA SE QUEDA EN x16. Los valores absolutos bajan con
+  // atime, asi que la tentacion es subir la ganancia para compensar; con 12 ms
+  // y x60 el tapete blanco SATURA (el claro tope es 1024*(256-atime)) y en
+  // cuanto satura los ratios entre canales dejan de valer, que es justo el
+  // discriminador. Aqui no hace falta recalibrar nada a mano: el nivel de
+  // blanco lo aprende el clasificador solo.
+  bool detectar(uint8_t atime = 0xFB, uint8_t gain = 2) {
     uint8_t id = 0;
     if (!leer(0x12, &id, 1)) { presente = false; return false; }
     if (id != 0x44 && id != 0x4D && id != 0x10) { presente = false; return false; }
@@ -228,13 +238,22 @@ class Tcs34725 {
     return ms < 3 ? 3 : (uint16_t)ms;
   }
 
+  // Devuelve TRUE SOLO SI c/r/g/b se acaban de actualizar.
+  //
+  // El contrato importa y antes estaba al reves: devolvia true tambien
+  // mientras el chip seguia integrando, sin tocar c/r/g/b. El que llamaba se
+  // lo creia y alimentaba al clasificador con la MISMA muestra otra vez, con
+  // un dt nuevo. Ahora "todavia no hay dato" y "fallo el I2C" se distinguen:
+  // los dos devuelven false, pero solo el segundo cuenta para desconectar el
+  // sensor. Asi se puede sondear a 200 Hz sin miedo: preguntar mucho no
+  // rompe nada, y en cuanto el dato existe se coge en el acto.
   bool leerColor() {
     if (!presente) return false;
     uint8_t st = 0;
-    if (!leer(0x13, &st, 1)) { fallo(); return presente; }
-    if (!(st & 0x01)) return true;                // aun integrando: no es fallo
+    if (!leer(0x13, &st, 1)) { fallo(); return false; }
+    if (!(st & 0x01)) return false;               // aun integrando: no es fallo
     uint8_t d[8];
-    if (!leer(0x14, d, 8)) { fallo(); return presente; }
+    if (!leer(0x14, d, 8)) { fallo(); return false; }
     fallos_ = 0;
     c = d[0] | (d[1] << 8);
     r = d[2] | (d[3] << 8);
@@ -245,7 +264,7 @@ class Tcs34725 {
 
  private:
   static const uint8_t DIR = 0x29;
-  uint8_t atime_ = 0xF6;
+  uint8_t atime_ = 0xFB;
   uint8_t fallos_ = 0;
 
   void fallo() { if (++fallos_ > 20) presente = false; }

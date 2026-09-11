@@ -241,6 +241,18 @@ class Piloto:
             "yaw": round(sens.yaw, 1),
             "linea": ev.linea_nueva,
             "esquina_abierta": ev.esquina_abierta,
+            # LO QUE EL CLASIFICADOR DE LINEAS ESTA VIENDO. Sin esto, "no ve
+            # las lineas" no se puede diagnosticar: la respuesta es una resta.
+            # Si claro no baja del 78 % de blanco, falla la puerta de luz; si
+            # baja pero |separacion| se queda por debajo de 60, falla el
+            # discriminante de color.
+            "tcs_ok": sens.tcs_ok,
+            "claro": sens.claro,
+            "blanco": sens.blanco,
+            "pct_claro": (round(100.0 * sens.claro / sens.blanco)
+                          if sens.blanco else None),
+            "separacion": sens.separacion,
+            "lineas_diag": sens.lineas_diag,
             "margen_pilar": maniobra.info.get("margen_pedido_mm"),
             "vueltas": ev.vueltas,
             "secciones": ev.secciones,

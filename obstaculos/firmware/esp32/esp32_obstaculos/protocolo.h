@@ -32,7 +32,7 @@ namespace proto {
 
 static const uint8_t SYNC1 = 0xA5;
 static const uint8_t SYNC2 = 0x5A;
-static const uint8_t MAX_PAYLOAD = 16;
+static const uint8_t MAX_PAYLOAD = 24;   // la de sensores usa 16
 static const uint8_t VERSION_PROTOCOLO = 1;
 
 // ----------------------------------------------------------- tipos de trama
@@ -43,7 +43,7 @@ static const uint8_t TIPO_CAL    = 0x06;   // Pi -> ESP32,  1 byte
 static const uint8_t TIPO_TELE   = 0x81;   // ESP32 -> Pi,  8 bytes
 static const uint8_t TIPO_LOG    = 0x82;   // ESP32 -> Pi,  texto
 static const uint8_t TIPO_PONG   = 0x83;   // ESP32 -> Pi,  1 byte
-static const uint8_t TIPO_SENS   = 0x84;   // ESP32 -> Pi, 12 bytes
+static const uint8_t TIPO_SENS   = 0x84;   // ESP32 -> Pi, 16 bytes
 
 // -------------------------------------------------------- banderas de mando
 static const uint8_t F_ARMADO  = 0x01;   // sin esto el motor no gira, punto
@@ -184,10 +184,18 @@ struct Sensores {
   uint8_t  botones;          // bits B_*
   uint8_t  pulsaciones;      // pulsaciones completas, contador que envuelve
   uint8_t  version;
+  // LOS DOS NUMEROS CON LOS QUE EL CLASIFICADOR DE LINEAS DECIDE. Sin ellos,
+  // "el carro no ve las lineas" no se puede diagnosticar desde la Pi: se ve
+  // el claro, pero no contra que se esta comparando ni cuanto color hay.
+  // Con los dos, la respuesta es una resta: si claro/blanco no baja del
+  // pct_entrada, el problema es la puerta de luz; si baja pero |separacion|
+  // se queda corto, es el discriminante de color.
+  uint16_t blanco;           // nivel de claro del tapete, aprendido
+  int16_t  separacion;       // (r-b)/(r+g+b) en milesimas
 };
 
 inline uint8_t empaquetarSensores(const Sensores &s, uint8_t *salida) {
-  uint8_t p[12];
+  uint8_t p[16];
   p[0]  = s.estado;
   p[1]  = (uint8_t)(s.yaw_d10 & 0xFF);
   p[2]  = (uint8_t)((s.yaw_d10 >> 8) & 0xFF);
@@ -200,7 +208,13 @@ inline uint8_t empaquetarSensores(const Sensores &s, uint8_t *salida) {
   p[9]  = s.botones;
   p[10] = s.pulsaciones;
   p[11] = s.version;
-  return empaquetar(TIPO_SENS, p, 12, salida);
+  // Los cuatro bytes de diagnostico van AL FINAL a proposito: una Pi con
+  // codigo viejo lee los doce primeros y no se entera de que hay mas.
+  p[12] = (uint8_t)(s.blanco & 0xFF);
+  p[13] = (uint8_t)(s.blanco >> 8);
+  p[14] = (uint8_t)(s.separacion & 0xFF);
+  p[15] = (uint8_t)((s.separacion >> 8) & 0xFF);
+  return empaquetar(TIPO_SENS, p, 16, salida);
 }
 
 // ===========================================================================
