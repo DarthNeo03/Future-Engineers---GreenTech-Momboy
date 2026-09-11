@@ -20,8 +20,38 @@ chassis revisions and about four months of evenings.
 
 ---
 
+## The car
+
+![Front view](3d-model/img/photo_4981012069146627089_x.jpg)
+
+*Fig. 1 — Front view. Front axle, steering geometry at ride height, and the
+status LED on the electronics deck.*
+
+![Side view](3d-model/img/photo_4981012069146627086_x.jpg)
+
+*Fig. 2 — Side profile. Wheelbase, motor/gearbox housing in the lower
+chassis, and the wiring harness routed along the middle deck.*
+
+![Rear view](3d-model/img/photo_4981012069146627087_x.jpg)
+
+*Fig. 3 — Rear view. Camera mast rising from the electronics deck, between
+the rear wheels and the differential housing.*
+
+![Top view](3d-model/img/photo_4981012069146627085_x.jpg)
+
+*Fig. 4 — Top view. Raspberry Pi 5 and wiring harness on the upper deck,
+showing the wheel track and overall footprint.*
+
+![Front-quarter view](3d-model/img/photo_4981012069146627088_x.jpg)
+
+*Fig. 5 — Front, ¾ view. Front suspension links and the sensor mounts ahead
+of the steering rack.*
+
+---
+
 ## Contents
 
+- [The car](#the-car)
 - [Repository map](#repository-map)
 - [The team](#the-team)
 - [The vehicle](#the-vehicle-mobility-management)
@@ -55,17 +85,18 @@ Obstacle Challenge simply switches obstacle handling on. Splitting it into two
 copies would have meant fixing every bug twice.
 
 Printed parts in [`3d-model/Documentación 3D/`](3d-model/Documentación%203D/)
-are grouped by subassembly:
+are grouped by subassembly — full detail (screenshots, `.3mf` per part) in
+[`3d-model/README.md`](3d-model/README.md#parts):
 
-| Group | Function |
-|---|---|
-| A-Arm | Front suspension links |
-| Battery | Battery case and cell retention |
-| Camera | Camera mast and mount |
-| Chassis | Structural core: motor mount, gear supports, steering rack housing, electronics deck |
-| Diferrential | Mechanical differential and drive gear train, rear axle |
-| RaspberryPi5Mount | Raspberry Pi 5 mounting plate |
-| Steering | Rack-and-pinion steering, Ackermann geometry |
+| Group | Function | Individual parts |
+|---|---|---|
+| [`A-Arm`](3d-model/Documentación%203D/A-Arm/) | Front suspension links | Lower A-Arm Left, Lower A-Arm Right, Upper A-Arm (2pcs) |
+| [`Battery`](3d-model/Documentación%203D/Battery/) | Battery case and cell retention | Case (Lower/Upper 3S1P), Fittings (Cylinder ×4, Rectangle ×4) |
+| [`Camera`](3d-model/Documentación%203D/Camera/) | Camera mast and mount | CameraMount, Camera Support Mount, LowerCameraMount, Pin |
+| [`Chassis`](3d-model/Documentación%203D/Chassis/) | Structural core: motor mount, gear supports, steering rack housing, electronics deck | Lower, Middle, Upper Chassis, MotorChassis |
+| [`Diferrential`](3d-model/Documentación%203D/Diferrential/) | Mechanical differential and drive gear train, rear axle | Crown Gear, Differential Case Cover, Left/Right Axle Support, MotorGear, PlanetGear (2pcs) + Axle, RearGearAndRing Left/Right |
+| [`RaspberryPi5Mount`](3d-model/Documentación%203D/RaspberryPi5Mount/) | Raspberry Pi 5 mounting plate | RaspberryPi5Mount |
+| [`Steering`](3d-model/Documentación%203D/Steering/) | Rack-and-pinion steering, Ackermann geometry | FrontRing (2pcs), FrontWasher, Servo Bracket, Steering Knuckle Left/Right, SteeringRack, SteeringServoGear, SteeringStop |
 
 ## The team
 

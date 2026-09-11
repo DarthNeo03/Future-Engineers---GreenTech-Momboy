@@ -23,15 +23,30 @@ model, which is the only way we got the car down to the size it is now.
 
 ## The car
 
-| | | |
-|---|---|---|
-| ![Front view](img/photo_4981012069146627089_x.jpg) | ![Side view](img/photo_4981012069146627086_x.jpg) | ![Rear view](img/photo_4981012069146627087_x.jpg) |
-| Front | Side | Rear |
+![Front view](img/photo_4981012069146627089_x.jpg)
 
-| | |
-|---|---|
-| ![Top view](img/photo_4981012069146627085_x.jpg) | ![Front-quarter view](img/photo_4981012069146627088_x.jpg) |
-| Top | Front, ¾ |
+*Fig. 1 — Front view. Front axle, steering geometry at ride height, and the
+status LED on the electronics deck.*
+
+![Side view](img/photo_4981012069146627086_x.jpg)
+
+*Fig. 2 — Side profile. Wheelbase, motor/gearbox housing in the lower
+chassis, and the wiring harness routed along the middle deck.*
+
+![Rear view](img/photo_4981012069146627087_x.jpg)
+
+*Fig. 3 — Rear view. Camera mast rising from the electronics deck, between
+the rear wheels and the differential housing.*
+
+![Top view](img/photo_4981012069146627085_x.jpg)
+
+*Fig. 4 — Top view. Raspberry Pi 5 and wiring harness on the upper deck,
+showing the wheel track and overall footprint.*
+
+![Front-quarter view](img/photo_4981012069146627088_x.jpg)
+
+*Fig. 5 — Front, ¾ view. Front suspension links and the sensor mounts ahead
+of the steering rack.*
 
 ## Current design
 
