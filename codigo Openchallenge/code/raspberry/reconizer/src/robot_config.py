@@ -48,7 +48,10 @@ POR_DEFECTO: Dict[str, Any] = {
     },
 
     "navegacion": {
-        "estrategia": "centrado",       # "centrado" | "pared"
+        "estrategia": "centrado",       # "centrado" | "pared" | "hueco"
+        # Mezcla de estrategias: pesos que se pueden cambiar en caliente desde
+        # la web o el panel. Si todos son 0 manda "estrategia".
+        "mezcla": {"centrado": 1.0, "pared": 0.0, "hueco": 0.0},
         "color_muro": "negro",
 
         # --- lectura del muro ---
@@ -67,10 +70,70 @@ POR_DEFECTO: Dict[str, Any] = {
         "kd": 22.0,
 
         # --- PD del seguimiento de pared ---
-        "lado_pared": "izq",
+        # "auto" = seguir la pared EXTERNA, deducida del sentido de la vuelta
+        "lado_pared": "auto",
         "pared_objetivo": 0.45,
         "kp_pared": 130.0,
         "kd_pared": 28.0,
+
+        # --- estrategia del hueco (la que cuenta el ancho de las ruedas) ---
+        "umbral_hueco": 0.45,      # a partir de que espacio libre cuenta como hueco
+        "margen_hueco": 1.15,      # cuanto mas ancho que el carro se exige
+        "y_horizonte": 0.35,       # fila del horizonte: escala la perspectiva
+        "kp_hueco": 105.0,
+        "kd_hueco": 20.0,
+        "peso_margen": 1.0,
+        "peso_profundidad": 1.2,
+        "peso_siguiente": 1.0,     # penaliza el hueco con otro obstaculo detras
+        "peso_alineacion": 0.6,
+
+        # --- esquina del muro interno ---
+        "usar_esquina_interna": True,
+        "salto_min": 0.12,         # escalon minimo del perfil para ser un borde
+        "ventana_salto": 6,        # a cuantas columnas se mide el escalon
+        "interno_libre": 0.72,     # el muro interno se dio por acabado
+        "retardo_giro_ms": 250,    # espera antes de girar (que pasen las ruedas)
+        "dir_giro_abierto": 65.0,  # giro abierto, no a tope
+        "validez_esquina_ms": 900, # cuanto vale el aviso de "desaparecio el muro"
+        # deteccion de que una pared deja de verse (dispara el giro)
+        "cobertura_alta": 0.55,    # a partir de aqui esa banda "tiene muro"
+        "cobertura_baja": 0.22,    # por debajo de aqui "ya no lo tiene"
+        "interno_lejos": 0.75,     # tan lejos que ya no es esta pared
+        "interno_cerca": 0.62,
+        "frames_confirmar_muro": 4,
+        "frames_confirmar_esquina": 3,
+        # cruzar en diagonal a la siguiente pared externa
+        "giro_diagonal": True,
+        "kp_diagonal": 110.0,
+        "peso_diagonal": 0.45,
+
+        # --- que pared es la externa (y por tanto el sentido) ---
+        "cobertura_muro": 0.45,        # cuanta banda con muro cuenta como "hay"
+        "alfa_presencia": 0.03,        # rapidez de la media movil de presencia
+        "margen_presencia": 0.08,      # diferencia minima para decidir
+        "min_muestras_presencia": 60,  # frames antes de fiarse
+        "decaimiento_votos": 0.995,
+        "bloqueo_sentido_ms": 4000,    # tras la media vuelta, no redecidir
+        "gracia_tras_media_ms": 800,
+
+        # --- anticipacion ---
+        "autocalibrar_carril": True,
+        "ttc_min": 1.1,            # segundos hasta el muro por debajo de los
+                                   # cuales se frena aunque haya distancia
+
+        # --- escape ---
+        "vel_escape": 26.0,
+        "escape_atras_min_ms": 900,    # retroceso minimo comprometido
+        "escape_atras_extra_ms": 1600, # extra segun lo cerca que este el muro
+        "escape_atascado_ms": 1300,    # sin mejorar tanto tiempo = algo detras
+        "escape_salir_factor": 1.15,   # espacio a recuperar antes de volver
+        "escape_evaluar_ms": 700,
+        "mejora_min": 0.035,
+
+        # --- media vuelta ---
+        "vel_media_vuelta": 30.0,
+        "mv_fase_ms": 1400,
+        "mv_giro_ms": 2600,
 
         # --- umbrales (sobre el espacio libre normalizado 0..1) ---
         "girar_bajo": 0.40,      # por debajo de esto, hay esquina: girar
@@ -89,10 +152,60 @@ POR_DEFECTO: Dict[str, Any] = {
         "giro_tolerancia": 8.0,
     },
 
+    # De donde salen el rumbo y el color. Hoy los sensores van al ESP32; si
+    # manana los pasas al I2C de la Pi, basta con cambiar estas palabras.
+    "sensores": {
+        "origen_rumbo": "auto",   # "auto" | "esp32" | "pi" | "ninguno"
+        "origen_color": "auto",   # "auto" | "esp32" | "camara" | "ninguno"
+        "imu_pi": {
+            "activo": True,
+            "bus": 1,
+            "direcciones": [104, 105],   # 0x68 y 0x69
+            "hz": 100,
+            "alfa_complementario": 0.98,
+            "muestras_calibracion": 400,
+        },
+    },
+
+    "obstaculos": {
+        "activo": False,           # se enciende desde la interfaz
+        "area_min_pilar": 300,
+        "activar_desde": 0.45,     # fraccion de alto donde empieza a importar
+        "mandar_desde": 0.68,      # ...y donde ya manda del todo
+        "soltar_en": 0.93,         # se da por pasado
+        "borde_soltar": 0.06,
+        "margen_lateral": 1.25,    # medios anchos de carro de separacion
+        "kp": 115.0,
+        "kd": 22.0,
+        "peso_max": 1.0,
+        "sesgo_siguiente": 12.0,   # preparacion para el pilar siguiente
+        "tolerancia_seguimiento": 120,
+        "frames_perdido": 6,
+        "refractario_ms": 350,
+    },
+
+    "vueltas": {
+        "objetivo": 3,                  # vueltas de ida (y otras tantas de vuelta)
+        "hacer_media_vuelta": True,
+        "tipo_media_vuelta": "recta_3t",  # "recta_3t" | "esquina"
+        "esquinas_por_vuelta": 4,
+        "orden_horario": ["naranja", "azul"],
+        "ventana_par_ms": 2500,         # para emparejar naranja con azul
+        "refractario_ms": 3000,         # tras una esquina, no se admite otra
+        "debounce_ms": 900,
+        "una_linea_basta": False,       # si tu tapete solo deja ver una linea
+        "umbral_linea_camara": 0.02,    # fraccion de pixeles en la franja de abajo
+        "roi_linea_arriba": 0.78,
+        "dominancia_linea": 1.6,        # cuanto tiene que ganar a la otra linea
+        "frames_confirmar_linea": 2,
+        "histeresis_linea": 0.55,
+    },
+
+    # Compatibilidad con la version anterior (MPU6050 directo a la Pi)
     "imu": {
-        "activo": True,          # si no aparece el chip, se sigue sin el
+        "activo": True,
         "bus": 1,
-        "direcciones": [104, 105],   # 0x68 y 0x69
+        "direcciones": [104, 105],
         "hz": 100,
         "alfa_complementario": 0.98,
         "muestras_calibracion": 400,
