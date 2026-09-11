@@ -116,7 +116,8 @@ python3 main.py
 y pulsar el botón del carro cuando el juez diga «¡ya!».
 
 En el taller: `--sin-motor` (pone el techo de PWM a 0, así ninguna rama del
-código puede mover nada), `--ver` (ventana de depuración), `--puerto COM7`.
+código puede mover nada), `--ver` (ventana de depuración), `--puerto COM7`,
+`--lineas` (monitor del sensor de color, empujando el carro a mano).
 
 ---
 
@@ -173,7 +174,8 @@ Dicho antes de que lo descubra la pista:
   al acelerador si el coche se mueve no sirve de nada cuando está clavado.
 - **Un pilar cada vez.** Con dos pilares seguidos se resuelve el primero y el
   segundo se replantea después. Planificar los dos a la vez con una sola cámara
-  sale peor de lo que parece.
+  sale peor de lo que parece. Lo que sí se hace es **verlo antes**: ver la
+  sección siguiente de abajo.
 - **El firmware no está compilado en este repositorio.** No hay compilador
   cruzado en la máquina donde se escribió: `protocolo.h`, `seguridad.h` y
   `lineas.h` son C++ puro a propósito y se pueden verificar con `g++` en un PC,
@@ -292,12 +294,22 @@ un giro **comprometido**: `dir_esquina` (100 %) sostenido hasta haber girado
 `esquina_grados` (78°) de yaw, sin renegociar. Lo único que se le suma es la
 guardia anti-muro, que no discute el giro — solo impide rozar.
 
-**El giro va a tope y despacio, y las dos cosas hacen falta.** Con Ackermann el
-radio lo fija el ángulo de las ruedas, así que «más cerrado» es literalmente
-más volante; y `vel_esquina` (26 %) entra porque un carro rápido desliza hacia
-fuera y el radio real sale mayor que el geométrico. Quedándose corto en
-cualquiera de los dos, el carro sale de la curva abierto y termina pegado al
-muro exterior de la recta siguiente.
+**El giro va a tope, y «a tope» es el rango del servo, no el 100 %.** Con
+Ackermann el radio lo fija el ángulo de las ruedas, así que «más cerrado» es
+literalmente más volante — pero `dir_esquina: 100` ya pide *exactamente* los
+topes de `servo.izquierda` / `servo.derecha`. Con 65/135 ese «máximo» eran
+±35°, y no había forma de cerrar más la curva desde el software por mucho que
+se tocaran las ganancias. Los topes duros de `seguridad.h` son 50 y 145, o sea
+que sobraba margen: el JSON está ahora en **58/142** (±42°).
+
+> **Compruébalo con el carro levantado antes de rodar.** Si la cremallera hace
+> tope, el servo se queda empujando contra el mecanismo, calienta y se rompe.
+> Si toca, sube `izquierda` y baja `derecha` de tres en tres hasta que no.
+
+La velocidad va aparte y **no cierra la curva: la abre.** Un carro rápido
+desliza hacia fuera y el radio real sale mayor que el geométrico. `vel_esquina`
+está en 34 % porque se pidió más velocidad; si con eso el carro vuelve a salir
+pegado al muro exterior, lo que hay que tocar es el rango del servo, no esto.
 
 **Las cuatro redes**, cada una por un fallo concreto:
 
@@ -533,19 +545,62 @@ blanco lo aprende el clasificador solo.
 **Hay que volver a subir el firmware.** El `.ino`, `lineas.h`, `sensores_i2c.h`
 y `protocolo.h` cambian todos.
 
-### Y si aun así no las ve
+### El claro no puede ser la puerta de entrada (y eso costó la naranja)
 
-`--ver` ahora imprime la línea del TCS y con ella el diagnóstico es una resta:
+Segundo fallo, y explica el síntoma exacto —«la naranja no y la azul casi»—
+mejor que cualquier umbral. El clasificador exigía que el piso **se
+oscureciera** por debajo del 78 % del blanco para admitir que había línea.
+Suena razonable y es una trampa para los colores claros: la naranja es
+CMYK(0,60,100,0), refleja el rojo y el verde casi como el tapete, y su canal
+claro se queda rondando ese umbral — un día entra y otro no, según la luz de
+la sala y según dónde quedara el blanco aprendido. La azul, que es oscura,
+pasaba esa puerta siempre.
+
+El oscurecimiento nunca fue la prueba de que hay una línea: la prueba es el
+**color**. El tapete blanco da `r − b ≈ 0` haga la luz que haga, así que el
+discriminante ya separa tapete de línea él solo.
+
+| | Antes | Ahora |
+|---|---|---|
+| quién decide | el claro **y** el color | el **color** |
+| histéresis | sobre el claro (78 / 88 %) | sobre \|sep\| (45 entra / 25 sale) |
+| papel del claro | puerta de entrada | **suelo** (12 %), solo para descartar el muro negro, donde las cuentas son ruido y su cociente puede dar cualquier cosa |
+
+También sube `PCT_UMBRAL_INT` de 55 a 90: con 55 la interrupción del TCS no
+saltaba nunca para la naranja. Desde que se sondea a 500 Hz no se depende de
+ella, pero un umbral que ignora medio juego de líneas es mentira en el código.
+
+### Y si aun así no las ve: `--lineas`
+
+```bash
+python3 main.py --lineas
+```
+
+Sin cámara y sin motor. Se empuja el carro **a mano** sobre cada línea y al
+salir (Ctrl-C) imprime el `sep` máximo (en valor absoluto) que llegó a ver
+sobre cada color y
+cuántos cruces llegó a contar. Con eso, «no ve las líneas» deja de ser una
+queja y pasa a ser una de tres cosas, cada una con un arreglo distinto:
+
+| Lo que dice el resumen | Qué pasa |
+|---|---|
+| `sep` máximo (en valor absoluto) por debajo de 45 | **el color no llega**. Ningún umbral arregla una señal que no está: baja el sensor, limpia la lente, comprueba que el LED blanco enciende |
+| `sep` de sobra pero 0 cruces contados | la línea se cruza demasiado rápido para los `ms_minimo`. Cruzarla más despacio a mano lo confirma |
+| `firmware viejo` | el ESP32 no manda `blanco`/`separacion`: vuelve a subirlo |
+
+### Y en marcha, en `--ver`
+
+La misma información sin parar el carro:
 
 ```
-TCS: claro 640/900 = 71% (entra <78)   sep -146 -> azul (|sep|>60)
+TCS: claro 640/900 = 71%   sep -146 -> azul   (hace falta |sep|>=45)
 ```
 
 | Lo que sale | Qué falla | Qué mirar |
 |---|---|---|
-| el `%` no baja de 78 sobre la línea | la **puerta de luz** | el sensor va demasiado alto, hay reflejo, o el blanco aprendido se quedó bajo |
-| baja del 78 pero `sep` se queda corto | el **discriminante de color** | altura del sensor, lente sucia; `sep_min` está en 60 milésimas |
+| `sep` se queda corto sobre la línea | el color no llega | altura del sensor, lente sucia, LED apagado |
 | `sep` con el signo cambiado | naranja y azul intercambiados | revisa `color_entrada_horario`, que es lo que ata color y sentido |
+| el `%` no baja nada al pasar la línea | el sensor no está mirando la línea | está desalineado, o va tan alto que promedia línea y tapete |
 | `TCS: ausente` | el I²C no responde | cableado; las esquinas irán solo por cámara |
 | `firmware viejo` | el ESP32 no manda `blanco`/`separacion` | vuelve a subir el firmware |
 
@@ -553,6 +608,38 @@ La trama de sensores creció de 12 a 16 bytes para poder decir esto, pero los
 cuatro nuevos son **opcionales**: una Pi actualizada con un ESP32 sin
 reflashear sigue funcionando, porque actualizar la Pi es copiar ficheros y
 reflashear pide cable — el orden en que pasa en la práctica.
+
+---
+
+## Hasta dónde se ven los pilares
+
+`activar_desde_mm` no manda aquí. El tope real lo pone **`area_min`**, y los
+dos se habían quedado descoordinados. Un pilar de 50 × 100 mm a distancia *d*
+ocupa del orden de `8.5e8 / d²` píxeles:
+
+| distancia | área aparente |
+|---|---|
+| 1,6 m | 330 px |
+| 2,4 m | 147 px |
+| 3,0 m | 94 px |
+
+Con `area_min: 320` el carro era **ciego más allá de 1,6 m** por mucho que el
+JSON dijera otra cosa — medido sobre pilares sintéticos: detectaba a 1600 y no
+a 2000. Con `area_min: 140` llega a ~2,8 m, y `activar_desde_mm` sube a 2400
+para acompañarlo. Bajar más el área empieza a colar manchas: los filtros de
+forma pierden sentido cuando la caja mide diez píxeles.
+
+**Para qué sirve verlos antes.** Para tener la trayectoria decidida *antes* de
+terminar de rebasar el anterior, en vez de descubrir el siguiente cuando ya no
+queda sitio para colocarse. Dos números lo acompañan, y los dos existen porque
+ver más lejos tiene efectos colaterales:
+
+- **`senal_desde_peso` (0,30).** Entrar en `SENAL` es entrar en `vel_senal`.
+  Con el umbral viejo (0,15) y los pilares vistos a 2,4 m, el carro se pasaba
+  media recta frenado sin necesidad.
+- **`reincorporacion_cede_peso` (0,45).** Un pilar lejano ya no interrumpe la
+  reincorporación. Si lo hiciera, volvería a mandar el seguidor de carril —que
+  centra— y con él la ese que ese estado existe para quitar.
 
 ---
 

@@ -66,17 +66,20 @@ def _sentido(u: Dict[str, Any]) -> str:
 def _tcs(u: Dict[str, Any]) -> str:
     """Lo que el clasificador de lineas esta viendo, en una linea.
 
-    "El carro no ve las lineas" es una queja, no un diagnostico. Con estos
-    dos numeros pasa a ser una resta:
+    "El carro no ve las lineas" es una queja, no un diagnostico. Quien decide
+    es |sep|, asi que con este numero delante pasa a ser una comprobacion:
 
-      claro por encima del 78 % del blanco  -> falla la PUERTA DE LUZ: el
-          sensor va demasiado alto, o hay reflejo, o el blanco aprendido se
-          quedo bajo.
-      claro por debajo pero |sep| < 60      -> falla el DISCRIMINANTE: el
-          color no llega, casi siempre por altura o por suciedad en la lente.
+      |sep| por debajo de 45  -> el COLOR NO LLEGA. Casi siempre altura del
+          sensor o lente sucia. Ningun umbral arregla una señal que no esta.
+      claro por debajo del 12 % del blanco -> no hay tapete debajo (muro
+          negro, o el carro levantado): ahi el cociente entre canales es ruido.
 
     `sep` positivo es naranja y negativo azul, asi que tambien dice si el
     sensor esta confundiendo los dos colores.
+
+    El claro ya NO es una puerta de entrada: exigir que el piso se oscureciera
+    dejaba fuera a la naranja, que es clara. Se muestra igualmente porque
+    sirve para ver si el sensor esta mirando tapete o cualquier otra cosa.
     """
     if not u.get("tcs_ok"):
         return "TCS: ausente (las esquinas iran solo por camara)"
@@ -86,8 +89,8 @@ def _tcs(u: Dict[str, Any]) -> str:
     pct = u.get("pct_claro")
     sep = u.get("separacion", 0)
     quien = "naranja" if sep > 0 else ("azul" if sep < 0 else "-")
-    return (f"TCS: claro {u.get('claro')}/{u.get('blanco')} = {pct}% "
-            f"(entra <78)   sep {sep:+} -> {quien} (|sep|>60)")
+    return (f"TCS: claro {u.get('claro')}/{u.get('blanco')} = {pct}%   "
+            f"sep {sep:+} -> {quien}   (hace falta |sep|>=45)")
 
 
 def dibujar(frame: np.ndarray, piloto: Any, esc: Escena) -> np.ndarray:

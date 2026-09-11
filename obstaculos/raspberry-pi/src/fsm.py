@@ -228,7 +228,7 @@ class MaquinaEstados:
         if c.maniobra.fase == FASE_CORRECCION:
             self._ir(Estado.CORRECCION, "lado incorrecto")
             return self._correccion(c)
-        if c.maniobra.peso > 0.15:
+        if c.maniobra.peso > float(self.cfg.get("senal_desde_peso", 0.30)):
             self._ir(Estado.SENAL, f"pilar {c.maniobra.color}")
             return self._senal(c)
         return Orden(vel=c.velocidad_sugerida, direccion=c.direccion_mezclada,
@@ -312,7 +312,13 @@ class MaquinaEstados:
         if c.maniobra.fase == FASE_COMPROMISO:
             self._ir(Estado.ESQUIVE, "otro compromiso")
             return self._esquive(c)
-        if c.maniobra.peso > 0.15:
+        # EL PILAR TIENE QUE ESTAR CERCA PARA INTERRUMPIR. Desde que los
+        # pilares se ven a 2.4 m, uno lejano cumple el peso minimo casi
+        # siempre; si con eso se cortara la reincorporacion, volveria a mandar
+        # el seguidor de carril —que centra— y con el la ese que este estado
+        # existe para quitar. El de lejos ya se atendera al llegar a PISTA.
+        if c.maniobra.peso > float(
+                self.cfg.get("reincorporacion_cede_peso", 0.45)):
             self._ir(Estado.SENAL, f"pilar {c.maniobra.color}")
             return self._senal(c)
 

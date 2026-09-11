@@ -187,9 +187,9 @@ struct Sensores {
   // LOS DOS NUMEROS CON LOS QUE EL CLASIFICADOR DE LINEAS DECIDE. Sin ellos,
   // "el carro no ve las lineas" no se puede diagnosticar desde la Pi: se ve
   // el claro, pero no contra que se esta comparando ni cuanto color hay.
-  // Con los dos, la respuesta es una resta: si claro/blanco no baja del
-  // pct_entrada, el problema es la puerta de luz; si baja pero |separacion|
-  // se queda corto, es el discriminante de color.
+  // Con los dos, la respuesta es una resta: |separacion| por debajo de
+  // sep_entrada es que no llega color (altura del sensor, lente sucia), y
+  // claro por debajo del suelo de luz es que no hay tapete debajo.
   uint16_t blanco;           // nivel de claro del tapete, aprendido
   int16_t  separacion;       // (r-b)/(r+g+b) en milesimas
 };

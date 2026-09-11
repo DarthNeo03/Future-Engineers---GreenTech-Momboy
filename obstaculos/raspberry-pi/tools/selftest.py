@@ -593,6 +593,7 @@ def _frame_con_pilar(dist_mm, lat_mm, color_bgr, fy_real=460.0,
 
 def prueba_esquive() -> None:
     print("esquive de extremo a extremo (regla 9.19)")
+    import copy
     from src.config import DEFECTOS
     from src.geometria import Geometria
     from src.senales import Esquivador
@@ -660,6 +661,29 @@ def prueba_esquive() -> None:
     # Un pilar de frente a 1.2 m es una aproximacion, no un error. Si se
     # marcaba como lado incorrecto, la FSM bajaba a 22 % en cada pilar.
     _, m = correr(ROJO, dist=1200.0)
+    # --- ALCANCE: hasta donde se ven de verdad los pilares -------------
+    # `activar_desde_mm` no manda aqui: el tope real lo pone `area_min`, y
+    # los dos se habian quedado descoordinados. Un pilar de 50x100 mm ocupa
+    # del orden de 8.5e8/d^2 px, asi que con area_min 320 el carro era ciego
+    # mas alla de ~1.6 m aunque el JSON dijera otra cosa — y no se puede
+    # tener la trayectoria decidida para un pilar que aun no se ve.
+    def alcanza(dist_mm, area_min):
+        cfg = copy.deepcopy(DEFECTOS["colores"])
+        cfg["rojo"]["area_min"] = area_min
+        geo = Geometria(dict(DEFECTOS["geometria"]), 640, 480)
+        det = Detector(cfg, geo)
+        esc = det.procesar(_frame_con_pilar(dist_mm, 0.0, (60, 60, 230)))
+        return esc.pilar_mas_cercano() is not None
+
+    check("con area_min 320 el carro era ciego mas alla de 1.6 m",
+          alcanza(1600, 320) and not alcanza(2000, 320))
+    area = int(DEFECTOS["colores"]["rojo"]["area_min"])
+    check(f"con area_min {area} se ve a 2.4 m", alcanza(2400, area),
+          f"area_min={area}")
+    activar = float(DEFECTOS["senales"]["activar_desde_mm"])
+    check("y el alcance de la vision cubre activar_desde_mm",
+          alcanza(activar, area), f"activar={activar} area_min={area}")
+
     check("pilar lejano no dispara CORRECCION", not m.lado_incorrecto,
           f"fase={m.fase}")
 

@@ -137,7 +137,11 @@ seg::ConfigMotor cfgMotorNueva;
 
 // Umbral de la INT del TCS, en % del blanco que el firmware aprende solo.
 // Al ser relativo no se estropea si cambia el tiempo de integracion.
-const uint8_t PCT_UMBRAL_INT = 55;
+// Umbral de la INT del TCS, en % del blanco aprendido. Con 55 no saltaba
+// nunca para la naranja, que apenas oscurece el piso. Desde que se sondea a
+// 500 Hz la INT solo es un adelanto —no se depende de ella para nada— pero
+// un umbral que ignora medio juego de lineas es mentira en el codigo.
+const uint8_t PCT_UMBRAL_INT = 90;
 
 // ----------------------- interrupciones de sensores ------------------------
 // Los ISR NO tocan el I2C (Wire no es seguro dentro de una interrupcion):

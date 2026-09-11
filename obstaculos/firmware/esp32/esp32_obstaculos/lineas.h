@@ -14,10 +14,25 @@
 //     azul     ->  b sube, r se hunde             ->  r - b grande y negativo
 //     blanco   ->  r - b ~ 0
 //
-// Asi que el discriminante es UN numero, (r-b) normalizado, con el claro como
-// puerta de entrada: si el piso no se ha oscurecido, no hay linea que valer.
-// El nivel de blanco se APRENDE solo mientras el carro rueda por tapete,
-// que es lo que hace que esto aguante cambios de iluminacion.
+// Asi que el discriminante es UN numero: (r-b) normalizado. El nivel de blanco
+// se APRENDE solo mientras el carro rueda por tapete, y eso es lo que hace que
+// esto aguante cambios de iluminacion.
+//
+// EL CLARO NO PUEDE SER UNA PUERTA DE ENTRADA, Y ESO COSTO LA NARANJA.
+// La primera version exigia que el piso se OSCURECIERA por debajo de un
+// porcentaje del blanco para admitir que hubiera linea. Suena razonable y es
+// una trampa para los colores claros: la naranja es CMYK(0,60,100,0), refleja
+// el rojo y el verde casi como el tapete, y su canal claro se queda rondando
+// el umbral. Un dia entra y otro no, segun la luz de la sala y segun donde
+// quedara el blanco aprendido. La azul, que es oscura, pasaba esa puerta
+// siempre — de ahi el sintoma exacto: la naranja no se ve y la azul casi.
+//
+// El oscurecimiento nunca fue la prueba de que hay una linea: la prueba es el
+// COLOR. El tapete blanco da r-b ~ 0 haga la luz que haga, asi que el
+// discriminante ya distingue tapete de linea el solo. Ahora decide el color,
+// con histeresis sobre su propia magnitud, y del claro solo queda un SUELO
+// para descartar el muro negro: ahi apenas vuelve luz, las cuentas de los
+// tres canales son ruido y su cociente puede dar cualquier cosa.
 //
 // POR QUE HAY HISTERESIS Y UN MINIMO DE PERMANENCIA
 // Sin ellos, el borde de la linea genera una rafaga de entradas y salidas y
@@ -40,13 +55,15 @@ static const uint8_t NARANJA = 1;
 static const uint8_t AZUL    = 2;
 
 struct Config {
-  // Puerta de claro: se considera "piso oscurecido" por debajo de este
-  // porcentaje del blanco aprendido. Las lineas de color reflejan bastante
-  // menos que el tapete blanco, pero mucho mas que el muro negro.
-  uint8_t pct_entrada = 78;    // entra a linea por debajo del 78 % del blanco
-  uint8_t pct_salida  = 88;    // sale por encima del 88 % (histeresis)
-  // Discriminante minimo de color, en milesimas de (r-b)/(r+g+b).
-  int16_t sep_min = 60;        // 0.060; por debajo es gris, no color
+  // DISCRIMINANTE DE COLOR, en milesimas de (r-b)/(r+g+b). Es lo que decide.
+  // Con histeresis sobre su propia magnitud: entrar cuesta mas que salir, y
+  // asi el borde de la linea no genera una rafaga de entradas y salidas.
+  int16_t sep_entrada = 45;    // 0.045 para admitir que hay color
+  int16_t sep_salida  = 25;    // por debajo de esto se deja de estar en linea
+  // SUELO de claro, en % del blanco aprendido. No es una puerta de entrada:
+  // es el descarte del muro negro, donde apenas vuelve luz y el cociente
+  // entre canales es ruido. Los colores claros pasan de sobra.
+  uint8_t pct_min_luz = 12;
   uint16_t ms_minimo = 8;      // permanencia minima para admitir un cruce
   uint16_t ms_rearme = 120;    // tapete limpio antes de admitir otro cruce
 };
@@ -104,24 +121,32 @@ class Clasificador {
       inicializado_ = true;
       if (c > 0) blanco = c;
     }
+    int16_t magnitud = separacion < 0 ? (int16_t)-separacion : separacion;
+
     // Y solo se aprende cuando NO estamos sobre color: si no, una linea larga
-    // se convertiria en el nuevo "blanco" y el sensor se quedaria ciego.
-    bool color = (separacion > cfg_.sep_min) || (separacion < -cfg_.sep_min);
-    if (!color && c > blanco / 2) {
+    // se convertiria en el nuevo "blanco" y el sensor se quedaria ciego. Se
+    // usa el umbral BAJO —el de salida— para aprender, que es el criterio
+    // estricto de "aqui no hay color": mas vale dejar de aprender de mas que
+    // meter medio borde de linea en la media del blanco.
+    if (magnitud < cfg_.sep_salida && c > blanco / 2) {
       // Media movil muy lenta (1/64): sigue la deriva de luz de la sala,
       // no los cambios de un frame.
       blanco = (uint16_t)(((uint32_t)blanco * 63 + c) / 64);
       if (blanco < 1) blanco = 1;
     }
 
-    // --- puerta de claro con histeresis ------------------------------
-    uint32_t pct = (uint32_t)c * 100u / (blanco ? blanco : 1);
-    bool oscuro = sobre_ ? (pct < cfg_.pct_salida) : (pct < cfg_.pct_entrada);
-    sobre_ = oscuro;
+    // --- decide el COLOR, con histeresis sobre su magnitud -------------
+    bool color = sobre_ ? (magnitud >= cfg_.sep_salida)
+                        : (magnitud >= cfg_.sep_entrada);
+    // Suelo de luz: el muro negro no es una linea. Con c muy bajo las cuentas
+    // de r, g y b son ruido y su cociente puede dar cualquier cosa.
+    bool hay_luz = (uint32_t)c * 100u >=
+                   (uint32_t)(blanco ? blanco : 1) * cfg_.pct_min_luz;
+    sobre_ = color && hay_luz;
 
     // --- clase instantanea -------------------------------------------
     uint8_t ahora = NADA;
-    if (oscuro && color)
+    if (sobre_)
       ahora = (separacion > 0) ? NARANJA : AZUL;
 
     // --- permanencia y rearme ----------------------------------------

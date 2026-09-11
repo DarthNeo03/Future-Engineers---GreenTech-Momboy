@@ -47,8 +47,17 @@ DEFECTOS: Dict[str, Any] = {
     # topes de compilacion del ESP32 siempre ganan; esto solo puede estrechar.
     "servo": {
         "centro": 100,
-        "izquierda": 65,
-        "derecha": 135,
+        # RANGO DE LA DIRECCION. Esto es el giro: `dir_esquina` al 100 % pide
+        # exactamente estos topes, asi que con 65/135 el "maximo" del carro
+        # eran +-35 grados y no habia forma de cerrar mas la curva por
+        # software. Los topes duros de seguridad.h son 50 y 145, o sea que
+        # sobraba margen sin tocar el firmware.
+        #
+        # COMPRUEBALO CON EL CARRO LEVANTADO ANTES DE RODAR. Si la cremallera
+        # hace tope, el servo se queda empujando contra el mecanismo, calienta
+        # y se rompe. Si toca, sube 65 -> 62 y baja 142 -> 138 hasta que no.
+        "izquierda": 58,
+        "derecha": 142,
         "grados_por_seg": 320,
         "rampa_motor": 10,
         "ms_freno_inversion": 150,
@@ -129,7 +138,15 @@ DEFECTOS: Dict[str, Any] = {
     },
 
     "senales": {
-        "activar_desde_mm": 1600.0,   # se empieza a tener en cuenta
+        # HASTA DONDE SE MIRAN LOS PILARES. Subirlo no sirve de nada si la
+        # vision no los ve: el tope real lo pone `area_min` de cada color.
+        # Un pilar de 50x100 a distancia d ocupa ~8.5e8/d^2 px, o sea 330 px
+        # a 1.6 m y 147 a 2.4 m. Por eso los dos numeros se mueven juntos.
+        #
+        # Verlos antes es lo que permite tener la trayectoria decidida ANTES
+        # de terminar de rebasar el anterior, en vez de descubrir el siguiente
+        # cuando ya no hay sitio para colocarse.
+        "activar_desde_mm": 2400.0,   # se empieza a tener en cuenta
         "mandar_desde_mm": 850.0,     # manda del todo sobre el carril
         "juzgar_lado_desde_mm": 700.0,  # desde aqui se juzga si vamos por el
                                         #   lado malo; mas lejos aun hay sitio
@@ -208,6 +225,15 @@ DEFECTOS: Dict[str, Any] = {
         # aparece el pilar siguiente, y las dos cosas piden frames por metro.
         "vel_reincorporacion": 34.0,
         "reincorporacion_max_s": 1.2,   # red por si no se llega a enfilar
+        # Peso minimo del pilar para entrar en SENAL desde PISTA. Con los
+        # pilares vistos a 2.4 m, el 0.15 de antes metia al carro en SENAL
+        # —y en vel_senal— desde dos metros y pico: se pasaba media recta
+        # frenado sin necesidad.
+        "senal_desde_peso": 0.30,
+        # Y para interrumpir la reincorporacion hace falta que este CERCA: si
+        # no, un pilar lejano devuelve el mando al carril, que centra, y
+        # vuelve la ese que este estado quita.
+        "reincorporacion_cede_peso": 0.45,
         "reincorporado_err": 0.30,      # error de centrado (solo telemetria)
         "reincorporado_deg": 14.0,      # rumbo al hueco que ya vale
         # Sostener el rumbo RECTO al salir del rebase. Mismo par que el del
@@ -227,9 +253,14 @@ DEFECTOS: Dict[str, Any] = {
         # en cualquiera de los dos, el carro sale de la curva abierto y
         # termina pegado al muro exterior de la recta siguiente.
         "dir_esquina": 100.0,           # % de volante durante la curva
-        "esquina_grados": 78.0,         # yaw girado que da la curva por hecha
+        "esquina_grados": 85.0,         # yaw girado que da la curva por hecha
         "esquina_max_s": 2.5,           # red sin MPU, o si el yaw no cuadra
-        "vel_esquina": 26.0,
+        # MAS VELOCIDAD EN LA CURVA, CON UNA ADVERTENCIA. Con Ackermann el
+        # radio lo fija el angulo de las ruedas, asi que la velocidad NO
+        # cierra la curva: la abre, porque el carro desliza hacia fuera. Si
+        # despues de subir esto el carro vuelve a salir pegado al muro
+        # exterior, lo que hay que tocar es el rango del servo, no esto.
+        "vel_esquina": 34.0,
         # La linea dice CUANDO y la camara confirma QUE ESTA AHI: si el frente
         # no esta cerrado, esa linea es la de SALIDA de una curva cuya entrada
         # se perdio el sensor, y girar ahi es meterse en la pared.
@@ -256,10 +287,16 @@ DEFECTOS: Dict[str, Any] = {
     # El ROJO necesita DOS rangos porque el tono es circular y el rojo esta a
     # caballo del cero.
     "colores": {
+        # AREA MINIMA Y ALCANCE SON EL MISMO NUMERO. Un pilar de 50x100 mm a
+        # distancia d ocupa del orden de 8.5e8/d^2 px: 330 a 1.6 m, 147 a
+        # 2.4 m, 94 a 3 m. Con 320 el carro era ciego mas alla de 1.6 m
+        # aunque `activar_desde_mm` dijera otra cosa. Con 140 llega a ~2.5 m.
+        # Bajarlo mas empieza a colar manchas: los filtros de forma pierden
+        # sentido cuando la caja mide diez pixeles.
         "rojo": {
             "rangos": [[[0, 110, 70], [10, 255, 255]],
                        [[168, 110, 70], [179, 255, 255]]],
-            "abrir": 3, "cerrar": 5, "area_min": 320,
+            "abrir": 3, "cerrar": 5, "area_min": 140,
             "aspecto_min": 0.6, "aspecto_max": 4.5, "llenado_min": 0.5,
             # Tolerancia al error de inclinacion del mastil, en pixeles.
             # 70 px aguantan ~8 grados de montaje torcido sin perder pilares.
@@ -268,7 +305,7 @@ DEFECTOS: Dict[str, Any] = {
         },
         "verde": {
             "rangos": [[[42, 80, 55], [88, 255, 255]]],
-            "abrir": 3, "cerrar": 5, "area_min": 320,
+            "abrir": 3, "cerrar": 5, "area_min": 140,
             "aspecto_min": 0.6, "aspecto_max": 4.5, "llenado_min": 0.5,
             # Tolerancia al error de inclinacion del mastil, en pixeles.
             # 70 px aguantan ~8 grados de montaje torcido sin perder pilares.
