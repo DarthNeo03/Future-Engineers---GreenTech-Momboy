@@ -91,6 +91,9 @@ class Escena:
     # aparece el primer obstaculo solido (muro negro o delimitador magenta).
     perfil_mm: np.ndarray = field(default_factory=lambda: np.zeros(0))
     perfil_lat_mm: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    # Rumbo de cada sector en grados (+ derecha). Existe haya muro o no, que
+    # es justo lo que hace falta para apuntar a un hueco.
+    perfil_rumbo_deg: np.ndarray = field(default_factory=lambda: np.zeros(0))
     # Distancia a la linea de piso que se ve delante, por color, o None.
     lineas_mm: Dict[str, Optional[float]] = field(default_factory=dict)
     mascaras: Dict[str, np.ndarray] = field(default_factory=dict)
@@ -171,7 +174,8 @@ class Detector:
         solidos = cv2.bitwise_or(m_neg, m_mag)
         if con_mascaras:
             esc.mascaras["solidos"] = solidos
-        esc.perfil_mm, esc.perfil_lat_mm = self._perfil(solidos, horizonte)
+        (esc.perfil_mm, esc.perfil_lat_mm,
+         esc.perfil_rumbo_deg) = self._perfil(solidos, horizonte)
 
         # --- lineas del piso --------------------------------------------
         for color in COLORES_LINEA:
@@ -315,8 +319,8 @@ class Detector:
         dets.sort(key=lambda d: d.dist_mm)
         return dets[:int(cfg.get("max_objetos", 3))]
 
-    def _perfil(self, solidos: np.ndarray, horizonte: int,
-                sectores: int = 32) -> Tuple[np.ndarray, np.ndarray]:
+    def _perfil(self, solidos: np.ndarray, horizonte: int, sectores: int = 32
+                ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Distancia libre por sector de columnas.
 
         Se busca, en cada columna, el pixel solido MAS BAJO: ese es el punto
@@ -342,15 +346,20 @@ class Detector:
         # importa el obstaculo mas cercano del sector, no el tipico.
         borde = np.linspace(0, ancho, sectores + 1).astype(int)
         perfil = np.empty(sectores, np.float32)
-        lat = np.empty(sectores, np.float32)
+        rumbo = np.empty(sectores, np.float32)
         for i in range(sectores):
             a, b = borde[i], max(borde[i] + 1, borde[i + 1])
-            trozo = dist_col[a:b]
-            perfil[i] = float(np.min(trozo))
-            u_mid = (a + b) / 2.0
-            v_mid = float(np.mean(v_base[a:b]))
-            lat[i] = float(self.geo.lateral_mm(u_mid, v_mid))
-        return perfil, lat
+            perfil[i] = float(np.min(dist_col[a:b]))
+            # RUMBO, no lateral: el rumbo de un sector existe tenga muro o no.
+            # El lateral de un sector LIBRE no existe (no hay nada que situar
+            # en el suelo), y calcularlo con una fila inventada daba ~20 mm en
+            # vez de "lejos hacia ese lado": el carro no giraba en las curvas.
+            rumbo[i] = float(self.geo.rumbo_de_columna((a + b) / 2.0))
+        # El lateral sale del rumbo y de la distancia, y solo tiene sentido
+        # donde de verdad hay muro. Donde no lo hay queda enorme, que es la
+        # respuesta honesta: "por ahi no hay nada en 6 metros".
+        lat = perfil * np.sin(np.radians(rumbo))
+        return perfil, lat, rumbo
 
     def _linea(self, mascara: np.ndarray, cfg: Dict[str, Any],
                horizonte: int) -> Optional[float]:

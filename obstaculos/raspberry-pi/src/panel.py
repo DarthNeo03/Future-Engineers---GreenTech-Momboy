@@ -101,12 +101,17 @@ def dibujar(frame: np.ndarray, piloto: Any, esc: Escena) -> np.ndarray:
             pass
 
     # --- texto de estado --------------------------------------------------
+    giro = {1: "derecha", -1: "izquierda"}.get(u.get("sentido_curva", 0),
+                                               "sin aprender")
     lineas = [
         f"{u.get('estado','?'):<11} {u.get('nota','')}",
         f"vel {u.get('vel',0):>5}%   dir {u.get('dir',0):>6}%",
         f"carril {u.get('carril_dir',0):>6}  esquive {u.get('esquive_dir',0):>6}"
         f" x{u.get('esquive_peso',0)}  ({u.get('esquive_fase','')})",
-        f"frente {u.get('frente_mm',0)}  izq {u.get('izq_mm',0)}  der {u.get('der_mm',0)}",
+        f"frente {u.get('frente_mm',0)}mm   lateral izq {u.get('izq_mm')}"
+        f"  der {u.get('der_mm')}",
+        f"hueco a {u.get('rumbo_hueco',0)} deg   curvas hacia {giro}"
+        f"   [{u.get('carril_motivo','')}]",
         f"yaw {u.get('yaw',0):>6}  vuelta {u.get('vueltas',0)}"
         f"  seccion {u.get('secciones',0)}  sentido {u.get('sentido',0)}",
     ]

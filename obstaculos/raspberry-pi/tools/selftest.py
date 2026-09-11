@@ -372,6 +372,112 @@ def prueba_esquive() -> None:
           f"fase={m.fase}")
 
 
+# ================================================ seguimiento de carril
+def _escena_pista(muro_izq_px=None, muro_der_px=None, fondo_px=150):
+    """Fotograma sintetico de pista: tapete blanco y muros negros.
+
+    muro_izq_px / muro_der_px: hasta que columna llega cada muro lateral.
+    None = ese lado no se ve (caso normal dentro de una curva).
+    """
+    import cv2
+    import numpy as np
+    img = np.full((480, 640, 3), 235, np.uint8)
+    cv2.rectangle(img, (0, 0), (640, fondo_px), (30, 30, 30), -1)
+    if muro_izq_px:
+        cv2.rectangle(img, (0, fondo_px), (muro_izq_px, 430), (30, 30, 30), -1)
+    if muro_der_px:
+        cv2.rectangle(img, (muro_der_px, fondo_px), (640, 430), (30, 30, 30), -1)
+    return img
+
+
+def prueba_carril() -> None:
+    print("seguimiento de carril")
+    from src.config import DEFECTOS
+    from src.carril import SeguidorCarril
+    from src.geometria import Geometria
+    from src.vision import Detector
+
+    def conducir(img, repeticiones=6, **kw):
+        """Varios ciclos: el mando lleva suavizado, un solo frame no asienta."""
+        geo = Geometria(dict(DEFECTOS["geometria"]), 640, 480)
+        det = Detector(DEFECTOS["colores"], geo)
+        seg = SeguidorCarril(dict(DEFECTOS["carril"]))
+        esc = det.procesar(img)
+        for _ in range(repeticiones):
+            s = seg.paso(esc, **kw)
+        return s
+
+    # --- EL FALLO DE PISTA: curva con la salida a un lado --------------
+    # El muro cierra el frente y el hueco queda claramente a un lado. Antes
+    # esto daba +-7 % de volante y el carro se iba recto contra la pared.
+    s = conducir(_escena_pista(muro_der_px=300))
+    check("curva a la izquierda: la detecta como curva", s.en_curva,
+          f"frente={s.dist_frente_mm:.0f}")
+    check("curva a la izquierda: el hueco cae a la izquierda",
+          s.rumbo_hueco_deg < -5, f"rumbo={s.rumbo_hueco_deg:.1f} deg")
+    check("curva a la izquierda: gira fuerte a la izquierda",
+          s.direccion < -40, f"dir={s.direccion:.1f} %")
+
+    s = conducir(_escena_pista(muro_izq_px=340))
+    check("curva a la derecha: el hueco cae a la derecha",
+          s.rumbo_hueco_deg > 5, f"rumbo={s.rumbo_hueco_deg:.1f} deg")
+    check("curva a la derecha: gira fuerte a la derecha",
+          s.direccion > 40, f"dir={s.direccion:.1f} %")
+
+    # --- recta centrada: no deberia pedir casi nada --------------------
+    s = conducir(_escena_pista(muro_izq_px=90, muro_der_px=550, fondo_px=120))
+    check("recta centrada: apenas toca el volante", abs(s.direccion) < 22,
+          f"dir={s.direccion:.1f} %")
+
+    # --- recta descentrada: corrige hacia el lado libre ----------------
+    # Pegado al muro izquierdo (ocupa mucho mas cuadro) -> debe irse a la
+    # derecha. Esto es lo que el centrado viejo medía mal: comparaba
+    # distancias HACIA DELANTE en vez de separacion lateral.
+    s = conducir(_escena_pista(muro_izq_px=250, muro_der_px=600, fondo_px=120))
+    check("pegado al muro izquierdo: corrige a la derecha", s.direccion > 8,
+          f"dir={s.direccion:.1f} %  izq={s.lat_izq_mm}  der={s.lat_der_mm}")
+    s = conducir(_escena_pista(muro_izq_px=40, muro_der_px=390, fondo_px=120))
+    check("pegado al muro derecho: corrige a la izquierda", s.direccion < -8,
+          f"dir={s.direccion:.1f} %  izq={s.lat_izq_mm}  der={s.lat_der_mm}")
+
+    # --- la pista del sentido sirve cuando el hueco no decide ----------
+    # Esquina de frente: el muro tapa casi todo y el hueco queda centrado.
+    centrado = _escena_pista(muro_izq_px=300, muro_der_px=340, fondo_px=200)
+    s0 = conducir(centrado)
+    s_h = conducir(centrado, sentido_pista=+1)    # horario -> curvas derecha
+    s_a = conducir(centrado, sentido_pista=-1)    # antihorario -> izquierda
+    check("hueco indeciso sin sentido: no se inventa un giro",
+          abs(s0.direccion) < abs(s_h.direccion),
+          f"sin={s0.direccion:.1f} con={s_h.direccion:.1f}")
+    check("horario: la esquina indecisa se resuelve a la derecha",
+          s_h.direccion > 25, f"dir={s_h.direccion:.1f} %")
+    check("antihorario: se resuelve a la izquierda",
+          s_a.direccion < -25, f"dir={s_a.direccion:.1f} %")
+
+    # --- el sentido de las curvas se aprende solo ----------------------
+    from src.geometria import Geometria as G
+    geo = G(dict(DEFECTOS["geometria"]), 640, 480)
+    det = Detector(DEFECTOS["colores"], geo)
+    seg = SeguidorCarril(dict(DEFECTOS["carril"]))
+    curva = det.procesar(_escena_pista(muro_izq_px=340))       # hueco derecha
+    recta = det.procesar(_escena_pista(muro_izq_px=90, muro_der_px=550,
+                                       fondo_px=120))
+    check("antes de la primera curva no sabe el sentido",
+          seg.sentido_curva == 0)
+    for _ in range(10):
+        seg.paso(curva)
+    seg.paso(recta)                                # salir de la curva
+    check("tras una curva a la derecha, aprende que giran a la derecha",
+          seg.sentido_curva == 1, str(seg.sentido_curva))
+
+    # --- el gyro amortigua, no manda ----------------------------------
+    quieto = conducir(_escena_pista(muro_der_px=300), gz=0.0)
+    girando = conducir(_escena_pista(muro_der_px=300), gz=-60.0)
+    check("girando ya a la izquierda, pide menos volante",
+          abs(girando.direccion) < abs(quieto.direccion),
+          f"{girando.direccion:.1f} vs {quieto.direccion:.1f}")
+
+
 def main() -> int:
     prueba_protocolo()
     prueba_reglas()
@@ -379,6 +485,7 @@ def main() -> int:
     prueba_vueltas()
     prueba_fsm()
     prueba_esquive()
+    prueba_carril()
     print()
     if fallos:
         print(f"{fallos} prueba(s) FALLARON")

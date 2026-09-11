@@ -135,6 +135,21 @@ class Geometria:
             return DIST_MAX_MM
         return min(DIST_MAX_MM, alto_real_mm * self._fy / float(alto_px))
 
+    def rumbo_de_columna(self, u) -> np.ndarray:
+        """Columna(s) -> rumbo horizontal en GRADOS (+ a la derecha).
+
+        "Hacia donde cae" esa parte de la imagen. Solo depende de fx: no toca
+        la inclinacion, ni la altura de la camara, ni la fila.
+
+        Esta es la medida que hay que usar para apuntar a un HUECO. Un hueco
+        no tiene base sobre la que apoyarse —justamente por eso es un hueco—,
+        asi que no tiene posicion en el suelo que medir; lo que si tiene es una
+        direccion. Calcularle un "lateral en mm" obliga a inventarse una fila,
+        y con la fila equivocada el angulo sale casi nulo y el carro no gira.
+        """
+        u = np.asarray(u, dtype=np.float32)
+        return np.degrees(np.arctan((u - self._cx) / self._fx))
+
     def lateral_por_distancia(self, u, dist_mm: float) -> float:
         """Lateral en mm a partir de una distancia YA conocida, sin pasar por
         la fila de la imagen.

@@ -85,6 +85,20 @@ DEFECTOS: Dict[str, Any] = {
         "dist_curva_mm": 820.0,    # al ir mas rapido hay que frenar antes
         "dist_recta_mm": 1800.0,
         "mirada_min_mm": 500.0,
+        # Cono angular que cuenta como "lo que hay delante". En grados, no en
+        # fraccion de imagen: asi no cambia de significado al tocar la
+        # resolucion o la lente.
+        "cono_frente_deg": 12.0,
+        "ventana_centrado_mm": 1500.0,  # hasta donde se miran los muros para
+                                        #   medir la separacion lateral
+        "rumbo_max_deg": 30.0,          # rumbo que satura el termino a 1.0
+        # SESGO DE CURVA. De frente a una esquina el hueco puede quedar casi
+        # centrado y el carro se iba recto contra el muro. Si ya se sabe hacia
+        # donde giran las curvas de esta ronda, se empuja hacia ese lado.
+        "sesgo_curva": 45.0,
+        "hueco_indeciso_deg": 10.0,     # por debajo, el hueco no decide nada
+        "aprender_curva_deg": 6.0,      # rumbo medio minimo para dar por
+                                        #   aprendido el sentido de las curvas
         "kp_centrado": 55.0,
         "kp_rumbo": 70.0,
         "kd_giro": 0.28,

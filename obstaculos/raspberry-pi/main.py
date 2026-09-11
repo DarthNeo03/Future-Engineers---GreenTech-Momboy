@@ -36,6 +36,10 @@ def construir_argumentos() -> argparse.ArgumentParser:
                    help="ruta del JSON de calibracion")
     p.add_argument("--puerto", default=None,
                    help="puerto serial del ESP32 (por defecto, se busca)")
+    p.add_argument("--camara", type=int, default=None,
+                   help="forzar el indice de camara (/dev/videoN)")
+    p.add_argument("--listar-camaras", action="store_true",
+                   help="decir que /dev/video* hay y quien los usa, y salir")
     p.add_argument("--sin-motor", action="store_true",
                    help="no mover el motor: solo vision y decisiones")
     p.add_argument("--ver", action="store_true",
@@ -49,7 +53,23 @@ def construir_argumentos() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = construir_argumentos().parse_args(argv)
+
+    if args.listar_camaras:
+        from src.camara import dispositivos, quien_la_usa
+        hallados = dispositivos()
+        if not hallados:
+            print("No hay ningun /dev/video*: la camara no esta conectada.")
+            return 1
+        for i in hallados:
+            ocupa = quien_la_usa(i)
+            print(f"  /dev/video{i:<3} {'OCUPADO por ' + ocupa if ocupa else 'libre'}")
+        print()
+        print("Cual de ellos es la de captura: v4l2-ctl --list-devices")
+        return 0
+
     cfg = cfg_mod.cargar(args.config, verbose=not args.silencio)
+    if args.camara is not None:
+        cfg["camara"]["indice"] = args.camara
 
     if args.sin_motor:
         # La forma mas segura de "no mover el motor" no es un if en el lazo de

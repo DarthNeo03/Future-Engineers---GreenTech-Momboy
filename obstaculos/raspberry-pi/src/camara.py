@@ -19,6 +19,8 @@ DOS COSAS QUE NO SON NEGOCIABLES Y POR QUE
 
 from __future__ import annotations
 
+import glob
+import os
 import platform
 import threading
 import time
@@ -37,10 +39,55 @@ def _backends() -> List[int]:
     return [cv2.CAP_V4L2, cv2.CAP_ANY]
 
 
-def abrir(indice: Union[int, str] = 0, ancho: int = 640, alto: int = 480,
-          fps: int = 30, fourcc: str = "MJPG",
-          verbose: bool = True) -> Optional[cv2.VideoCapture]:
-    """Devuelve un VideoCapture ya configurado, o None."""
+def dispositivos() -> List[int]:
+    """Indices /dev/videoN presentes, en orden. Vacio en Windows.
+
+    No todos son camaras: una UVC como la IMX179 suele exponer DOS nodos, uno
+    de captura y otro solo de metadatos, y cual de los dos cae en video0
+    depende del orden de enumeracion del arranque. Por eso el indice fijo del
+    JSON no es de fiar como unica opcion.
+    """
+    if ES_WINDOWS:
+        return []
+    idx = []
+    for ruta in glob.glob("/dev/video*"):
+        cola = ruta[len("/dev/video"):]
+        if cola.isdigit():
+            idx.append(int(cola))
+    return sorted(idx)
+
+
+def quien_la_usa(indice: int) -> str:
+    """Pista sobre quien tiene ocupado el dispositivo, leida de /proc.
+
+    No usa fuser ni lsof (pueden no estar instalados en Raspbian Lite): mira
+    los enlaces de /proc/*/fd a pelo. Devuelve texto para el mensaje de error,
+    nunca lanza: si no se puede averiguar, se dice que no se pudo.
+    """
+    if ES_WINDOWS:
+        return ""
+    destino = f"/dev/video{indice}"
+    culpables = []
+    try:
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit() or int(pid) == os.getpid():
+                continue
+            try:
+                for fd in os.listdir(f"/proc/{pid}/fd"):
+                    if os.readlink(f"/proc/{pid}/fd/{fd}") == destino:
+                        with open(f"/proc/{pid}/comm") as f:
+                            culpables.append(f"{f.read().strip()}(pid {pid})")
+                        break
+            except (OSError, PermissionError):
+                continue
+    except OSError:
+        return ""
+    return ", ".join(sorted(set(culpables)))
+
+
+def _probar(indice: Union[int, str], ancho: int, alto: int, fps: int,
+            fourcc: str, verbose: bool) -> Optional[cv2.VideoCapture]:
+    """Intenta UN indice con todos los backends. None si ninguno sirve."""
     if isinstance(indice, str) and not indice.isdigit():
         candidatos = [cv2.CAP_ANY]          # ruta /dev/videoN o archivo
     else:
@@ -60,6 +107,9 @@ def abrir(indice: Union[int, str] = 0, ancho: int = 640, alto: int = 480,
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(alto))
         cap.set(cv2.CAP_PROP_FPS, int(fps))
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # no todos los drivers lo honran
+        # Exigir un frame de verdad, no solo que abra: un nodo de METADATOS de
+        # una UVC abre sin quejarse y no entrega imagen nunca. Sin esta lectura
+        # el programa arrancaria "bien" y se quedaria ciego.
         ok, _ = cap.read()
         if not ok:
             cap.release()
@@ -68,9 +118,64 @@ def abrir(indice: Union[int, str] = 0, ancho: int = 640, alto: int = 480,
             w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             f = cap.get(cv2.CAP_PROP_FPS)
-            print(f"[camara] {w}x{h} @ {f:.0f} fps  backend={be}")
+            print(f"[camara] indice {indice}: {w}x{h} @ {f:.0f} fps  backend={be}")
         return cap
     return None
+
+
+def abrir(indice: Union[int, str] = 0, ancho: int = 640, alto: int = 480,
+          fps: int = 30, fourcc: str = "MJPG", verbose: bool = True,
+          autobuscar: bool = True) -> Optional[cv2.VideoCapture]:
+    """Devuelve un VideoCapture ya configurado, o None.
+
+    Si el indice configurado falla y autobuscar esta activo, prueba los demas
+    /dev/videoN que existan. El dia de la competencia el orden de enumeracion
+    puede cambiar por un simple reinicio, y quedarse sin correr por eso seria
+    absurdo teniendo el resto del sistema listo.
+    """
+    cap = _probar(indice, ancho, alto, fps, fourcc, verbose)
+    if cap is not None:
+        return cap
+
+    if not autobuscar or (isinstance(indice, str) and not indice.isdigit()):
+        return None
+
+    otros = [i for i in dispositivos() if i != int(indice)]
+    for i in otros:
+        cap = _probar(i, ancho, alto, fps, fourcc, verbose)
+        if cap is not None:
+            if verbose:
+                print(f"[camara] AVISO: el indice {indice} de pista.json no "
+                      f"sirve; se esta usando el {i}. Cambialo en el JSON "
+                      f'("camara": {{"indice": {i}}}) para no depender del '
+                      f"orden de arranque.")
+            return cap
+    return None
+
+
+def explicar_fallo(indice: Union[int, str]) -> str:
+    """Mensaje accionable cuando no hay camara. Se llama solo al fallar."""
+    if ES_WINDOWS:
+        return "No se abrio ninguna camara. Revisa que no la tenga otra app."
+    hallados = dispositivos()
+    if not hallados:
+        return ("No hay ningun /dev/video*. La camara no esta enchufada o el "
+                "kernel no la reconocio: comprueba con 'lsusb' y 'dmesg | tail'.")
+    ocupa = ""
+    try:
+        ocupa = quien_la_usa(int(indice))
+    except (TypeError, ValueError):
+        pass
+    if ocupa:
+        return (f"/dev/video{indice} lo tiene abierto: {ocupa}.\n"
+                f"  Ciérralo y vuelve a lanzar. Si es una ejecucion anterior "
+                f"que quedo viva:  pkill -f 'python3 main.py'")
+    return (f"Existen {[f'/dev/video{i}' for i in hallados]} pero ninguno "
+            f"entrego imagen.\n"
+            f"  - Si dice 'Device is busy', otro proceso la tiene: "
+            f"pkill -f 'python3 main.py'\n"
+            f"  - Mira cual es la de captura de verdad: v4l2-ctl --list-devices\n"
+            f"  - Y fuerza el indice con: python3 main.py --camara N")
 
 
 class Camara:

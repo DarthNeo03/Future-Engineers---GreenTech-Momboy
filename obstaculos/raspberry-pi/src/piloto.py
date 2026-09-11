@@ -29,7 +29,7 @@ import time
 from typing import Any, Dict, Optional
 
 from . import protocolo as proto
-from .camara import Camara
+from .camara import Camara, explicar_fallo
 from .carril import SeguidorCarril, margen_magenta
 from .enlace import Enlace
 from .fsm import Contexto, Estado, MaquinaEstados, Orden
@@ -68,7 +68,11 @@ class Piloto:
     # ------------------------------------------------------------ arranque
     def preparar(self) -> bool:
         if not self.camara.abrir():
+            # Un "no se pudo abrir la camara" a secas obliga a adivinar. El
+            # 90 % de las veces es una ejecucion anterior que quedo viva, y
+            # eso se puede decir en vez de dejarlo al detective de turno.
             print("[piloto] no se pudo abrir la camara")
+            print("  " + explicar_fallo(self.cfg["camara"]["indice"]))
             return False
         if not self.enlace.abrir():
             print("[piloto] no se pudo abrir el enlace con el ESP32")
@@ -126,7 +130,13 @@ class Piloto:
             self.cfg["traccion"].get("mm_s_por_pct", 22.0))
 
         # --- las dos opiniones, por separado -------------------------------
-        sal_carril = self.carril.paso(esc, gz=sens.gz)
+        # El sentido que dedujo el contador de vueltas (por el color de la
+        # primera linea pisada) viaja al seguidor de carril como PISTA: le
+        # dice hacia donde giran las curvas de esta ronda antes de haber
+        # tomado ninguna. En cuanto toma la primera, el seguidor lo aprende
+        # por su cuenta y deja de depender de ese parametro.
+        sal_carril = self.carril.paso(esc, gz=sens.gz,
+                                      sentido_pista=self.contador.e.sentido)
         maniobra = self.esquivador.paso(esc, esc.lineas_mm,
                                         sal_carril.en_curva, vel_mm_s)
         empujon = margen_magenta(esc, self.geo.semiancho_mm())
@@ -171,8 +181,13 @@ class Piloto:
             # un filtro el que se los come.
             "descartes": dict(esc.descartes),
             "frente_mm": round(sal_carril.dist_frente_mm),
-            "izq_mm": round(sal_carril.dist_izq_mm),
-            "der_mm": round(sal_carril.dist_der_mm),
+            "izq_mm": (round(sal_carril.lat_izq_mm)
+                       if sal_carril.lat_izq_mm is not None else None),
+            "der_mm": (round(sal_carril.lat_der_mm)
+                       if sal_carril.lat_der_mm is not None else None),
+            "rumbo_hueco": round(sal_carril.rumbo_hueco_deg, 1),
+            "sentido_curva": sal_carril.sentido_curva,
+            "carril_motivo": sal_carril.motivo,
             "magenta": round(empujon, 1) if empujon is not None else None,
             "yaw": round(sens.yaw, 1),
             "vueltas": ev.vueltas,

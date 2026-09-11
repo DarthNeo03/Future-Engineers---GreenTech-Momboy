@@ -178,6 +178,62 @@ Dicho antes de que lo descubra la pista:
 
 ---
 
+## Cómo sabe hacia dónde girar
+
+En una pista WRO **todas las curvas van hacia el mismo lado**: en sentido
+horario todas a la derecha, en antihorario todas a la izquierda. O sea que
+basta acertar una para saber las once restantes. El seguidor usa tres cosas,
+en este orden:
+
+1. **El rumbo del hueco.** Se parte el frente en 32 sectores, se mide a qué
+   distancia aparece el primer sólido en cada uno, y se apunta al **centro del
+   tramo contiguo libre más ancho**. Al centro, no al sector más profundo: en
+   una recta media imagen empata en el máximo y quedarse con el primero
+   sesgaba el volante a la izquierda en cada recta.
+
+2. **La separación lateral a cada muro**, para centrarse. Cada sector con muro
+   se convierte en un punto del suelo (`x = d·sen θ`, `y = d·cos θ`) y se mide
+   cuánto hay de verdad a cada lado. Si solo se ve un muro —lo normal dentro de
+   una curva— se sigue a distancia fija de él.
+
+3. **El sentido de las curvas**, que el carro **aprende de la primera que
+   toma** (promediando el rumbo del hueco mientras está en curva). Sirve para
+   las esquinas de frente, donde el muro exterior tapa la salida y el hueco
+   queda casi centrado: ahí es donde antes se iba recto contra la pared.
+
+   Mientras no haya tomado ninguna curva, acepta como pista el sentido que
+   deduce `vueltas.py` del color de la primera línea pisada. Es solo una
+   ayuda de arranque: el sentido aprendido siempre manda sobre ella, para que
+   un `color_entrada_horario` mal puesto no haga girar al revés.
+
+En la ventana de `--ver`: `hueco a N deg` y `curvas hacia ...` dicen qué está
+pensando. Si `curvas hacia` sigue en `sin aprender` después de dos curvas,
+sube `sesgo_curva` o baja `aprender_curva_deg`.
+
+---
+
+## Si no abre la cámara
+
+```bash
+python3 main.py --listar-camaras
+```
+
+Dice qué `/dev/video*` existen y cuál está ocupado, leyendo `/proc` (no
+necesita `fuser` ni `lsof`, que no vienen en Raspbian Lite).
+
+| Lo que sale | Qué pasa |
+|---|---|
+| `Device '/dev/video0' is busy` | otra ejecución la tiene abierta → `pkill -f "python3 main.py"` |
+| `No hay ningun /dev/video*` | no está enchufada o el kernel no la vio → `lsusb`, `dmesg \| tail` |
+| abre pero no entrega imagen | es el nodo de **metadatos** de la UVC, no el de captura → `v4l2-ctl --list-devices` y `--camara N` |
+
+Si el índice del JSON falla, el programa prueba solo los demás `/dev/videoN` y
+avisa de cuál acabó usando. El orden de enumeración puede cambiar con un
+reinicio, y quedarse sin correr por eso teniendo el resto listo sería absurdo —
+pero conviene fijar el índice bueno en `pista.json` igualmente.
+
+---
+
 ## Si el carro vuelve a ignorar los pilares
 
 Mira **`descartes`** en la ventana de `--ver` (o en `piloto.ultimo`). Dice
