@@ -225,10 +225,11 @@ class Enlace:
 
     def configurar_servo(self, centro: int, izquierda: int, derecha: int,
                          grados_por_seg: int = 320, rampa: int = 10,
-                         ms_freno_inversion: int = 150) -> None:
+                         ms_freno_inversion: int = 150,
+                         pwm_min: int = 0) -> None:
         self.enviar_crudo(proto.trama_config(centro, izquierda, derecha,
                                              grados_por_seg, rampa,
-                                             ms_freno_inversion))
+                                             ms_freno_inversion, pwm_min))
 
     def calibrar(self, comando: int) -> None:
         self.enviar_crudo(proto.trama_cal(comando))

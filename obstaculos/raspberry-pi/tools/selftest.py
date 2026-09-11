@@ -274,12 +274,111 @@ def prueba_fsm() -> None:
           not o.armado and o.parada and o.vel == 0.0)
 
 
+# ============================================ esquive de extremo a extremo
+def _frame_con_pilar(dist_mm, lat_mm, color_bgr, fy_real=460.0,
+                     tilt_real=7.5, h_cam=125.0):
+    """Fotograma sintetico: tapete blanco, muro negro al fondo y un pilar de
+    50x100 mm proyectado con la geometria REAL (que no tiene por que ser la
+    configurada). Sirve para probar el pipeline entero sin carro."""
+    import math
+    import cv2
+    import numpy as np
+    img = np.full((480, 640, 3), 235, np.uint8)
+    cy, cx = 240.0, 320.0
+    tilt = math.radians(tilt_real)
+    theta = math.atan2(h_cam, dist_mm)
+    v_base = cy + fy_real * math.tan(theta - tilt)
+    rango = h_cam / math.sin(theta)
+    alto_px = 100.0 * fy_real / dist_mm
+    ancho_px = 50.0 * fy_real / dist_mm
+    u = cx + lat_mm * fy_real / rango
+    cv2.rectangle(img, (0, 0), (640, max(0, int(v_base - alto_px) - 30)),
+                  (30, 30, 30), -1)
+    cv2.rectangle(img, (int(u - ancho_px / 2), int(v_base - alto_px)),
+                  (int(u + ancho_px / 2), int(v_base)), color_bgr, -1)
+    return img
+
+
+def prueba_esquive() -> None:
+    print("esquive de extremo a extremo (regla 9.19)")
+    from src.config import DEFECTOS
+    from src.geometria import Geometria
+    from src.senales import Esquivador
+    from src.vision import Detector
+
+    ROJO, VERDE = (45, 35, 235), (50, 210, 70)
+
+    def correr(color_bgr, dist=900.0, lat=0.0, **kw):
+        geo = Geometria(dict(DEFECTOS["geometria"]), 640, 480)
+        det = Detector(DEFECTOS["colores"], geo)
+        esq = Esquivador(DEFECTOS["senales"], geo.semiancho_mm())
+        esc = det.procesar(_frame_con_pilar(dist, lat, color_bgr, **kw))
+        m = esq.paso(esc, {}, False, 800.0)
+        return esc, m
+
+    # --- caso nominal -------------------------------------------------
+    esc, m = correr(ROJO)
+    check("detecta el pilar rojo", len(esc.pilares) == 1,
+          f"descartes={esc.descartes}")
+    check("rojo: punto de paso a la DERECHA del pilar", m.objetivo_mm > 0,
+          f"objetivo={m.objetivo_mm:.0f} mm")
+    check("rojo: gira a la derecha", m.direccion > 0, f"dir={m.direccion:.1f}")
+    check("rojo: el esquive toma autoridad", m.peso > 0.5, f"peso={m.peso}")
+
+    esc, m = correr(VERDE)
+    check("detecta el pilar verde", len(esc.pilares) == 1,
+          f"descartes={esc.descartes}")
+    check("verde: punto de paso a la IZQUIERDA del pilar", m.objetivo_mm < 0,
+          f"objetivo={m.objetivo_mm:.0f} mm")
+    check("verde: gira a la izquierda", m.direccion < 0, f"dir={m.direccion:.1f}")
+
+    # --- ESTE es el caso que fallaba en pista --------------------------
+    # Mastil torcido: la inclinacion real no es la configurada. Antes, el
+    # filtro de coherencia borraba TODOS los pilares y el carro pasaba de
+    # largo sin mirar el color.
+    for tilt in (10.0, 12.0, 14.0):
+        esc, m = correr(ROJO, tilt_real=tilt)
+        check(f"rojo sigue viendose con inclinacion real {tilt} deg",
+              len(esc.pilares) == 1, f"descartes={esc.descartes}")
+        check(f"rojo sigue yendo por la derecha con {tilt} deg",
+              m.objetivo_mm > 0 and m.direccion > 0,
+              f"objetivo={m.objetivo_mm:.0f} dir={m.direccion:.1f}")
+        esc, m = correr(VERDE, tilt_real=tilt)
+        check(f"verde sigue yendo por la izquierda con {tilt} deg",
+              m.objetivo_mm < 0 and m.direccion < 0,
+              f"objetivo={m.objetivo_mm:.0f} dir={m.direccion:.1f}")
+
+    # --- fy mal calibrada ---------------------------------------------
+    esc, m = correr(ROJO, fy_real=554.0)
+    check("rojo sobrevive a fy mal calibrada",
+          len(esc.pilares) == 1 and m.direccion > 0, f"descartes={esc.descartes}")
+
+    # --- el lado no depende de donde este el pilar en el cuadro --------
+    # Un pilar rojo YA a la izquierda del carro se rebasa igual por su
+    # derecha, y eso puede significar NO girar a la derecha del todo.
+    esc, m = correr(ROJO, lat=-220.0)
+    check("rojo a la izquierda: el lateral sale negativo",
+          esc.pilares and esc.pilares[0].lat_mm < 0,
+          str(esc.pilares[0].lat_mm if esc.pilares else None))
+    check("rojo a la izquierda: el punto de paso sigue a SU derecha",
+          m.objetivo_mm > esc.pilares[0].lat_mm,
+          f"objetivo={m.objetivo_mm:.0f} pilar={esc.pilares[0].lat_mm:.0f}")
+
+    # --- una aproximacion normal no es "lado incorrecto" ---------------
+    # Un pilar de frente a 1.2 m es una aproximacion, no un error. Si se
+    # marcaba como lado incorrecto, la FSM bajaba a 22 % en cada pilar.
+    _, m = correr(ROJO, dist=1200.0)
+    check("pilar lejano no dispara CORRECCION", not m.lado_incorrecto,
+          f"fase={m.fase}")
+
+
 def main() -> int:
     prueba_protocolo()
     prueba_reglas()
     prueba_geometria()
     prueba_vueltas()
     prueba_fsm()
+    prueba_esquive()
     print()
     if fallos:
         print(f"{fallos} prueba(s) FALLARON")

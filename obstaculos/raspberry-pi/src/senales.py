@@ -108,9 +108,21 @@ class Esquivador:
         """
         activar = float(self.cfg.get("activar_desde_mm", 1600.0))
         # Limite de seccion: la linea de piso mas cercana que se vea delante.
+        #
+        # DOS CAUTELAS, las dos aprendidas por las malas:
+        #
+        #  a) Una linea A PUNTO DE PISARSE es la que estamos cruzando AHORA,
+        #     no la frontera de la seccion siguiente. Usarla como limite pone
+        #     el tope a 30 cm y borra todos los pilares de la recta. Por eso
+        #     solo cuentan las lineas que estan de verdad lejos.
+        #  b) Esta puerta puede silenciar el esquive entera, asi que tiene
+        #     interruptor. Si en la pista se ve que ignora pilares legitimos,
+        #     se apaga en pista.json y se sigue corriendo.
         limite = DIST_MAX_MM
-        if not en_curva:
-            vistas = [d for d in lineas_mm.values() if d is not None]
+        if not en_curva and bool(self.cfg.get("usar_limite_seccion", True)):
+            min_valida = float(self.cfg.get("linea_valida_desde_mm", 450.0))
+            vistas = [d for d in lineas_mm.values()
+                      if d is not None and d >= min_valida]
             if vistas:
                 limite = min(vistas) + float(self.cfg.get("holgura_linea_mm", 80.0))
 
@@ -166,7 +178,17 @@ class Esquivador:
         # ¿Estamos ya del lado correcto? El carro esta en x = 0; el pilar en
         # lat_mm. Si lat_mm * lado < 0, el pilar queda al otro lado: bien.
         holgura_actual = -objetivo.lat_mm * lado    # >0 = vamos bien
-        m.lado_incorrecto = holgura_actual < (MITAD_PILAR_MM + self.semiancho_mm * 0.5)
+        # PERO ESTO SOLO SE JUZGA DE CERCA.
+        #
+        # Un pilar visto de frente a 1.5 m da holgura ~0, y eso no es un error:
+        # es una aproximacion normal, todavia hay metro y medio para colocarse.
+        # Juzgarlo desde lejos metia el carro en CORRECCION —al 22 % de
+        # velocidad y con el volante casi a tope— en CADA pilar, que es de
+        # donde venia la sensacion de que el carro se traba. La correccion es
+        # para cuando ya no queda sitio, no para cuando aun sobra.
+        cerca = objetivo.dist_mm <= float(self.cfg.get("juzgar_lado_desde_mm", 700.0))
+        m.lado_incorrecto = cerca and holgura_actual < (
+            MITAD_PILAR_MM + self.semiancho_mm * 0.35)
 
         # --------------------------------------------------------- direccion
         morro = float(self.cfg.get("morro_mm", 60.0))

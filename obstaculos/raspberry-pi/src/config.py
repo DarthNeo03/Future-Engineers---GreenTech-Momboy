@@ -52,6 +52,13 @@ DEFECTOS: Dict[str, Any] = {
         "grados_por_seg": 320,
         "rampa_motor": 10,
         "ms_freno_inversion": 150,
+        # PWM MINIMO CON EL QUE EL MOTOR DE VERDAD ARRANCA.
+        # Un motor de 500 rpm cargado con el carro y la reduccion del
+        # diferencial no se mueve con PWM 40: zumba, calienta el IBT-2 y desde
+        # fuera parece que el carro "se traba". Por debajo de este valor el
+        # firmware empuja hasta el minimo util. Subelo de 5 en 5 hasta que el
+        # carro arranque limpio desde parado en el tapete, y no mas.
+        "pwm_min_motor": 55,
     },
 
     # Geometria de la camara: altura del centro optico, inclinacion y focales.
@@ -70,32 +77,42 @@ DEFECTOS: Dict[str, Any] = {
     # 40 % durante 3 s en recta y se divide la distancia entre el tiempo.
     "traccion": {
         "mm_s_por_pct": 22.0,      # 40 % -> ~880 mm/s
-        "vmax_pwm": 210,           # techo duro de PWM que manda la Pi
+        "vmax_pwm": 240,           # techo duro de PWM que manda la Pi
     },
 
     "carril": {
         "ancho_carril_mm": 1000.0,
-        "dist_curva_mm": 700.0,
+        "dist_curva_mm": 820.0,    # al ir mas rapido hay que frenar antes
         "dist_recta_mm": 1800.0,
         "mirada_min_mm": 500.0,
         "kp_centrado": 55.0,
         "kp_rumbo": 70.0,
         "kd_giro": 0.28,
         "suavizado": 0.45,
-        "vel_recta": 42.0,
-        "vel_curva": 24.0,
-        "freno_por_volante": 0.35,
+        # VELOCIDADES. Subidas respecto a la primera version porque el carro
+        # iba sobrado de margen. Si al subirlas se empieza a comer pilares en
+        # las curvas, lo primero que hay que bajar es vel_curva, no vel_recta.
+        "vel_recta": 58.0,
+        "vel_curva": 34.0,
+        "freno_por_volante": 0.28,
     },
 
     "senales": {
         "activar_desde_mm": 1600.0,   # se empieza a tener en cuenta
-        "mandar_desde_mm": 750.0,     # manda del todo sobre el carril
+        "mandar_desde_mm": 850.0,     # manda del todo sobre el carril
+        "juzgar_lado_desde_mm": 700.0,  # desde aqui se juzga si vamos por el
+                                        #   lado malo; mas lejos aun hay sitio
+        "usar_limite_seccion": True,  # descartar pilares de la seccion
+                                      #   siguiente. Si en pista se ve que
+                                      #   ignora pilares buenos, ponlo en false
+        "linea_valida_desde_mm": 450.0,  # una linea mas cerca es la que se
+                                         #   esta pisando, no una frontera
         "ciego_desde_mm": 400.0,      # deja de verse: arranca el compromiso
         "dist_reversa_mm": 230.0,     # sin radio para corregir: reversa
         "margen_mm": 70.0,            # holgura al costado del pilar
         "morro_mm": 60.0,             # del eje de la camara al morro
         "mirada_min_mm": 420.0,
-        "ganancia": 1.9,
+        "ganancia": 2.1,
         "suavizado": 0.5,
         "holgura_linea_mm": 80.0,     # margen al descartar pilares de la
                                       #   seccion siguiente
@@ -116,12 +133,12 @@ DEFECTOS: Dict[str, Any] = {
     "fsm": {
         "vueltas": 3,
         "arranque_s": 0.4,
-        "vel_arranque": 26.0,
-        "vel_senal": 32.0,
-        "vel_esquive": 30.0,
-        "vel_correccion": 22.0,
-        "vel_meta": 26.0,
-        "vel_reversa": 24.0,
+        "vel_arranque": 34.0,
+        "vel_senal": 44.0,
+        "vel_esquive": 42.0,
+        "vel_correccion": 28.0,
+        "vel_meta": 30.0,
+        "vel_reversa": 28.0,
         "dir_reversa": 70.0,
         "reversa_s": 0.9,
         "atasco_dist_mm": 260.0,
@@ -138,19 +155,26 @@ DEFECTOS: Dict[str, Any] = {
             "rangos": [[[0, 110, 70], [10, 255, 255]],
                        [[168, 110, 70], [179, 255, 255]]],
             "abrir": 3, "cerrar": 5, "area_min": 320,
-            "aspecto_min": 0.7, "aspecto_max": 4.0, "llenado_min": 0.55,
+            "aspecto_min": 0.6, "aspecto_max": 4.5, "llenado_min": 0.5,
+            # Tolerancia al error de inclinacion del mastil, en pixeles.
+            # 70 px aguantan ~8 grados de montaje torcido sin perder pilares.
+            "margen_horizonte_px": 70,
             "max_objetos": 4,
         },
         "verde": {
             "rangos": [[[42, 80, 55], [88, 255, 255]]],
             "abrir": 3, "cerrar": 5, "area_min": 320,
-            "aspecto_min": 0.7, "aspecto_max": 4.0, "llenado_min": 0.55,
+            "aspecto_min": 0.6, "aspecto_max": 4.5, "llenado_min": 0.5,
+            # Tolerancia al error de inclinacion del mastil, en pixeles.
+            # 70 px aguantan ~8 grados de montaje torcido sin perder pilares.
+            "margen_horizonte_px": 70,
             "max_objetos": 4,
         },
         # Delimitadores del cajon. NO son objetivo: son muro intocable.
         "magenta": {
             "rangos": [[[140, 90, 70], [166, 255, 255]]],
             "abrir": 3, "cerrar": 5, "area_min": 400,
+            "margen_horizonte_px": 70,
             "max_objetos": 3,
         },
         # Muros: negro es poca V, sin importar el tono.

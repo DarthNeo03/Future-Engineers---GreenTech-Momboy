@@ -21,17 +21,25 @@ justo el canal que se deja abierto de par en par en los rangos.
 EL ROJO NECESITA DOS RANGOS porque el tono es circular y el rojo esta a
 caballo del cero: hay que coger 0-10 y 150-179 y unirlos.
 
-TRES FILTROS, EN ESTE ORDEN, Y NINGUNO SOBRA
+DOS FILTROS QUE DESCARTAN, Y UNA TERCERA MEDIDA QUE SOLO PONDERA
 
-  1. HORIZONTE. Todo contorno cuya base quede por encima de la fila del
-     horizonte se tira sin mirar el color. Los muros miden 100 mm y la camara
-     va a 125: nada de la pista puede aparecer ahi arriba. Esto es lo que
-     hace que una camiseta roja del publico no sea un pilar.
+  1. HORIZONTE. Un contorno cuya base quede muy por encima de la fila del
+     horizonte no es pista. Los muros miden 100 mm y la camara va a 125: nada
+     del tapete puede aparecer ahi arriba. Esto es lo que hace que una
+     camiseta roja del publico no sea un pilar. Lleva un margen configurable
+     porque la fila del horizonte se calcula con la inclinacion CONFIGURADA,
+     y un mastil torcido la desplaza entera.
   2. FORMA. Un pilar es un rectangulo vertical de 50x100 mm: relacion de
      aspecto y llenado del contorno dentro de su caja.
-  3. COHERENCIA GEOMETRICA. La distancia deducida de la BASE (donde toca el
-     suelo) y la deducida de la ALTURA APARENTE tienen que parecerse. Un
-     reflejo en el tapete falla este filtro aunque pase los dos anteriores.
+
+  Y LUEGO, LA DISTANCIA, QUE YA NO DESCARTA NADA. Se mide de dos maneras
+  —por la base y por la altura aparente— pero no se exige que coincidan. Ver
+  el comentario largo dentro de _pilares: exigirlo borraba todos los pilares
+  en cuanto la inclinacion estaba mal medida, que es el estado normal el dia
+  de la competencia.
+
+TODO DESCARTE QUEDA CONTADO en Escena.descartes. "No ve los pilares" tiene que
+ser una pregunta respondible desde la telemetria, no una tarde de pista.
 """
 
 from __future__ import annotations
@@ -86,6 +94,10 @@ class Escena:
     # Distancia a la linea de piso que se ve delante, por color, o None.
     lineas_mm: Dict[str, Optional[float]] = field(default_factory=dict)
     mascaras: Dict[str, np.ndarray] = field(default_factory=dict)
+    # Por que se tiro cada contorno. Sin esto, "no ve los pilares" es un
+    # callejon sin salida: la mascara esta bien, el filtro se los come y no
+    # queda rastro. Viaja a la telemetria y al panel de depuracion.
+    descartes: Dict[str, int] = field(default_factory=dict)
 
     def pilar_mas_cercano(self) -> Optional[Deteccion]:
         return min(self.pilares, key=lambda d: d.dist_mm, default=None)
@@ -138,7 +150,8 @@ class Detector:
             m = _mascara(hsv, cfg)
             if con_mascaras:
                 esc.mascaras[color] = m
-            esc.pilares.extend(self._pilares(m, color, cfg, horizonte))
+            esc.pilares.extend(self._pilares(m, color, cfg, horizonte,
+                                             esc.descartes))
         esc.pilares.sort(key=lambda d: d.dist_mm)
 
         # --- delimitadores del cajon (prohibido tocarlos) ---------------
@@ -175,60 +188,101 @@ class Detector:
 
     # ------------------------------------------------------------ privados
     def _contornos(self, mascara: np.ndarray, cfg: Dict[str, Any],
-                   horizonte: int) -> List[Tuple[int, int, int, int, float]]:
+                   horizonte: int, margen_horizonte: int = 0,
+                   descartes: Optional[Dict[str, int]] = None,
+                   etiqueta: str = "") -> List[Tuple[int, int, int, int, float]]:
         cont, _ = cv2.findContours(mascara, cv2.RETR_EXTERNAL,
                                    cv2.CHAIN_APPROX_SIMPLE)
         area_min = float(cfg.get("area_min", 300))
+        # FILTRO 1: la base por encima del horizonte no puede ser pista.
+        #
+        # OJO CON EL MARGEN. La fila del horizonte se calcula con la
+        # inclinacion configurada, asi que un error de montaje la desplaza
+        # entera: con 4 grados de mas, un pilar legitimo a 1.5 m cae por
+        # encima del horizonte "teorico" y se tira. El margen compra esa
+        # tolerancia. Cuanto mas grande, mas robusto al montaje y mas
+        # expuesto a ver cosas del publico; 70 px aguanta ~8 grados de error.
+        corte = horizonte + 2 - max(0, int(margen_horizonte))
         salida = []
         for c in cont:
             area = cv2.contourArea(c)
             if area < area_min:
+                if descartes is not None:
+                    descartes[f"{etiqueta}:area"] = descartes.get(f"{etiqueta}:area", 0) + 1
                 continue
             x, y, w, h = cv2.boundingRect(c)
-            # FILTRO 1: base por encima del horizonte -> no es pista.
-            if (y + h) <= horizonte + 2:
+            if (y + h) <= corte:
+                if descartes is not None:
+                    descartes[f"{etiqueta}:horizonte"] = descartes.get(f"{etiqueta}:horizonte", 0) + 1
                 continue
             salida.append((x, y, w, h, area))
         return salida
 
     def _pilares(self, mascara: np.ndarray, color: str, cfg: Dict[str, Any],
-                 horizonte: int) -> List[Deteccion]:
+                 horizonte: int, descartes: Dict[str, int]) -> List[Deteccion]:
         maxn = int(cfg.get("max_objetos", 4))
+        alto_img = mascara.shape[0]
         dets: List[Deteccion] = []
-        for x, y, w, h, area in self._contornos(mascara, cfg, horizonte):
+        for x, y, w, h, area in self._contornos(
+                mascara, cfg, horizonte, int(cfg.get("margen_horizonte_px", 70)),
+                descartes, color):
             # FILTRO 2: forma. Un pilar de 50x100 mm visto de frente da una
             # caja mas alta que ancha; de canto, casi cuadrada. Fuera de ese
             # margen es una mancha o dos pilares pegados.
             aspecto = h / max(1.0, float(w))
-            if not (float(cfg.get("aspecto_min", 0.7)) <= aspecto <=
-                    float(cfg.get("aspecto_max", 4.0))):
+            if not (float(cfg.get("aspecto_min", 0.6)) <= aspecto <=
+                    float(cfg.get("aspecto_max", 4.5))):
+                descartes[f"{color}:forma"] = descartes.get(f"{color}:forma", 0) + 1
                 continue
             llenado = area / max(1.0, float(w * h))
-            if llenado < float(cfg.get("llenado_min", 0.55)):
+            if llenado < float(cfg.get("llenado_min", 0.5)):
+                descartes[f"{color}:llenado"] = descartes.get(f"{color}:llenado", 0) + 1
                 continue
 
-            base_v = float(y + h)
-            # Si la caja toca el borde inferior, la base real esta FUERA del
-            # frame: la distancia por suelo saldria demasiado grande. En ese
-            # caso solo vale la medida por altura, y ademas ya sabemos que
-            # esta muy cerca.
-            base_cortada = (y + h) >= (mascara.shape[0] - 2)
-            d_base = float(self.geo.fila_a_distancia(base_v))
+            # ===== DISTANCIA: MANDA LA ALTURA APARENTE =====================
+            # Aqui hubo un fallo que costo una tarde de pista: se exigia que
+            # la distancia por BASE y la distancia por ALTURA coincidieran, y
+            # si no, se descartaba el pilar. El problema es que las dos NO
+            # dependen de lo mismo:
+            #
+            #   por altura -> solo necesita fy. Es exacta aunque el mastil de
+            #                 la camara este torcido.
+            #   por base   -> necesita fy, la altura de la camara Y la
+            #                 inclinacion. Con 4 grados de error de montaje,
+            #                 un pilar a 1.2 m se reporta a 4.9 m.
+            #
+            # O sea que el "desacuerdo" no era senal de deteccion falsa: era
+            # senal de calibracion imperfecta, que es el estado normal de un
+            # carro el dia de la competencia. El filtro borraba TODOS los
+            # pilares en silencio y el carro pasaba de largo sin mirar el
+            # color, que es exactamente lo que se vio en la pista.
+            #
+            # Ahora la altura es la medida PRIMARIA y la base solo corrobora:
+            # si coinciden, se promedia y sube la confianza; si no, se cree a
+            # la altura y se baja la confianza, pero el pilar NO se pierde.
             d_alto = self.geo.distancia_por_altura(h)
+            base_cortada = (y + h) >= (alto_img - 2)
+            d_base = (None if base_cortada
+                      else float(self.geo.fila_a_distancia(float(y + h))))
 
-            if base_cortada:
-                dist = d_alto
-                conf = 0.6
-            else:
-                # FILTRO 3: las dos medidas tienen que parecerse.
-                if not self.geo.coherente(d_base, d_alto):
-                    continue
-                dist = 0.5 * (d_base + d_alto)
-                conf = 1.0
-            if dist >= DIST_MAX_MM:
+            dist = d_alto
+            conf = 0.8
+            if d_base is not None:
+                if self.geo.coherente(d_base, d_alto):
+                    dist = 0.5 * (d_base + d_alto)
+                    conf = 1.0
+                else:
+                    conf = 0.5
+                    descartes["geometria_discrepa"] = descartes.get(
+                        "geometria_discrepa", 0) + 1
+
+            if not (40.0 <= dist < DIST_MAX_MM):
+                descartes[f"{color}:distancia"] = descartes.get(f"{color}:distancia", 0) + 1
                 continue
 
-            lat = float(self.geo.lateral_mm(x + w / 2.0, base_v))
+            # El lateral tambien sale de la distancia, no de la fila: asi el
+            # lado por el que hay que rebasar no depende de la inclinacion.
+            lat = self.geo.lateral_por_distancia(x + w / 2.0, dist)
             dets.append(Deteccion(color=color, x=x, y=y, w=w, h=h, area=area,
                                   dist_mm=dist, lat_mm=lat,
                                   dist_alto_mm=d_alto, confianza=conf))
@@ -240,14 +294,24 @@ class Detector:
         """Como _pilares pero sin filtro de forma: los delimitadores son
         tumbados (200 x 20 x 100 mm) y su caja cambia mucho con el angulo."""
         dets: List[Deteccion] = []
-        for x, y, w, h, area in self._contornos(mascara, cfg, horizonte):
-            base_v = float(y + h)
-            dist = float(self.geo.fila_a_distancia(base_v))
-            if dist >= DIST_MAX_MM:
+        alto_img = mascara.shape[0]
+        for x, y, w, h, area in self._contornos(
+                mascara, cfg, horizonte, int(cfg.get("margen_horizonte_px", 70))):
+            # Los delimitadores tambien miden 100 mm de alto, asi que valen las
+            # dos medidas. Se toma la MAS CERCANA de las dos a proposito:
+            # tocarlos termina la ronda (9.25.7), asi que equivocarse por
+            # creerlos mas cerca de lo que estan no cuesta nada, y al reves si.
+            d_alto = self.geo.distancia_por_altura(h)
+            base_cortada = (y + h) >= (alto_img - 2)
+            dist = d_alto
+            if not base_cortada:
+                dist = min(d_alto, float(self.geo.fila_a_distancia(float(y + h))))
+            if not (40.0 <= dist < DIST_MAX_MM):
                 continue
-            lat = float(self.geo.lateral_mm(x + w / 2.0, base_v))
+            lat = self.geo.lateral_por_distancia(x + w / 2.0, dist)
             dets.append(Deteccion(color=color, x=x, y=y, w=w, h=h, area=area,
-                                  dist_mm=dist, lat_mm=lat, confianza=1.0))
+                                  dist_mm=dist, lat_mm=lat,
+                                  dist_alto_mm=d_alto, confianza=1.0))
         dets.sort(key=lambda d: d.dist_mm)
         return dets[:int(cfg.get("max_objetos", 3))]
 

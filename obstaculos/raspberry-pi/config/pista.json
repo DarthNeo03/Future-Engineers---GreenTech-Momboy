@@ -13,7 +13,8 @@
     "derecha": 135,
     "grados_por_seg": 320,
     "rampa_motor": 10,
-    "ms_freno_inversion": 150
+    "ms_freno_inversion": 150,
+    "pwm_min_motor": 55
   },
   "geometria": {
     "alto_cam_mm": 125.0,
@@ -26,30 +27,33 @@
   },
   "traccion": {
     "mm_s_por_pct": 22.0,
-    "vmax_pwm": 210
+    "vmax_pwm": 240
   },
   "carril": {
     "ancho_carril_mm": 1000.0,
-    "dist_curva_mm": 700.0,
+    "dist_curva_mm": 820.0,
     "dist_recta_mm": 1800.0,
     "mirada_min_mm": 500.0,
     "kp_centrado": 55.0,
     "kp_rumbo": 70.0,
     "kd_giro": 0.28,
     "suavizado": 0.45,
-    "vel_recta": 42.0,
-    "vel_curva": 24.0,
-    "freno_por_volante": 0.35
+    "vel_recta": 58.0,
+    "vel_curva": 34.0,
+    "freno_por_volante": 0.28
   },
   "senales": {
     "activar_desde_mm": 1600.0,
-    "mandar_desde_mm": 750.0,
+    "mandar_desde_mm": 850.0,
+    "juzgar_lado_desde_mm": 700.0,
+    "usar_limite_seccion": true,
+    "linea_valida_desde_mm": 450.0,
     "ciego_desde_mm": 400.0,
     "dist_reversa_mm": 230.0,
     "margen_mm": 70.0,
     "morro_mm": 60.0,
     "mirada_min_mm": 420.0,
-    "ganancia": 1.9,
+    "ganancia": 2.1,
     "suavizado": 0.5,
     "holgura_linea_mm": 80.0,
     "largo_carro_mm": 200.0,
@@ -64,12 +68,12 @@
   "fsm": {
     "vueltas": 3,
     "arranque_s": 0.4,
-    "vel_arranque": 26.0,
-    "vel_senal": 32.0,
-    "vel_esquive": 30.0,
-    "vel_correccion": 22.0,
-    "vel_meta": 26.0,
-    "vel_reversa": 24.0,
+    "vel_arranque": 34.0,
+    "vel_senal": 44.0,
+    "vel_esquive": 42.0,
+    "vel_correccion": 28.0,
+    "vel_meta": 30.0,
+    "vel_reversa": 28.0,
     "dir_reversa": 70.0,
     "reversa_s": 0.9,
     "atasco_dist_mm": 260.0,
@@ -107,9 +111,10 @@
       "abrir": 3,
       "cerrar": 5,
       "area_min": 320,
-      "aspecto_min": 0.7,
-      "aspecto_max": 4.0,
-      "llenado_min": 0.55,
+      "aspecto_min": 0.6,
+      "aspecto_max": 4.5,
+      "llenado_min": 0.5,
+      "margen_horizonte_px": 70,
       "max_objetos": 4
     },
     "verde": {
@@ -130,9 +135,10 @@
       "abrir": 3,
       "cerrar": 5,
       "area_min": 320,
-      "aspecto_min": 0.7,
-      "aspecto_max": 4.0,
-      "llenado_min": 0.55,
+      "aspecto_min": 0.6,
+      "aspecto_max": 4.5,
+      "llenado_min": 0.5,
+      "margen_horizonte_px": 70,
       "max_objetos": 4
     },
     "magenta": {
@@ -153,6 +159,7 @@
       "abrir": 3,
       "cerrar": 5,
       "area_min": 400,
+      "margen_horizonte_px": 70,
       "max_objetos": 3
     },
     "negro": {

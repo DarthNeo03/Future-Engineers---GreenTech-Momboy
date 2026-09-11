@@ -107,17 +107,21 @@ def trama_ping(seq: int = 0) -> bytes:
 
 def trama_config(centro: int, izquierda: int, derecha: int,
                  grados_por_seg: int, rampa_por_tick: int,
-                 ms_freno_inversion: int) -> bytes:
+                 ms_freno_inversion: int, pwm_min: int = 0) -> bytes:
     """Los topes de compilacion del firmware SIEMPRE ganan: esto solo puede
-    estrechar el rango del servo, nunca ampliarlo."""
+    estrechar el rango del servo, nunca ampliarlo.
+
+    pwm_min es el PWM minimo con el que el motor de verdad rompe la inercia.
+    Por debajo, el driver calienta y el carro no se mueve."""
     return empaquetar(TIPO_CONFIG, struct.pack(
-        "<BBBBBB",
+        "<BBBBBBB",
         max(0, min(255, int(centro))),
         max(0, min(255, int(izquierda))),
         max(0, min(255, int(derecha))),
         max(1, min(255, int(grados_por_seg) // 10)),
         max(1, min(255, int(rampa_por_tick))),
-        max(0, min(255, int(ms_freno_inversion) // 10))))
+        max(0, min(255, int(ms_freno_inversion) // 10)),
+        max(0, min(255, int(pwm_min)))))
 
 
 def trama_cal(comando: int) -> bytes:

@@ -130,19 +130,28 @@ habitual de perder una tarde persiguiendo un fallo que estaba dos pasos antes.
    topes duros están en `seguridad.h` como constantes de compilación: el JSON
    solo puede estrechar ese rango, nunca ampliarlo.
 
-2. **Geometría de la cámara.** Medir con regla `alto_cam_mm` e
-   `inclinacion_deg`. Después resolver `fy_px` poniendo un pilar a una
-   distancia conocida: si el `selftest` de geometría pasa pero las distancias
-   de la ventana de depuración no coinciden con la regla, el error está aquí y
-   contamina todo lo demás.
+2. **Geometría de la cámara.** El parámetro que de verdad importa para los
+   pilares es **`fy_px`**: la distancia a una señal se deduce de su altura
+   aparente, y eso solo depende de la focal. Resuélvelo poniendo un pilar a
+   una distancia conocida.
+
+   `inclinacion_deg` y `alto_cam_mm` son secundarios a propósito: solo afectan
+   a la medida por base, que ahora únicamente corrobora. Un mástil torcido ya
+   no hace desaparecer los pilares — antes sí, y por eso el carro los
+   ignoraba. Si aun así quieres afinarlos, la ventana de `--ver` muestra las
+   dos distancias juntas: cuando se separan mucho, vuelve a medir el mástil.
 
 3. **Colores.** Con `--ver`, sobre el tapete de verdad y con la luz de verdad.
    Lo que importa no es que el pilar se vea entero: es que **nada más** se vea.
 
-4. **`mm_s_por_pct`.** Mandar 40 % durante 3 s en recta, medir la distancia,
+4. **`pwm_min_motor`.** Súbelo de 5 en 5 (arranca en 55) hasta que el carro
+   arranque limpio desde parado sobre el tapete, y ni uno más. Es lo que evita
+   que el motor zumbe sin moverse a bajo porcentaje.
+
+5. **`mm_s_por_pct`.** Mandar 40 % durante 3 s en recta, medir la distancia,
    dividir. De este número dependen el odómetro y la duración del compromiso.
 
-5. **`color_entrada_horario`.** Empujar el carro a mano por la pista en sentido
+6. **`color_entrada_horario`.** Empujar el carro a mano por la pista en sentido
    horario y mirar qué color reporta el primer cruce. **No se adivina**: de
    esto depende que el sentido de la ronda se deduzca bien.
 
@@ -166,6 +175,22 @@ Dicho antes de que lo descubra la pista:
   pero el `.ino` hay que abrirlo en el IDE para confirmarlo.
 - **Los rangos HSV del `pista.json` son un punto de partida**, no una
   calibración. Ninguna tabla de colores sobrevive a un pabellón nuevo.
+
+---
+
+## Si el carro vuelve a ignorar los pilares
+
+Mira **`descartes`** en la ventana de `--ver` (o en `piloto.ultimo`). Dice
+exactamente qué filtro se está comiendo los contornos:
+
+| Qué aparece | Qué significa | Qué tocar |
+|---|---|---|
+| `descartes` vacío y `pilares vistos: 0` | la máscara HSV no ve nada | rangos de `rojo` / `verde` en `pista.json` |
+| `rojo:area` | los ve, pero muy pequeños | baja `area_min` |
+| `rojo:horizonte` | caen por encima del horizonte | sube `margen_horizonte_px`, y remide `inclinacion_deg` |
+| `rojo:forma` / `rojo:llenado` | la mancha no parece un pilar | afloja `aspecto_min/max`, `llenado_min` |
+| `geometria_discrepa` alto | mástil torcido; **ya no descarta**, solo baja confianza | remide `inclinacion_deg` cuando puedas |
+| detecta pilares pero `esquive_peso` sigue a 0 | la puerta de sección los está tapando | pon `usar_limite_seccion: false` |
 
 ---
 

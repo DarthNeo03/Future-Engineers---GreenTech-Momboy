@@ -13,9 +13,14 @@ QUE SE DIBUJA Y PARA QUE SIRVE CADA COSA
   corredor de las ruedas    por donde va a pasar el carro si sigue recto. Si
                             un pilar cae dentro, hay que esquivarlo; si no,
                             no. Verlo dibujado ahorra discusiones.
-  cajas de los pilares      con la distancia por BASE y por ALTURA. Cuando las
-                            dos no se parecen, el filtro de coherencia lo
-                            tira: aqui se ve por que.
+  cajas de los pilares      con la distancia combinada y la de ALTURA. Si las
+                            dos se separan mucho, la inclinacion configurada no
+                            es la real: el pilar se sigue viendo, pero conviene
+                            volver a medir el mastil.
+  contador de descartes     cuantos contornos se tiraron y por que filtro. Es
+                            LA linea que hay que mirar cuando el carro parece
+                            ignorar los colores: dice si la mascara no ve nada
+                            o si un filtro se los esta comiendo.
   perfil de espacio libre   la curva de distancia por sector. Es literalmente
                             lo que come el seguidor de carril.
   punto de paso             el objetivo lateral del esquive. Si esta del lado
@@ -105,6 +110,8 @@ def dibujar(frame: np.ndarray, piloto: Any, esc: Escena) -> np.ndarray:
         f"yaw {u.get('yaw',0):>6}  vuelta {u.get('vueltas',0)}"
         f"  seccion {u.get('secciones',0)}  sentido {u.get('sentido',0)}",
     ]
+    lineas.append(f"pilares vistos: {u.get('n_pilares', 0)}"
+                  f"   descartes: {u.get('descartes') or 'ninguno'}")
     if u.get("magenta") is not None:
         lineas.append(f"MAGENTA cerca: empujon {u['magenta']}%")
     y = 18

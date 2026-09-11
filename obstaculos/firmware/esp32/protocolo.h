@@ -38,7 +38,7 @@ static const uint8_t VERSION_PROTOCOLO = 1;
 // ----------------------------------------------------------- tipos de trama
 static const uint8_t TIPO_MANDO  = 0x01;   // Pi -> ESP32,  6 bytes
 static const uint8_t TIPO_PING   = 0x02;   // Pi -> ESP32,  1 byte
-static const uint8_t TIPO_CONFIG = 0x03;   // Pi -> ESP32,  6 bytes
+static const uint8_t TIPO_CONFIG = 0x03;   // Pi -> ESP32,  7 bytes
 static const uint8_t TIPO_CAL    = 0x06;   // Pi -> ESP32,  1 byte
 static const uint8_t TIPO_TELE   = 0x81;   // ESP32 -> Pi,  8 bytes
 static const uint8_t TIPO_LOG    = 0x82;   // ESP32 -> Pi,  texto

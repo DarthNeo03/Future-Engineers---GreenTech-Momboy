@@ -78,7 +78,8 @@ class Piloto:
         s = self.cfg["servo"]
         self.enlace.configurar_servo(s["centro"], s["izquierda"], s["derecha"],
                                      s["grados_por_seg"], s["rampa_motor"],
-                                     s["ms_freno_inversion"])
+                                     s["ms_freno_inversion"],
+                                     s.get("pwm_min_motor", 0))
         time.sleep(0.1)
         # Poner a cero los contadores de linea: si hubo pruebas antes de la
         # ronda, el ESP32 arrastra cruces que no son de esta carrera.
@@ -164,6 +165,11 @@ class Piloto:
             "esquive_fase": maniobra.fase,
             "objetivo_mm": round(maniobra.objetivo_mm) if maniobra.peso > 0 else None,
             "pilar": maniobra.color,
+            "n_pilares": len(esc.pilares),
+            # Por que se descarto lo que no llego a pilar. Si el carro ignora
+            # los colores, esto dice si es que la mascara no ve nada o si es
+            # un filtro el que se los come.
+            "descartes": dict(esc.descartes),
             "frente_mm": round(sal_carril.dist_frente_mm),
             "izq_mm": round(sal_carril.dist_izq_mm),
             "der_mm": round(sal_carril.dist_der_mm),

@@ -267,6 +267,14 @@ void tareaRx(void *) {
             cfgServoNueva.gradosPorSeg = payload[3] * 10;
             cfgMotorNueva.rampaPorTick = payload[4];
             cfgMotorNueva.msFrenoAntesDeInvertir = payload[5] * 10;
+            // PWM MINIMO DE ARRANQUE (byte 7, opcional).
+            // Un PWM de 40 no mueve un motor de 500 rpm cargado con el peso
+            // del carro y la reduccion del diferencial: solo calienta el
+            // driver y hace zumbar el motor, y desde fuera parece que el
+            // carro "se traba". Por debajo de este valor se empuja al minimo
+            // util. Se lee condicionalmente para seguir aceptando la trama
+            // vieja de 6 bytes sin romper nada.
+            if (n >= 7) cfgMotorNueva.pwmMinArranque = payload[6];
             cfgPendiente = true;
             break;
           }

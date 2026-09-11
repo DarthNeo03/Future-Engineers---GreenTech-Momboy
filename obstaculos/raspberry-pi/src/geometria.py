@@ -135,6 +135,18 @@ class Geometria:
             return DIST_MAX_MM
         return min(DIST_MAX_MM, alto_real_mm * self._fy / float(alto_px))
 
+    def lateral_por_distancia(self, u, dist_mm: float) -> float:
+        """Lateral en mm a partir de una distancia YA conocida, sin pasar por
+        la fila de la imagen.
+
+        Es la version robusta de lateral_mm para objetos cuya distancia se
+        dedujo de su altura aparente: no depende ni de la inclinacion ni de la
+        altura de la camara, solo de fx. Un error de montaje de cinco grados
+        no la mueve, mientras que lateral_mm se va con el.
+        """
+        rango = math.hypot(max(1.0, float(dist_mm)), self._h)
+        return (float(u) - self._cx) / self._fx * rango
+
     def coherente(self, dist_base_mm: float, dist_alto_mm: float,
                   tolerancia: float = 0.45) -> bool:
         """Las dos medidas deben parecerse. Si no, el contorno no es un pilar
