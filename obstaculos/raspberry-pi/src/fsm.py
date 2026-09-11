@@ -19,9 +19,9 @@ cumplio el compromiso. Todo lo que pueda oscilar lleva tiempo minimo.
             ┌──────────────────────────────────┤
             │                                  │
             v                                  v
-         SENAL ──cerca──> ESQUIVE ──cumplido──> PISTA
-            │                 │
-            │lado malo        │
+         SENAL ──cerca──> ESQUIVE ──cumplido──> REINCORPORACION ──> PISTA
+            │                 │                      │
+            │lado malo        │                      └──otro pilar──> SENAL
             v                 │
         CORRECCION ──sin sitio──> REVERSA ──hueco──> SENAL
             │
@@ -29,6 +29,18 @@ cumplio el compromiso. Todo lo que pueda oscilar lleva tiempo minimo.
 
     PISTA ──3 vueltas + distancia──> META ──quieto──> FIN
     cualquiera ──enlace o camara caidos──> FALLO ──recuperado──> PISTA
+
+POR QUE HAY UN ESTADO ENTRE EL ESQUIVE Y LA PISTA. Porque lo que sale de un
+rebase no es un carro en pista: es un carro descolocado. Va pegado a un muro,
+apuntando hacia el, y por eso su camara ve el frente cerrado. Devolverlo
+directamente a PISTA hacia que el seguidor de carril leyera "frente cerrado =
+esquina", bajara el centrado al 25 % y aplicara el sesgo hacia el lado de las
+curvas: el giro brusco contra la pared que se veia en pista justo despues de
+un esquive limpio. REINCORPORACION es el estado que dice, explicitamente,
+"todavia me estoy recolocando": el carril no interpreta esquinas, la guardia
+anti-muro sigue mandando y solo se vuelve a PISTA cuando el carro esta de
+verdad centrado y enfilado. Un pilar nuevo lo interrumpe, claro — recolocarse
+no puede ser una excusa para ignorar la siguiente señal.
 
 ESPERA existe por el reglamento, no por comodidad: 9.11 obliga a que el
 vehiculo quede esperando el boton de inicio despues de encenderse, y 9.13 a
@@ -61,6 +73,7 @@ class Estado(str, Enum):
     PISTA = "pista"            # avanzando y centrandose en el carril
     SENAL = "senal"            # señal detectada, aproximando al punto de paso
     ESQUIVE = "esquive"        # rebasando a ciegas, compromiso en curso
+    REINCORPORACION = "reincorporacion"   # rebasado: volviendo al carril
     CORRECCION = "correccion"  # se iba por el lado malo, corrigiendo
     REVERSA = "reversa"        # sin radio para corregir: retroceder y repetir
     META = "meta"              # tres vueltas hechas, buscando donde parar
@@ -83,8 +96,9 @@ class Contexto:
     vel_mm_s: float = 0.0
     direccion_mezclada: float = 0.0
     velocidad_sugerida: float = 0.0
-    # Empujon anti-muro. Solo se usa en los estados donde el seguidor de
-    # carril esta callado (ESQUIVE, CORRECCION): ver carril.guardia_muro.
+    # Empujon anti-muro. Se usa en los estados donde el seguidor de carril
+    # esta callado o a medio mandar (ESQUIVE, CORRECCION, REINCORPORACION):
+    # ver carril.guardia_muro.
     guardia_muro: float = 0.0
 
 
@@ -154,6 +168,7 @@ class MaquinaEstados:
             Estado.PISTA: self._pista,
             Estado.SENAL: self._senal,
             Estado.ESQUIVE: self._esquive,
+            Estado.REINCORPORACION: self._reincorporacion,
             Estado.CORRECCION: self._correccion,
             Estado.REVERSA: self._reversa,
             Estado.META: self._meta,
@@ -225,8 +240,8 @@ class MaquinaEstados:
         # deja que el carril opine, tira del carro hacia el centro y la rueda
         # trasera barre el pilar.
         if c.maniobra.fase != FASE_COMPROMISO:
-            self._ir(Estado.PISTA, "compromiso cumplido")
-            return self._pista(c)
+            self._ir(Estado.REINCORPORACION, "compromiso cumplido")
+            return self._reincorporacion(c)
         v = min(c.velocidad_sugerida, float(self.cfg.get("vel_esquive", 30.0)))
         # La guardia sube con el progreso del adelantamiento: al principio el
         # pilar sigue al costado y corregir hacia el seria barrerlo con la
@@ -236,6 +251,56 @@ class MaquinaEstados:
         return Orden(vel=v, direccion=max(-100.0, min(100.0, direccion)),
                      armado=True, parada=False, centrar=False,
                      nota=f"compromiso {c.maniobra.color}")
+
+    def _reincorporacion(self, c: Contexto) -> Orden:
+        """Ya se rebaso el pilar. Ahora hay que volver al carril SIN inventarse
+        una curva.
+
+        El carro llega aqui descolocado hacia el lado por el que rebaso y con
+        el morro apuntando al muro. Mientras dura este estado el piloto le dice
+        al seguidor de carril `tras_pilar=True`, y con eso el carril deja de
+        leer el frente cerrado como una esquina: no aprende el sentido de las
+        curvas con estos grados, no aplica el sesgo de curva, y el centrado
+        recupera toda su autoridad. Encima se suma la guardia anti-muro, que
+        aqui sigue haciendo falta tanto como durante el compromiso.
+
+        Se sale cuando el carro esta centrado y enfilado —que es lo que de
+        verdad significa "reincorporado"— o cuando se acaba el tiempo, que es
+        la red para que un tramo raro no deje el estado enganchado.
+        """
+        if self._parada_por_vueltas(c):
+            return self._meta(c)
+        if self._detectar_atasco(c):
+            return self._entrar_reversa("atascado despues de rebasar")
+        # Un pilar nuevo manda sobre la reincorporacion: recolocarse no puede
+        # ser motivo para pasar de largo la señal siguiente.
+        if c.maniobra.fase == FASE_CORRECCION:
+            self._ir(Estado.CORRECCION, "lado incorrecto")
+            return self._correccion(c)
+        if c.maniobra.fase == FASE_COMPROMISO:
+            self._ir(Estado.ESQUIVE, "otro compromiso")
+            return self._esquive(c)
+        if c.maniobra.peso > 0.15:
+            self._ir(Estado.SENAL, f"pilar {c.maniobra.color}")
+            return self._senal(c)
+
+        centrado = abs(c.carril.err_centrado) < float(
+            self.cfg.get("reincorporado_err", 0.30))
+        enfilado = abs(c.carril.rumbo_hueco_deg) < float(
+            self.cfg.get("reincorporado_deg", 14.0))
+        agotado = self.en_estado_s > float(
+            self.cfg.get("reincorporacion_max_s", 1.2))
+        if (centrado and enfilado and not c.carril.muro_encima) or agotado:
+            self._ir(Estado.PISTA,
+                     "tiempo de reincorporacion" if agotado else "carril recuperado")
+            return self._pista(c)
+
+        v = min(c.velocidad_sugerida,
+                float(self.cfg.get("vel_reincorporacion", 34.0)))
+        direccion = c.direccion_mezclada + c.guardia_muro
+        return Orden(vel=v, direccion=max(-100.0, min(100.0, direccion)),
+                     armado=True, parada=False, centrar=False,
+                     nota="reincorporandose al carril")
 
     def _correccion(self, c: Contexto) -> Orden:
         if c.maniobra.pedir_reversa:

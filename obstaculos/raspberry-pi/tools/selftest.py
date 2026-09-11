@@ -193,6 +193,74 @@ def prueba_vueltas() -> None:
     c.evaluar_parada(3)
     check("para al llegar a la meta", c.e.listo_para_parar, c.e.motivo)
 
+    # ---------------- el sentido por PAR ORDENADO de la esquina -----------
+    # Una esquina tiene una linea naranja y una azul. El ORDEN en que se pisan
+    # solo depende del sentido de la marcha, asi que confirma —o corrige— lo
+    # que dijo la primera linea suelta.
+    cfg_v = {"color_entrada_horario": "naranja", "ventana_par_mm": 1500.0}
+
+    def rodar(cont, nar, azu, mm=600.0):
+        """Un cruce nuevo despues de rodar mm milimetros."""
+        cont.actualizar(sens_v(nar, azu), mm, 1.0)
+
+    def sens_v(nar, azu):
+        return proto.Sensores(estado=proto.S_TCS_OK, cruces_naranja=nar,
+                              cruces_azul=azu)
+
+    cp = Contador(cfg_v)
+    cp.actualizar(sens_v(0, 0), 0.0, 0.02)
+    rodar(cp, 1, 0, 800.0)                       # naranja: entrada
+    check("con una sola linea el sentido es provisional",
+          cp.e.sentido == +1 and not cp.e.sentido_firme, cp.e.origen_sentido)
+    rodar(cp, 1, 1, 700.0)                       # azul: cierra el par
+    check("el par naranja+azul confirma horario",
+          cp.e.sentido == +1 and cp.e.sentido_firme, cp.e.origen_sentido)
+
+    # EL CASO QUE JUSTIFICA TODO ESTO. Si el TCS se salta la linea de ENTRADA,
+    # la de salida se toma por la primera y el sentido sale INVERTIDO: el carro
+    # cree que las curvas van al otro lado y se estampa en la primera esquina
+    # de frente. El par lo corrige en cuanto se ve una esquina entera.
+    cm = Contador(cfg_v)
+    cm.actualizar(sens_v(0, 0), 0.0, 0.02)
+    rodar(cm, 0, 1, 800.0)          # se perdio la naranja: solo se ve la azul
+    check("perdida la linea de entrada, el sentido sale al reves",
+          cm.e.sentido == -1 and not cm.e.sentido_firme)
+    rodar(cm, 1, 1, 2500.0)         # esquina siguiente, ya completa: naranja...
+    rodar(cm, 1, 2, 700.0)          # ...y azul
+    check("el par de la esquina siguiente lo corrige",
+          cm.e.sentido == +1 and cm.e.sentido_firme, str(cm.e.sentido))
+
+    # Una linea suelta NO se empareja con la de la esquina de al lado: estan a
+    # metros de distancia, y un par inventado contesta al reves.
+    cv_ = Contador(cfg_v)
+    cv_.actualizar(sens_v(0, 0), 0.0, 0.02)
+    rodar(cv_, 0, 1, 800.0)                      # azul suelta
+    rodar(cv_, 1, 1, 3000.0)                     # naranja, media pista despues
+    check("una linea suelta caduca en vez de emparejarse",
+          not cv_.e.sentido_firme, cv_.e.origen_sentido)
+
+    # Ya firme, un par al reves NO invierte el sentido: en esta pista no hay
+    # media vuelta, asi que eso es un cruce mal leido y se anota como tal.
+    ci = Contador(cfg_v)
+    ci.actualizar(sens_v(0, 0), 0.0, 0.02)
+    rodar(ci, 1, 0, 800.0)
+    rodar(ci, 1, 1, 700.0)                       # firme: horario
+    rodar(ci, 1, 2, 2500.0)                      # azul...
+    rodar(ci, 2, 2, 700.0)                       # ...y naranja: par invertido
+    check("un par invertido no cambia el sentido ya firme",
+          ci.e.sentido == +1, str(ci.e.sentido))
+    check("pero queda anotado como incoherente",
+          ci.e.pares_incoherentes == 1, str(ci.e.pares_incoherentes))
+
+    # Si los dos colores suben en el MISMO ciclo, el orden no se sabe: los
+    # cruces cuentan, pero no forman par.
+    cs = Contador(cfg_v)
+    cs.actualizar(sens_v(0, 0), 0.0, 0.02)
+    cs.actualizar(sens_v(1, 1), 800.0, 1.0)
+    check("dos colores en el mismo ciclo no forman par",
+          not cs.e.sentido_firme and cs.e.cruces_totales == 2,
+          f"firme={cs.e.sentido_firme} cruces={cs.e.cruces_totales}")
+
     # El contador del ESP32 es de 8 bits: tiene que envolver sin perder cruces.
     c2 = Contador({})
     c2.actualizar(proto.Sensores(estado=proto.S_TCS_OK, cruces_naranja=254), 0, 0.02)
@@ -254,9 +322,45 @@ def prueba_fsm() -> None:
     check("en compromiso ignora el carril", abs(o.direccion - 44.0) < 1e-6,
           str(o.direccion))
 
-    # Se cumple el compromiso: vuelve a pista.
-    fsm.paso(ctx())
-    check("esquive -> pista", fsm.estado == Estado.PISTA)
+    # Se cumple el compromiso: NO se vuelve derecho a pista.
+    #
+    # EL FALLO DE PISTA. Lo que sale de un rebase es un carro pegado a un muro
+    # y apuntandolo, asi que su camara ve el frente cerrado. Devolviendolo a
+    # PISTA, el seguidor de carril leia eso como "esquina", bajaba el centrado
+    # al 25 % y empujaba hacia el lado de las curvas: giro brusco contra la
+    # pared justo despues de un esquive limpio.
+    o = fsm.paso(ctx(carril=SalidaCarril(dist_frente_mm=600.0,
+                                         err_centrado=-0.8,
+                                         rumbo_hueco_deg=-22.0,
+                                         muro_encima=True),
+                     direccion_mezclada=-60.0, guardia_muro=-30.0))
+    check("esquive -> reincorporacion", fsm.estado == Estado.REINCORPORACION)
+    check("reincorporandose, la guardia anti-muro suma",
+          o.direccion < -60.0, f"dir={o.direccion}")
+
+    # Mientras no este centrado y enfilado, se queda reincorporandose.
+    fsm.paso(ctx(carril=SalidaCarril(dist_frente_mm=600.0, err_centrado=-0.8,
+                                     rumbo_hueco_deg=-22.0, muro_encima=True)))
+    check("sigue reincorporandose si aun va cruzado",
+          fsm.estado == Estado.REINCORPORACION, fsm.estado.value)
+
+    # Un pilar nuevo manda sobre la reincorporacion: recolocarse no puede ser
+    # motivo para pasar de largo la señal siguiente.
+    m3 = Maniobra(direccion=-20.0, peso=0.7, fase=FASE_APROXIMACION,
+                  color="verde", lado=-1, dist_mm=800.0)
+    fsm.paso(ctx(maniobra=m3, direccion_mezclada=-20.0,
+                 carril=SalidaCarril(dist_frente_mm=600.0, err_centrado=-0.8,
+                                     rumbo_hueco_deg=-22.0, muro_encima=True)))
+    check("reincorporacion -> senal con otro pilar",
+          fsm.estado == Estado.SENAL, fsm.estado.value)
+
+    # Y centrado y enfilado, ahora si: pista.
+    fsm.paso(ctx(maniobra=Maniobra(direccion=44.0, peso=1.0,
+                                   fase=FASE_COMPROMISO, color="rojo")))
+    fsm.paso(ctx(carril=SalidaCarril(dist_frente_mm=1900.0, err_centrado=0.05,
+                                     rumbo_hueco_deg=2.0)))
+    check("reincorporado -> pista", fsm.estado == Estado.PISTA,
+          fsm.estado.value)
 
     # Perder el enlace corta de inmediato, desde cualquier estado.
     o = fsm.paso(ctx(enlace_ok=False))
@@ -393,6 +497,42 @@ def _escena_pista(muro_izq_px=None, muro_der_px=None, fondo_px=150):
     return img
 
 
+def _escena_corredor(lat_izq_mm=500.0, lat_der_mm=500.0, frente_mm=6000.0,
+                     geo=None):
+    """Fotograma sintetico con la geometria DE VERDAD, en milimetros.
+
+    POR QUE HACE FALTA OTRO GENERADOR TENIENDO _escena_pista. Porque el otro
+    dibuja los muros en pixeles, como rectangulos que llegan hasta la fila
+    430, y eso corresponde a un muro cuya base pasa a ~150 mm del carro: no es
+    un carril de 1000 mm, es un pasillo por el que el carro no cabria. Sirve
+    para preguntar "de que lado esta el hueco", que es para lo que se
+    escribio, pero no para nada que dependa de la separacion lateral en
+    milimetros — y el centrado, la guardia anti-muro y el aviso de muro encima
+    dependen exactamente de eso.
+
+    Aqui cada muro lateral es la recta x = +-L proyectada punto a punto con la
+    misma geometria que usa el piloto, asi que "500 mm" significa 500 mm.
+    """
+    import cv2
+    import numpy as np
+    from src.config import DEFECTOS
+    from src.geometria import Geometria
+    geo = geo or Geometria(dict(DEFECTOS["geometria"]), 640, 480)
+    img = np.full((480, 640, 3), 235, np.uint8)
+    hz = geo.fila_horizonte()
+    for lat, signo in ((lat_izq_mm, -1), (lat_der_mm, +1)):
+        if lat is None:
+            continue
+        for y in np.arange(80.0, min(frente_mm, 6000.0), 4.0):
+            u, v = geo.suelo_a_pixel(signo * lat, float(y))
+            if 0 <= u < 640 and hz < v < 480:
+                cv2.line(img, (u, v), (u, max(hz, v - 400)), (30, 30, 30), 2)
+    if frente_mm < 6000.0:
+        v = geo.distancia_a_fila(frente_mm)
+        cv2.rectangle(img, (0, max(hz, v - 400)), (640, v), (30, 30, 30), -1)
+    return img
+
+
 def prueba_carril() -> None:
     print("seguimiento de carril")
     from src.config import DEFECTOS
@@ -443,12 +583,29 @@ def prueba_carril() -> None:
     check("pegado al muro derecho: corrige a la izquierda", s.direccion < -8,
           f"dir={s.direccion:.1f} %  izq={s.lat_izq_mm}  der={s.lat_der_mm}")
 
+    # --- un muro DE FRENTE no es un muro al costado --------------------
+    # Carro centrado en un carril de 1000 mm con una esquina a 700 mm. Antes
+    # el muro frontal se colaba en la medida lateral —ocupa todos los rumbos,
+    # y su sector a 4 grados del morro da x = 700*sen(4) = 49 mm— y el carro
+    # creia tener las dos paredes a 46 mm en CADA esquina. Con eso el centrado
+    # respondia a la esquina en vez de a los costados y la guardia anti-muro
+    # empujaba sin tener nada al lado.
+    esquina = _escena_corredor(500.0, 500.0, 700.0)
+    s = conducir(esquina)
+    check("esquina de frente: no se inventa muros al costado",
+          s.lat_izq_mm is None and s.lat_der_mm is None,
+          f"izq={s.lat_izq_mm} der={s.lat_der_mm}")
+    check("esquina de frente: no cree tener el muro encima",
+          not s.muro_encima)
+    recta_mm = conducir(_escena_corredor(500.0, 500.0))
+    check("recta de 1000 mm: mide ~400 mm a cada lado",
+          recta_mm.lat_izq_mm is not None and 330 < recta_mm.lat_izq_mm < 470,
+          f"izq={recta_mm.lat_izq_mm} der={recta_mm.lat_der_mm}")
+
     # --- la pista del sentido sirve cuando el hueco no decide ----------
-    # Esquina de frente: el muro tapa casi todo y el hueco queda centrado.
-    centrado = _escena_pista(muro_izq_px=300, muro_der_px=340, fondo_px=200)
-    s0 = conducir(centrado)
-    s_h = conducir(centrado, sentido_pista=+1)    # horario -> curvas derecha
-    s_a = conducir(centrado, sentido_pista=-1)    # antihorario -> izquierda
+    s0 = conducir(esquina)
+    s_h = conducir(esquina, sentido_pista=+1)     # horario -> curvas derecha
+    s_a = conducir(esquina, sentido_pista=-1)     # antihorario -> izquierda
     check("hueco indeciso sin sentido: no se inventa un giro",
           abs(s0.direccion) < abs(s_h.direccion),
           f"sin={s0.direccion:.1f} con={s_h.direccion:.1f}")
@@ -457,21 +614,60 @@ def prueba_carril() -> None:
     check("antihorario: se resuelve a la izquierda",
           s_a.direccion < -25, f"dir={s_a.direccion:.1f} %")
 
+    # --- EL FALLO DE PISTA: el giro sin sentido justo tras rebasar -------
+    # El carro acaba de rebasar un pilar por la DERECHA y queda a 150 mm del
+    # muro derecho, apuntandolo. El frente esta cerrado, pero no por una
+    # esquina. En una ronda horaria el sesgo de curva empujaba ademas hacia la
+    # derecha, o sea HACIA la pared: medido, el volante se quedaba en -12 %
+    # —un empujon simbolico— y el carro terminaba raspando el muro.
+    tras = _escena_corredor(850.0, 150.0, 600.0)
+    s_mal = conducir(tras, sentido_pista=+1)
+    check("tras rebasar: se da cuenta de que tiene el muro encima",
+          s_mal.muro_encima and s_mal.lat_der_mm is not None and
+          s_mal.lat_der_mm < 240, f"der={s_mal.lat_der_mm}")
+    check("tras rebasar: el sesgo NO empuja hacia el muro",
+          s_mal.sesgo == 0.0, f"sesgo={s_mal.sesgo}")
+    check("tras rebasar: se aparta de verdad del muro derecho",
+          s_mal.direccion < -40, f"dir={s_mal.direccion:.1f} %")
+
+    # Y con tras_pilar el sesgo se calla aunque hubiera sitio: ahi el frente
+    # cerrado es el muro al que se apunta, no una curva que anticipar.
+    s_tp = conducir(tras, sentido_pista=+1, tras_pilar=True)
+    check("tras_pilar deja mudo al sesgo de curva", s_tp.sesgo == 0.0,
+          f"sesgo={s_tp.sesgo}")
+
     # --- el sentido de las curvas se aprende solo ----------------------
     from src.geometria import Geometria as G
     geo = G(dict(DEFECTOS["geometria"]), 640, 480)
     det = Detector(DEFECTOS["colores"], geo)
     seg = SeguidorCarril(dict(DEFECTOS["carril"]))
     curva = det.procesar(_escena_pista(muro_izq_px=340))       # hueco derecha
-    recta = det.procesar(_escena_pista(muro_izq_px=90, muro_der_px=550,
-                                       fondo_px=120))
+    recta_esc = det.procesar(_escena_pista(muro_izq_px=90, muro_der_px=550,
+                                           fondo_px=120))
     check("antes de la primera curva no sabe el sentido",
           seg.sentido_curva == 0)
     for _ in range(10):
         seg.paso(curva)
-    seg.paso(recta)                                # salir de la curva
+    seg.paso(recta_esc)                            # salir de la curva
     check("tras una curva a la derecha, aprende que giran a la derecha",
           seg.sentido_curva == 1, str(seg.sentido_curva))
+
+    # PERO NO APRENDE DE UN ESQUIVE. Si los ciclos de despues de rebasar
+    # entraran en el promedio, el sentido "aprendido" seria el del ultimo
+    # esquive, y a partir de ahi el sesgo empujaria hacia ese lado en TODAS
+    # las esquinas de la ronda: una vuelta perdida por un dato sucio.
+    seg2 = SeguidorCarril(dict(DEFECTOS["carril"]))
+    for _ in range(10):
+        seg2.paso(curva, tras_pilar=True)
+    seg2.paso(recta_esc, tras_pilar=True)
+    check("un esquive no ensena el sentido de las curvas",
+          seg2.sentido_curva == 0, str(seg2.sentido_curva))
+    # Y despues, con datos limpios, sigue aprendiendo igual.
+    for _ in range(10):
+        seg2.paso(curva)
+    seg2.paso(recta_esc)
+    check("con datos limpios vuelve a aprender", seg2.sentido_curva == 1,
+          str(seg2.sentido_curva))
 
     # --- el gyro amortigua, no manda ----------------------------------
     quieto = conducir(_escena_pista(muro_der_px=300), gz=0.0)
@@ -539,14 +735,56 @@ def prueba_compromiso() -> None:
     check("cruzar +-180 no dispara un volantazo", abs(m_env.direccion) < 15,
           f"dir={m_env.direccion:.1f}  err={m_env.err_rumbo_deg:.1f} deg")
 
-    # Sin MPU no hay rumbo: el volante se suelta poco a poco, nunca se congela.
+    # --- salida del compromiso: devolver el carro ALINEADO --------------
+    # Sostener el rumbo congelado hasta el ultimo instante resuelve el
+    # adelantamiento y crea el problema siguiente: ese rumbo apunta hacia el
+    # lado por el que se rebaso, asi que el carril recibe un carro cruzado y
+    # con el muro delante, y lo que hace entonces es el giro brusco que se
+    # veia en pista. Pasada la mitad del compromiso, el objetivo se lleva al
+    # rumbo del PASILLO, que aqui esta 20 grados a la izquierda.
+    import time as _tt
+    t0 = _tt.time()
     esq = Esquivador(dict(DEFECTOS["senales"]), 130.0)
-    for d in (900.0, 700.0, 500.0, 380.0):
-        m = esq.paso(escena("verde", d), {}, False, 900.0, yaw=None)
-    sin_mpu = [abs(esq.paso(Escena(), {}, False, 900.0, yaw=None).direccion)
-               for _ in range(3)]
+    for i, d in enumerate((900.0, 700.0, 500.0, 380.0)):
+        esq.paso(escena("verde", d), {}, False, 900.0, yaw=0.0,
+                 ahora=t0 + i * 0.03)
+    # dur = (380 + 200 + 120) / 900 = 0.78 s. A 0.1 s (12 %) aun se sostiene
+    # el rumbo congelado; a 0.7 s (90 %) ya se mira al pasillo.
+    pronto = esq.paso(Escena(), {}, False, 900.0, yaw=0.0,
+                      rumbo_hueco_deg=-20.0, ahora=t0 + 0.12 + 0.1)
+    tarde = esq.paso(Escena(), {}, False, 900.0, yaw=0.0,
+                     rumbo_hueco_deg=-20.0, ahora=t0 + 0.12 + 0.70)
+    check("al principio del compromiso manda el rumbo congelado",
+          not pronto.saliendo and abs(pronto.err_rumbo_deg) < 2.0,
+          f"err={pronto.err_rumbo_deg:.1f} saliendo={pronto.saliendo}")
+    check("al final del compromiso se reenfila hacia el pasillo",
+          tarde.saliendo and tarde.err_rumbo_deg < -12.0,
+          f"err={tarde.err_rumbo_deg:.1f} saliendo={tarde.saliendo}")
+    check("y eso se traduce en volante hacia el pasillo, no hacia el muro",
+          tarde.direccion < -20.0, f"dir={tarde.direccion:.1f}")
+
+    # Sin MPU no hay rumbo que sostener: se ENDEREZA, y rapido.
+    #
+    # ESTA PRUEBA ESTABA ROTA y tapaba el fallo. Llamaba tres veces seguidas
+    # al esquivador y comparaba la primera con la ultima; como entre las tres
+    # llamadas pasan microsegundos y el desvanecido iba por fraccion del
+    # compromiso, las tres daban 69.3 y la prueba fallaba sin explicar por
+    # que. Con el reloj inyectado se mide lo que de verdad importa: cuanto
+    # tarda el volante en volver a cero. Un volante fijo no traza una recta,
+    # traza un arco — y ese arco es el giro contra la pared.
+    esq = Esquivador(dict(DEFECTOS["senales"]), 130.0)
+    for i, d in enumerate((900.0, 700.0, 500.0, 380.0)):
+        m = esq.paso(escena("verde", d), {}, False, 900.0, yaw=None,
+                     ahora=t0 + i * 0.03)
+    al_armar = abs(m.direccion)
+    sin_mpu = [abs(esq.paso(Escena(), {}, False, 900.0, yaw=None,
+                            ahora=t0 + 0.12 + t).direccion)
+               for t in (0.05, 0.20, 0.40)]
     check("sin MPU el volante decae en vez de congelarse",
-          sin_mpu[0] > sin_mpu[-1], str([round(v, 1) for v in sin_mpu]))
+          al_armar > sin_mpu[0] > sin_mpu[1] > sin_mpu[2],
+          f"al armar {al_armar:.1f} -> {[round(v, 1) for v in sin_mpu]}")
+    check("sin MPU las ruedas quedan rectas antes de medio segundo",
+          sin_mpu[-1] < 1e-6, f"{sin_mpu[-1]:.1f}")
 
     # --- guardia anti-muro --------------------------------------------
     cfg = DEFECTOS["carril"]

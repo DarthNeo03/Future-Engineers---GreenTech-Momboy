@@ -91,6 +91,11 @@ DEFECTOS: Dict[str, Any] = {
         "cono_frente_deg": 12.0,
         "ventana_centrado_mm": 1500.0,  # hasta donde se miran los muros para
                                         #   medir la separacion lateral
+        # Y hasta que fraccion de lo que hay DELANTE. Un muro frontal aparece
+        # en todos los rumbos, asi que sus sectores centrales dan un lateral
+        # ridiculo y el carro se cree con la pared encima en cada esquina. Solo
+        # es costado lo que esta mas cerca que el frente.
+        "frac_frente_lateral": 0.85,
         "rumbo_max_deg": 30.0,          # rumbo que satura el termino a 1.0
         # SESGO DE CURVA. De frente a una esquina el hueco puede quedar casi
         # centrado y el carro se iba recto contra el muro. Si ya se sabe hacia
@@ -136,6 +141,17 @@ DEFECTOS: Dict[str, Any] = {
         # sobre el RUMBO (yaw del MPU), no sobre el volante.
         "kp_rumbo_compromiso": 2.6,
         "kd_rumbo_compromiso": 0.22,
+        # SALIDA DEL COMPROMISO. Fraccion del compromiso a partir de la cual
+        # el rumbo objetivo deja de ser el congelado y se lleva hacia el del
+        # pasillo libre. Antes de esto el pilar sigue al costado y volver
+        # hacia el lo barreria con la cola; despues ya quedo atras y lo que
+        # importa es no salir del rebase apuntando al muro. Subirlo = salir
+        # mas tarde y mas cruzado; bajarlo = arriesgarse a rozar el pilar.
+        "salida_desde": 0.55,
+        # Sin MPU no hay rumbo que sostener: en cuantos segundos se sueltan
+        # las ruedas. No es fraccion del compromiso a proposito — un volante
+        # fijo traza un arco, y el arco no espera a que acabe la maniobra.
+        "soltar_sin_mpu_s": 0.35,
         "suavizado": 0.5,
         "holgura_linea_mm": 80.0,     # margen al descartar pilares de la
                                       #   seccion siguiente
@@ -150,6 +166,12 @@ DEFECTOS: Dict[str, Any] = {
         # HORARIO. Se comprueba UNA VEZ en la pista de practica empujando el
         # carro a mano y mirando la telemetria. No se adivina.
         "color_entrada_horario": "naranja",
+        # Pista que puede haber entre las DOS lineas de una misma esquina. La
+        # seccion de curva mide 1000 mm; con 1500 sobra margen para el 15 % de
+        # error del odometro y sigue sin llegar a la esquina siguiente, que
+        # esta a varios metros. Si se pasara, una linea suelta se emparejaria
+        # con la de la curva de al lado y el orden saldria invertido.
+        "ventana_par_mm": 1500.0,
         "margen_meta_mm": 120.0,
         # Cruces que caben de verdad entre dos ciclos de la Pi. Por encima no
         # son lineas: es el contador del ESP32 reiniciado o un salto de
@@ -167,6 +189,13 @@ DEFECTOS: Dict[str, Any] = {
         "vel_senal": 44.0,
         "vel_esquive": 42.0,
         "vel_correccion": 28.0,
+        # REINCORPORACION: el tramo entre "ya rebase" y "ya estoy en carril".
+        # Se va despacio a proposito: es donde hay que recolocarse y donde
+        # aparece el pilar siguiente, y las dos cosas piden frames por metro.
+        "vel_reincorporacion": 34.0,
+        "reincorporacion_max_s": 1.2,   # red por si no se llega a centrar
+        "reincorporado_err": 0.30,      # error de centrado que ya vale
+        "reincorporado_deg": 14.0,      # rumbo al hueco que ya vale
         "vel_meta": 30.0,
         "vel_reversa": 28.0,
         "dir_reversa": 70.0,

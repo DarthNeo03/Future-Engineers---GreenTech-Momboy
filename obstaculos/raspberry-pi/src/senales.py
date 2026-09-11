@@ -42,7 +42,16 @@ LOS TRES ACTOS DE UN REBASE
      pilar— pero NO el todo: queda la guardia anti-muro de carril.py, que se
      calla mientras haya sitio y solo habla cuando de verdad no lo hay.
 
-  3. SALIDA. Cumplido el compromiso, vuelve a mandar el seguidor de carril.
+  3. SALIDA. El compromiso no termina soltando el carro donde este: TERMINA
+     DEVOLVIENDOLO ALINEADO. En la primera version se sostenia el rumbo
+     congelado hasta el ultimo instante y despues se le pasaba el mando al
+     carril; el problema es que ese rumbo congelado apunta hacia el lado por
+     el que se rebaso, asi que el carril recibia un carro cruzado y a un palmo
+     del muro, y lo que veia delante era pared. Ahora, pasada la mitad del
+     compromiso —cuando el pilar ya quedo atras y volver hacia el no barre
+     nada—, el rumbo objetivo se lleva poco a poco del rumbo congelado al del
+     PASILLO LIBRE que ve el carril. El carro sale del rebase mirando por donde
+     tiene que seguir, que es lo unico que evita el volantazo de despues.
 
 LO QUE ESTA MAS ALLA DE LA LINEA DEL PISO NO ES DE ESTA RECTA
 Las lineas naranja y azul marcan el limite de seccion. Un pilar que se ve por
@@ -101,6 +110,7 @@ class Maniobra:
     rumbo_objetivo: Optional[float] = None  # yaw que se sostiene al adelantar
     err_rumbo_deg: float = 0.0
     progreso: float = 0.0                   # 0..1 dentro del compromiso
+    saliendo: bool = False                  # ya reenfilando hacia el pasillo
     info: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -165,8 +175,19 @@ class Esquivador:
     # ---------------------------------------------------------------- paso
     def paso(self, esc: Escena, lineas_mm: Dict[str, Optional[float]],
              en_curva: bool, vel_mm_s: float,
-             yaw: Optional[float] = None, gz: float = 0.0) -> Maniobra:
-        ahora = time.time()
+             yaw: Optional[float] = None, gz: float = 0.0,
+             rumbo_hueco_deg: float = 0.0,
+             ahora: Optional[float] = None) -> Maniobra:
+        """rumbo_hueco_deg: hacia donde ve el carril el pasillo libre, en
+        grados relativos al morro. Solo se usa en la SALIDA del compromiso,
+        para devolver el carro alineado en vez de cruzado.
+
+        ahora: reloj inyectable. Existe para las pruebas: el compromiso dura
+        menos de dos segundos y sin poder adelantar el reloj no hay forma de
+        comprobar en un selftest lo que hace al final — que es justamente
+        donde estaba el fallo.
+        """
+        ahora = time.time() if ahora is None else float(ahora)
         m = Maniobra()
         objetivo = self.elegir(esc, lineas_mm, en_curva)
 
@@ -195,16 +216,45 @@ class Esquivador:
             # direccion que llevaba, que es lo que hace falta para adelantar
             # al pilar sin barrerlo con la rueda trasera.
             if self._comp_yaw is not None and yaw is not None:
-                err = _envolver(self._comp_yaw - yaw)
-                m.rumbo_objetivo = self._comp_yaw
+                # SALIDA: del rumbo congelado al rumbo del pasillo.
+                #
+                # Sostener el rumbo congelado hasta el ultimo instante resuelve
+                # el adelantamiento y crea el problema siguiente: ese rumbo
+                # apunta hacia el lado por el que se rebaso, asi que al acabar
+                # el compromiso el carro le llega al seguidor de carril
+                # cruzado y con el muro delante. Pasada `salida_desde` del
+                # compromiso el pilar ya quedo atras —volver hacia el no barre
+                # nada con la cola— y el objetivo se lleva poco a poco hasta
+                # el rumbo del pasillo libre. Con peso 1 al final, el error de
+                # rumbo ES el rumbo del hueco: el relevo con el carril queda
+                # sin escalon.
+                objetivo_yaw = self._comp_yaw
+                desde = float(self.cfg.get("salida_desde", 0.55))
+                if m.progreso > desde:
+                    w = min(1.0, (m.progreso - desde) / max(1e-3, 1.0 - desde))
+                    hacia_pasillo = yaw + float(rumbo_hueco_deg)
+                    objetivo_yaw = self._comp_yaw + w * _envolver(
+                        hacia_pasillo - self._comp_yaw)
+                    m.saliendo = True
+                err = _envolver(objetivo_yaw - yaw)
+                m.rumbo_objetivo = objetivo_yaw
                 m.err_rumbo_deg = err
                 direccion = (float(self.cfg.get("kp_rumbo_compromiso", 2.6)) * err
                              - float(self.cfg.get("kd_rumbo_compromiso", 0.22)) * gz)
             else:
-                # Sin MPU no hay rumbo que sostener. Lo siguiente mejor es
-                # soltar el volante progresivamente: sigue sin volver hacia el
-                # pilar, pero deja de cerrar el arco.
-                direccion = self._comp_dir * (1.0 - m.progreso)
+                # SIN MPU NO HAY RUMBO QUE SOSTENER, y entonces lo unico
+                # honesto es enderezar. Antes el volante se desvanecia a lo
+                # largo de TODO el compromiso, o sea que se mantenia casi
+                # entero durante la primera mitad: un volante fijo no traza
+                # una recta, traza un arco, y ese arco es el giro hacia el
+                # lado del esquive que terminaba contra la pared. Ahora se
+                # suelta en `soltar_sin_mpu_s`, tiempo de reloj y no fraccion
+                # del compromiso, y el resto del adelantamiento se hace con
+                # las ruedas rectas: sin rumbo que seguir, recto es lo mejor
+                # que se puede hacer, y la guardia anti-muro sigue despierta.
+                soltar = max(0.05, float(self.cfg.get("soltar_sin_mpu_s", 0.35)))
+                transcurrido = m.progreso * self._comp_dur
+                direccion = self._comp_dir * max(0.0, 1.0 - transcurrido / soltar)
                 m.info["sin_mpu"] = True
 
             m.direccion = float(np.clip(direccion, -100.0, 100.0))
@@ -316,6 +366,16 @@ class Esquivador:
             "angulo_deg": round(ang, 1),
         }
         return m
+
+    # ------------------------------------------------------------ estado
+    def ocupado(self) -> bool:
+        """Hay un rebase en marcha (aproximacion, compromiso o correccion).
+
+        Lo pregunta el piloto para avisar al seguidor de carril con
+        `tras_pilar`: mientras esto sea cierto, lo que cierra el frente puede
+        ser el pilar o el muro al que el carro apunta, no una esquina.
+        """
+        return self._fase != FASE_NADA
 
     # ------------------------------------------------------------ memoria
     def memoria_viva(self, ahora: Optional[float] = None) -> bool:

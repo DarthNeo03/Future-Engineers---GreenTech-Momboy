@@ -20,11 +20,30 @@ la que permite contar bien sin ACK ni retransmisiones.
 
 DE QUE LADO SE CORRE: SE APRENDE, NO SE CONFIGURA
 El reglamento (9.3) sortea el sentido de la marcha antes de cada ronda, y
-9.4/9.9 prohiben meterle esa informacion al programa a mano. Asi que el
-sentido se deduce del PRIMER cruce: el color de la linea que se pisa primero
-dice hacia donde se esta girando. Cual de los dos colores corresponde a
-horario depende de como este puesto el sensor y del tapete, asi que es un
-parametro que se comprueba UNA VEZ en la pista de practica y se deja fijo.
+9.4/9.9 prohiben meterle esa informacion al programa a mano. Asi que hay que
+deducirlo de la pista, y la pista lo dice de dos maneras:
+
+  a) PROVISIONAL, con la PRIMERA linea que se pisa. Llega enseguida —hace
+     falta antes de la primera curva— pero se apoya en que esa linea sea de
+     verdad la de ENTRADA a la curva. Si el TCS se salta la naranja y cuenta
+     la azul, la respuesta sale del reves.
+
+  b) FIRME, con el PAR ORDENADO de una esquina entera. Cada curva tiene una
+     linea naranja y una azul, y el ORDEN en que se pisan solo depende del
+     sentido de la marcha: no hay forma de cruzarlas al reves corriendo en el
+     mismo sentido. Una esquina a la que le falto una linea no forma par y no
+     contesta nada, que es justo lo que se quiere: mas vale seguir con la
+     respuesta provisional que cambiarla por una peor.
+
+Las dos salen del MISMO parametro, `color_entrada_horario`: el color que se
+pisa al entrar en curva corriendo en horario. De ahi salen tanto la respuesta
+provisional como el orden del par (horario = entrada + el otro color). Es un
+dato del tapete y del montaje del sensor, no del sorteo: se comprueba UNA VEZ
+en la pista de practica empujando el carro a mano, y se deja fijo.
+
+EL SENTIDO NO CAMBIA A MITAD DE RONDA. Una vez firme no se vuelve a tocar: si
+un par posterior sale al reves, lo que hay es un cruce mal leido, no un carro
+que se dio la vuelta. Se anota como incoherencia en la telemetria y se sigue.
 
 DONDE PARAR
 La seccion de meta es la de arranque. El carro no empieza pegado a una linea,
@@ -38,7 +57,7 @@ zona de arranque mide 500 mm de largo: sobra margen.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from . import protocolo as proto
 
@@ -49,6 +68,9 @@ CRUCES_POR_VUELTA = 4         # cruces de la linea de ENTRADA a curva
 @dataclass
 class EstadoVueltas:
     sentido: int = 0                  # +1 horario, -1 antihorario, 0 sin saber
+    sentido_firme: bool = False       # confirmado por un par de esquina entero
+    origen_sentido: str = ""          # "primera linea" | "par de esquina"
+    pares_incoherentes: int = 0       # pares que contradicen al sentido firme
     vueltas: int = 0
     secciones: int = 0
     cruces_totales: int = 0
@@ -72,6 +94,8 @@ class Contador:
         self._prev_naranja = 0
         self._prev_azul = 0
         self._color_entrada = ""      # el color que se pisa al ENTRAR en curva
+        # Emparejador de esquinas: (color de la primera linea, odometro).
+        self._par_abierto: Optional[Tuple[str, float]] = None
         self.e = EstadoVueltas()
 
     # ------------------------------------------------------------------
@@ -140,14 +164,23 @@ class Contador:
             return e
 
         # --- procesar cada cruce nuevo ------------------------------------
+        # SI LOS DOS COLORES SUBEN EN EL MISMO CICLO, EL ORDEN NO SE SABE.
+        # Los cruces llegan como contadores acumulados, no como eventos con
+        # marca de tiempo: dentro de un ciclo se procesan naranja y luego azul
+        # porque hay que elegir un orden, no porque ese sea el orden real. Las
+        # dos lineas de una esquina estan a ~1 m, asi que esto solo pasa tras
+        # una perdida de tramas — y justo ahi es donde un par inventado daria
+        # un sentido invertido. Se cuentan los cruces, pero no forman par.
+        orden_fiable = not (d_nar > 0 and d_azu > 0)
         for _ in range(d_nar):
-            self._cruce("naranja", e)
+            self._cruce("naranja", e, orden_fiable)
         for _ in range(d_azu):
-            self._cruce("azul", e)
+            self._cruce("azul", e, orden_fiable)
         return e
 
     # ------------------------------------------------------------------
-    def _cruce(self, color: str, e: EstadoVueltas) -> None:
+    def _cruce(self, color: str, e: EstadoVueltas,
+               orden_fiable: bool = True) -> None:
         e.cruces_totales += 1
 
         # --- primer cruce: fija el sentido y el color de entrada ----------
@@ -155,8 +188,12 @@ class Contador:
             self._color_entrada = color
             color_horario = str(self.cfg.get("color_entrada_horario", "naranja"))
             e.sentido = +1 if color == color_horario else -1
+            e.origen_sentido = "primera linea"
             e.dist_arranque_a_primer_cruce_mm = e.dist_mm
             e.info["sentido"] = "horario" if e.sentido > 0 else "antihorario"
+
+        # --- y el par ordenado de la esquina lo CONFIRMA ------------------
+        self._emparejar(color, e, orden_fiable)
 
         # Cada cruce es una frontera de seccion: recta -> curva o curva ->
         # recta. Ocho por vuelta, que es exactamente como el reglamento cuenta
@@ -172,6 +209,62 @@ class Contador:
 
         e.dist_desde_cruce_mm = 0.0
         e.info["ultimo_cruce"] = color
+
+    # ------------------------------------------------------------------
+    def _emparejar(self, color: str, e: EstadoVueltas,
+                   orden_fiable: bool = True) -> None:
+        """El ORDEN de las dos lineas de una esquina dice el sentido.
+
+        POR QUE EL PAR Y NO LA PRIMERA LINEA A SECAS. La primera linea solo
+        contesta bien si de verdad es la de entrada. En pista el TCS se salta
+        lineas —una linea de 20 mm a 1 m/s dura 20 ms— y cuando se salta la de
+        entrada, la de salida se toma por la primera y el sentido sale
+        invertido. Un carro que cree que las curvas van al otro lado se estampa
+        en la primera esquina de frente, y el fallo no se parece en nada a su
+        causa. El par lo cierra: da igual cual de las dos se vea primero si se
+        ven las dos, porque lo que se mira es el orden, no la identidad.
+
+        LO QUE NO SE HACE: emparejar a cualquier precio. Si a una esquina le
+        falta una linea, la que quedo suelta NO se empareja con la de la
+        esquina siguiente —estan a media pista de distancia— sino que caduca
+        por `ventana_par_mm` y abre un par nuevo. Un par inventado es peor que
+        ningun par: contesta, y contesta al reves.
+        """
+        if not orden_fiable:
+            self._par_abierto = None
+            e.info["par_sin_orden"] = e.info.get("par_sin_orden", 0) + 1
+            return
+
+        ventana = float(self.cfg.get("ventana_par_mm", 1500.0))
+        abierto = self._par_abierto
+        if abierto is not None:
+            color0, dist0 = abierto
+            # Mismo color otra vez, o demasiada pista de por medio: a esa
+            # esquina le falto una linea. Se descarta y se abre un par nuevo.
+            if color == color0 or (e.dist_mm - dist0) > ventana:
+                abierto = None
+        if abierto is None:
+            self._par_abierto = (color, e.dist_mm)
+            return
+
+        color0, _ = abierto
+        self._par_abierto = None
+        color_horario = str(self.cfg.get("color_entrada_horario", "naranja"))
+        sentido = +1 if color0 == color_horario else -1
+        e.info["ultimo_par"] = f"{color0}+{color}"
+
+        if not e.sentido_firme:
+            e.sentido = sentido
+            e.sentido_firme = True
+            e.origen_sentido = "par de esquina"
+            e.info["sentido"] = "horario" if sentido > 0 else "antihorario"
+            return
+
+        # Ya estaba firme. El sentido NO cambia a mitad de ronda: un par al
+        # reves es un cruce mal leido, no un carro que se dio la vuelta.
+        if sentido != e.sentido:
+            e.pares_incoherentes += 1
+            e.info["par_incoherente"] = e.pares_incoherentes
 
     # ------------------------------------------------------------------
     def evaluar_parada(self, vueltas_objetivo: int = 3) -> EstadoVueltas:
@@ -219,6 +312,9 @@ class Contador:
         e = self.e
         return {
             "sentido": e.sentido,
+            "sentido_firme": e.sentido_firme,
+            "origen_sentido": e.origen_sentido,
+            "pares_incoherentes": e.pares_incoherentes,
             "vueltas": e.vueltas,
             "secciones": e.secciones,
             "cruces": e.cruces_totales,

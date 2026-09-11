@@ -135,14 +135,28 @@ class Piloto:
         # dice hacia donde giran las curvas de esta ronda antes de haber
         # tomado ninguna. En cuanto toma la primera, el seguidor lo aprende
         # por su cuenta y deja de depender de ese parametro.
+        #
+        # TRAS_PILAR: "lo que cierra el frente puede no ser una esquina".
+        # Vale mientras hay un rebase en marcha y hasta que la FSM da por
+        # reincorporado al carro. Se compone de dos fuentes porque ninguna
+        # basta sola: el esquivador sabe si sigue habiendo maniobra, pero se
+        # apaga en el instante en que caduca el compromiso, y es JUSTO
+        # despues cuando el carro va pegado al muro y apuntandolo.
+        tras_pilar = (self.esquivador.ocupado() or
+                      self.fsm.estado in (Estado.ESQUIVE, Estado.CORRECCION,
+                                          Estado.REINCORPORACION))
         sal_carril = self.carril.paso(esc, gz=sens.gz,
-                                      sentido_pista=self.contador.e.sentido)
+                                      sentido_pista=self.contador.e.sentido,
+                                      tras_pilar=tras_pilar)
         # El yaw entra en el esquive para que el compromiso sostenga el RUMBO
         # y no el angulo de volante: un volante fijo describe un arco y el
         # carro se iba girando hacia el lado del pilar que acababa de pasar.
+        # Y el rumbo del hueco entra para la SALIDA del compromiso: el rebase
+        # termina devolviendo el carro enfilado al pasillo, no cruzado.
         maniobra = self.esquivador.paso(
             esc, esc.lineas_mm, sal_carril.en_curva, vel_mm_s,
-            yaw=(sens.yaw if sens.mpu_ok else None), gz=sens.gz)
+            yaw=(sens.yaw if sens.mpu_ok else None), gz=sens.gz,
+            rumbo_hueco_deg=sal_carril.rumbo_hueco_deg)
         empujon = margen_magenta(esc, self.geo.semiancho_mm())
         direccion = combinar(sal_carril.direccion, maniobra, empujon)
 
@@ -212,6 +226,9 @@ class Piloto:
                        if sal_carril.lat_der_mm is not None else None),
             "rumbo_hueco": round(sal_carril.rumbo_hueco_deg, 1),
             "sentido_curva": sal_carril.sentido_curva,
+            "muro_encima": sal_carril.muro_encima,
+            "sesgo": round(sal_carril.sesgo, 1),
+            "tras_pilar": tras_pilar,
             "carril_motivo": sal_carril.motivo,
             "guardia": round(guardia_muro(sal_carril, self.cfg["carril"]), 1),
             "comp_err_rumbo": round(maniobra.err_rumbo_deg, 1),
@@ -220,6 +237,17 @@ class Piloto:
             "vueltas": ev.vueltas,
             "secciones": ev.secciones,
             "sentido": ev.sentido,
+            "sentido_firme": ev.sentido_firme,
+            "origen_sentido": ev.origen_sentido,
+            # LAS DOS FUENTES DEL SENTIDO, ENFRENTADAS. Las lineas del piso lo
+            # dicen por el orden del par de la esquina; el carril lo aprende
+            # del rumbo del hueco en la primera curva. Si discrepan, una de las
+            # dos esta mal y conviene enterarse en el taller y no en la ronda:
+            # lo mas probable es `color_entrada_horario` al reves, porque el
+            # aprendizaje del carril no depende de ningun parametro.
+            "sentido_discrepa": bool(
+                ev.sentido_firme and sal_carril.sentido_curva and
+                ev.sentido != sal_carril.sentido_curva),
         }
         return orden
 

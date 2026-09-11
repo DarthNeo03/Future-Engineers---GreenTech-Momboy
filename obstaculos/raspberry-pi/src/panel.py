@@ -47,6 +47,22 @@ CAJAS = {"rojo": (60, 60, 255), "verde": (60, 220, 60),
          "magenta": (220, 60, 220)}
 
 
+def _sentido(u: Dict[str, Any]) -> str:
+    """El sentido de la ronda, con de donde salio: importa tanto como el valor.
+
+    "horario (provisional)" quiere decir que se dedujo de UNA linea y todavia
+    puede estar al reves si el TCS se salto la de entrada; "horario (firme)",
+    que lo confirmo el par ordenado de una esquina entera.
+    """
+    s = u.get("sentido", 0)
+    if not s:
+        return "sin saber"
+    nombre = "horario" if s > 0 else "antihorario"
+    if u.get("sentido_firme"):
+        return f"{nombre} (firme)"
+    return f"{nombre} (provisional)"
+
+
 def dibujar(frame: np.ndarray, piloto: Any, esc: Escena) -> np.ndarray:
     img = frame.copy()
     alto, ancho = img.shape[:2]
@@ -111,10 +127,19 @@ def dibujar(frame: np.ndarray, piloto: Any, esc: Escena) -> np.ndarray:
         f"frente {u.get('frente_mm',0)}mm   lateral izq {u.get('izq_mm')}"
         f"  der {u.get('der_mm')}",
         f"hueco a {u.get('rumbo_hueco',0)} deg   curvas hacia {giro}"
-        f"   [{u.get('carril_motivo','')}]",
+        f"   sesgo {u.get('sesgo',0):+}   [{u.get('carril_motivo','')}]",
         f"yaw {u.get('yaw',0):>6}  vuelta {u.get('vueltas',0)}"
-        f"  seccion {u.get('secciones',0)}  sentido {u.get('sentido',0)}",
+        f"  seccion {u.get('secciones',0)}  sentido {_sentido(u)}",
     ]
+    if u.get("tras_pilar"):
+        lineas.append("TRAS PILAR: sin sesgo de curva y sin aprender sentido")
+    if u.get("muro_encima"):
+        lineas.append("MURO ENCIMA: manda el centrado")
+    # Las dos fuentes del sentido enfrentadas. Si esto sale, una esta mal, y
+    # lo mas probable es color_entrada_horario al reves: el aprendizaje del
+    # carril no depende de ningun parametro.
+    if u.get("sentido_discrepa"):
+        lineas.append("OJO: las lineas y las curvas NO dicen el mismo sentido")
     lineas.append(f"pilares vistos: {u.get('n_pilares', 0)}"
                   f"   descartes: {u.get('descartes') or 'ninguno'}")
     if u.get("magenta") is not None:

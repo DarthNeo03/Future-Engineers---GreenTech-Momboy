@@ -28,6 +28,21 @@ LA CURVA SE DETECTA POR PROFUNDIDAD, NO POR COLOR. Cuando el frente se cierra
 por debajo de 'dist_curva_mm', hay muro delante: es una seccion de curva. Ahi
 el centrado estorba (no hay dos muros paralelos que centrar) y se pasa a
 mandar casi solo el termino de rumbo, buscando el hueco.
+
+...PERO "FRENTE CERRADO" NO SIEMPRE ES "ESQUINA", y confundirlo costaba la
+ronda. Justo despues de rebasar un pilar el carro queda desplazado hacia un
+lado y APUNTANDO A UN MURO: el frente se cierra sin que haya ninguna curva. Si
+en ese momento se le trata como curva pasan las dos cosas a la vez —el
+centrado, que es lo unico que sacaria al carro del muro, se queda en el 25 %, y
+el sesgo de curva empuja hacia el lado donde giran las esquinas—, y el
+resultado es el giro brusco contra la pared que se veia despues de un esquive
+limpio. De ahi los dos frenos de este modulo:
+
+  - `tras_pilar` (lo dice la FSM): ni se aprende el sentido, ni se aplica el
+    sesgo. Los grados de rumbo de esos ciclos no son de ninguna curva.
+  - `muro_encima` (lo dice la geometria): con un muro a menos de
+    `guardia_muro_mm` el centrado recupera toda su autoridad y el sesgo nunca
+    empuja hacia ese lado.
 """
 
 from __future__ import annotations
@@ -53,6 +68,8 @@ class SalidaCarril:
     err_rumbo: float = 0.0       # normalizado -1..1
     rumbo_hueco_deg: float = 0.0  # hacia donde esta la salida
     sentido_curva: int = 0       # +1 las curvas van a la derecha, -1 izquierda
+    muro_encima: bool = False    # algun muro por debajo de guardia_muro_mm
+    sesgo: float = 0.0           # cuanto puso el sesgo de curva, en %
     motivo: str = ""             # que mando este ciclo, para la telemetria
 
 
@@ -71,11 +88,26 @@ class SeguidorCarril:
 
     # ------------------------------------------------------------------
     def paso(self, esc: Escena, gz: float = 0.0,
-             sentido_pista: int = 0) -> SalidaCarril:
+             sentido_pista: int = 0, tras_pilar: bool = False) -> SalidaCarril:
         """gz: velocidad angular del MPU en grados/s (+ derecha).
+
         sentido_pista: +1 horario / -1 antihorario si ya se dedujo de las
         lineas del piso; 0 si aun no se sabe. Solo se usa como pista mientras
-        no se haya aprendido el sentido de las curvas de verdad."""
+        no se haya aprendido el sentido de las curvas de verdad.
+
+        tras_pilar: hay un rebase en curso o recien terminado. UN SOLO DATO
+        CON TRES CONSECUENCIAS, y las tres salen del mismo hecho: cuando el
+        carro acaba de rebasar un pilar, el frente se cierra porque quedo
+        APUNTANDO A UN MURO, no porque haya llegado a una esquina.
+
+          1. No se aprende el sentido de las curvas: esos grados de rumbo no
+             son de una curva.
+          2. No se aplica el sesgo de curva: empujar hacia "donde giran las
+             curvas" con el morro contra la pared es el giro sin sentido que
+             se veia en pista justo despues de un esquive limpio.
+          3. El centrado conserva toda su autoridad: es el termino que saca
+             al carro del muro, y en curva se le baja al 25 %.
+        """
         s = SalidaCarril()
         perfil = esc.perfil_mm
         rumbo = esc.perfil_rumbo_deg
@@ -100,8 +132,24 @@ class SeguidorCarril:
         hay_muro = perfil < DIST_MAX_MM * 0.99
         x = perfil * np.sin(ang)        # lateral, + derecha
         y = perfil * np.cos(ang)        # hacia delante
-        ventana = hay_muro & (y > 120.0) & (y < float(
-            self.cfg.get("ventana_centrado_mm", 1500.0)))
+
+        # UN MURO DE FRENTE NO ES UN MURO AL COSTADO, y confundirlos hacia
+        # que el carro creyera tener las paredes encima en cada esquina. La cuenta
+        # es facil de seguir: un muro frontal a 700 mm ocupa TODOS los rumbos,
+        # y el sector que cae a 4 grados del morro da x = 700*sen(4) = 49 mm.
+        # O sea que el codigo leia "muro a 49 mm a mi derecha" estando el carro
+        # perfectamente centrado en un carril de 1000. De ahi salian un
+        # centrado que respondia a la esquina en vez de a los costados y una
+        # guardia anti-muro que empujaba sin que hubiera nada al lado.
+        #
+        # Lo que hay delante ya se mide aparte, en dist_frente_mm. Aqui solo
+        # cuentan los solidos que quedan MAS CERCA que el frente: esos son los
+        # que el carro va a pasar de largo por un costado, que es exactamente
+        # lo que significa "separacion lateral".
+        tope = min(float(self.cfg.get("ventana_centrado_mm", 1500.0)),
+                   float(self.cfg.get("frac_frente_lateral", 0.85)) *
+                   s.dist_frente_mm)
+        ventana = hay_muro & (y > 120.0) & (perfil < tope)
         izq = x[ventana & (x < -20.0)]
         der = x[ventana & (x > 20.0)]
         # El muro mas cercano de cada lado: el x menos alejado de cero.
@@ -170,7 +218,18 @@ class SeguidorCarril:
         # parametro adivinado color_entrada_horario. El rumbo del hueco es la
         # misma magnitud con la que ya se esta conduciendo: si esa se
         # equivocara, el carro ya estaria perdido de todas formas.
-        if s.en_curva:
+        #
+        # PERO SOLO SE APRENDE DE CURVAS DE VERDAD. Lo que cierra el frente
+        # justo despues de rebasar un pilar no es una esquina: es el muro al
+        # que el carro quedo apuntando. Si esos ciclos entran en el promedio,
+        # el sentido que se "aprende" es el del ultimo esquive, y a partir de
+        # ahi el sesgo de curva empuja hacia ese lado en todas las esquinas.
+        # Eso es una vuelta perdida por un dato sucio, asi que con `tras_pilar`
+        # se tira lo acumulado y no se concluye nada.
+        if tras_pilar:
+            self._acum_curva = 0.0
+            self._n_curva = 0
+        elif s.en_curva:
             self._acum_curva += s.rumbo_hueco_deg
             self._n_curva += 1
         elif self._en_curva_prev and self._n_curva > 3:
@@ -179,24 +238,36 @@ class SeguidorCarril:
                 self.sentido_curva = 1 if medio > 0 else -1
             self._acum_curva = 0.0
             self._n_curva = 0
-        self._en_curva_prev = s.en_curva
+        self._en_curva_prev = s.en_curva and not tras_pilar
 
         # Mientras no se haya aprendido, vale la pista que dan las lineas del
         # piso: horario = curvas a la derecha.
         sentido = self.sentido_curva or int(np.sign(sentido_pista))
         s.sentido_curva = sentido
 
+        # --- hay un muro encima? -------------------------------------------
+        # Misma separacion que usa la guardia anti-muro, a proposito: es la
+        # distancia a la que dejan de importar las trayectorias bonitas.
+        umbral_muro = float(self.cfg.get("guardia_muro_mm", 240.0))
+        laterales = [d for d in (s.lat_izq_mm, s.lat_der_mm) if d is not None]
+        s.muro_encima = bool(laterales) and min(laterales) < umbral_muro
+
         # --- mezcla --------------------------------------------------------
-        if s.en_curva:
+        if s.en_curva and not s.muro_encima:
             # En curva no hay dos muros paralelos que centrar: el centrado
             # empuja contra la esquina interior. Se baja mucho su peso.
             kc = float(self.cfg.get("kp_centrado", 55.0)) * 0.25
             kr = float(self.cfg.get("kp_rumbo", 70.0)) * 1.35
             s.motivo = "curva"
         else:
+            # CON UN MURO A MENOS DE UN PALMO MANDA EL CENTRADO, curva o no.
+            # Bajarle el peso al 25 % tiene sentido cuando sobra sitio y lo
+            # unico que hace es estorbar al trazado; con el muro encima es el
+            # unico termino que aparta al carro, y callarlo ahi es como se
+            # acaba raspando la pared en la salida de un esquive.
             kc = float(self.cfg.get("kp_centrado", 55.0))
             kr = float(self.cfg.get("kp_rumbo", 70.0))
-            s.motivo = "recta"
+            s.motivo = "muro encima" if s.muro_encima else "recta"
 
         direccion = kc * s.err_centrado + kr * s.err_rumbo
 
@@ -205,12 +276,33 @@ class SeguidorCarril:
         # entero y dejar el rumbo casi centrado. Ahi es donde el carro se iba
         # recto contra la pared. Si sabemos hacia donde giran las curvas de
         # esta ronda, se empuja hacia ese lado en vez de esperar a ver.
-        if s.en_curva and sentido != 0:
+        #
+        # DOS CANDADOS, Y LOS DOS SON EL MISMO FALLO DE PISTA: el carro
+        # rebasaba un pilar bien y acto seguido daba un giro hacia el lado del
+        # esquive hasta clavarse en la pared. El sesgo era el que lo daba, y lo
+        # daba porque "frente cerrado" no significa "esquina":
+        #
+        #   - tras un rebase el frente esta cerrado por el muro al que el
+        #     carro quedo apuntando. Ahi no hay esquina que anticipar.
+        #   - y nunca, en ninguna situacion, se empuja HACIA un muro que ya
+        #     esta a menos de `guardia_muro_mm`. El sesgo existe para resolver
+        #     un hueco indeciso, no para meter el morro en la pared: si la
+        #     esquina es de verdad, el termino de rumbo la resuelve igual en
+        #     cuanto haya sitio.
+        cerca_der = s.lat_der_mm is not None and s.lat_der_mm < umbral_muro
+        cerca_izq = s.lat_izq_mm is not None and s.lat_izq_mm < umbral_muro
+        muro_de_ese_lado = (sentido > 0 and cerca_der) or (sentido < 0 and cerca_izq)
+        if (s.en_curva and sentido != 0 and not tras_pilar
+                and not muro_de_ese_lado):
             sesgo = float(self.cfg.get("sesgo_curva", 45.0))
             indeciso = abs(s.rumbo_hueco_deg) < float(
                 self.cfg.get("hueco_indeciso_deg", 10.0))
-            direccion += sentido * sesgo * (1.0 if indeciso else 0.45)
+            s.sesgo = sentido * sesgo * (1.0 if indeciso else 0.45)
+            direccion += s.sesgo
             s.motivo = "curva " + ("(por sentido)" if indeciso else "(por hueco)")
+        elif s.en_curva and sentido != 0:
+            s.motivo = ("curva (sesgo callado: tras pilar)" if tras_pilar
+                        else "curva (sesgo callado: muro de ese lado)")
 
         # --- termino 3: amortiguacion con el giroscopio --------------------
         direccion -= float(self.cfg.get("kd_giro", 0.28)) * gz

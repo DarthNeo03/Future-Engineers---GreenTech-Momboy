@@ -79,7 +79,7 @@ raspberry-pi/
   src/vision.py          segmentación HSV → escena en milímetros
   src/carril.py          mantenerse en la pista
   src/senales.py         rebasar los pilares por el lado que manda la regla
-  src/vueltas.py         contar secciones y vueltas, saber dónde parar
+  src/vueltas.py         contar secciones y vueltas, y de qué lado se corre
   src/fsm.py             máquina de estados
   src/piloto.py          lazo principal
   src/panel.py           ventana de depuración (solo taller)
@@ -155,6 +155,11 @@ habitual de perder una tarde persiguiendo un fallo que estaba dos pasos antes.
    horario y mirar qué color reporta el primer cruce. **No se adivina**: de
    esto depende que el sentido de la ronda se deduzca bien.
 
+   De este único parámetro salen las dos respuestas: el color suelto da el
+   sentido *provisional* en cuanto se pisa la primera línea, y el par
+   ordenado (entrada + el otro color) lo *confirma* al completar la primera
+   esquina. En `--ver`, la línea `sentido` dice cuál de las dos está mandando.
+
 ---
 
 ## Lo que este sistema no sabe hacer
@@ -191,17 +196,65 @@ llega tan abajo— y el carro va apuntando hacia el lado por el que lo rebasa.
   devuelve el carro a él. Un volante fijo no traza una recta, traza un arco:
   con el modelo Ackermann simplificado, congelarlo 0,8 s desviaba **537 mm**,
   más de medio carril, directo al muro.
+- **Pero el compromiso no termina soltando el carro donde esté: lo devuelve
+  alineado.** Pasada `salida_desde` (55 %) del compromiso el pilar ya quedó
+  atrás, y el rumbo objetivo se lleva poco a poco del congelado al del pasillo
+  libre que ve el carril. Sin esto, el carril recibía un carro cruzado y con el
+  muro delante, que es de donde salía el volantazo siguiente.
+- **Sin MPU se endereza, y rápido.** No hay rumbo que sostener, así que el
+  volante se suelta en `soltar_sin_mpu_s` (0,35 s) de reloj y el resto del
+  adelantamiento se hace recto. Antes se desvanecía a lo largo de *todo* el
+  compromiso, o sea que se mantenía casi entero durante la primera mitad: eso
+  es el arco, otra vez, y contra la pared. Aun así, revisa el I²C: recto es lo
+  mejor que se puede hacer a ciegas, no es tan bueno como sostener el rumbo.
 - **La guardia anti-muro sí sigue despierta** (`guardia_muro` en `carril.py`).
   No centra: se calla mientras haya sitio y solo empuja cuando la separación
   lateral baja de `guardia_muro_mm`. Su autoridad crece con el progreso del
   adelantamiento, porque al principio el pilar sigue al costado y al final ya
   quedó atrás.
-- **Cumplido el compromiso**, manda otra vez el carril completo y el carro se
-  recentra y encara la curva con lo que se describe abajo.
 
-Si sin MPU (`mpu_ok` falso) el carro se sigue desviando, es porque el respaldo
-solo puede soltar el volante progresivamente; revisa el I²C antes que las
-ganancias.
+### Y después del compromiso hay un estado propio: REINCORPORACION
+
+Lo que sale de un rebase no es un carro en pista: es un carro descolocado
+hacia un lado y apuntando al muro, así que su cámara ve el frente cerrado.
+Devolverlo directamente a `PISTA` era el fallo que dejaba al carro girando
+hacia el lado del esquive hasta clavarse en la pared, porque el seguidor de
+carril leía ese frente cerrado como una esquina y hacía las dos cosas que no
+tocaban a la vez: bajar el centrado al 25 % —el único término que aparta al
+carro del muro— y empujar con `sesgo_curva` hacia el lado al que giran las
+curvas de la ronda.
+
+En `REINCORPORACION` el piloto le pasa al carril `tras_pilar=True`, y con eso:
+
+| Qué se apaga | Por qué |
+|---|---|
+| el sesgo de curva | ese frente cerrado no es una esquina, es el muro al que se apunta |
+| el aprendizaje del sentido | esos grados de rumbo no son de ninguna curva; si entraran en el promedio, el sentido "aprendido" sería el del último esquive |
+| la rebaja del centrado | es lo único que saca al carro del muro |
+
+Se sale a `PISTA` cuando el carro está de verdad centrado y enfilado
+(`reincorporado_err`, `reincorporado_deg`) o cuando se agota
+`reincorporacion_max_s`. Un pilar nuevo interrumpe el estado y manda a `SENAL`:
+recolocarse no puede ser excusa para pasar de largo la señal siguiente.
+
+Medido en el escenario de prueba (carro a 150 mm del muro derecho después de
+rebasar por la derecha, ronda horaria): el volante pasa de **−12 %** —un
+empujón simbólico, porque el sesgo de curva tiraba hacia el muro— a **−66 %**.
+
+### Un muro de frente no es un muro al costado
+
+Fallo de fondo que salió al montar un escenario de prueba con la geometría de
+verdad, y que explica por qué la guardia anti-muro nunca salvaba al carro. La
+separación lateral se medía sobre todos los sectores con muro, y un muro
+**frontal** ocupa todos los rumbos: su sector a 4 grados del morro, a 700 mm,
+da `700·sen(4°) = 49 mm`. O sea que con el carro perfectamente centrado en un
+carril de 1000 mm y una esquina a 700, el código reportaba muros a 46 mm **a
+los dos lados**. Y como la guardia empuja con la diferencia, los dos empujones
+se cancelaban y daba **exactamente 0** justo cuando hacía falta.
+
+Ahora solo cuenta como costado lo que está más cerca que el frente
+(`frac_frente_lateral`). Lo que hay delante ya se mide aparte, en
+`dist_frente_mm`.
 
 ---
 
@@ -229,13 +282,62 @@ en este orden:
    queda casi centrado: ahí es donde antes se iba recto contra la pared.
 
    Mientras no haya tomado ninguna curva, acepta como pista el sentido que
-   deduce `vueltas.py` del color de la primera línea pisada. Es solo una
-   ayuda de arranque: el sentido aprendido siempre manda sobre ella, para que
-   un `color_entrada_horario` mal puesto no haga girar al revés.
+   deduce `vueltas.py` de las líneas del piso. Es solo una ayuda de arranque:
+   el sentido aprendido sigue mandando sobre ella, porque no depende de ningún
+   parámetro, y así un `color_entrada_horario` mal puesto no puede hacer girar
+   al revés.
 
-En la ventana de `--ver`: `hueco a N deg` y `curvas hacia ...` dicen qué está
-pensando. Si `curvas hacia` sigue en `sin aprender` después de dos curvas,
-sube `sesgo_curva` o baja `aprender_curva_deg`.
+   **Este aprendizaje solo come datos limpios.** Con `tras_pilar` no se
+   acumula nada: si los ciclos de después de un rebase entraran en el
+   promedio, el sentido que se "aprendería" sería el del último esquive, y a
+   partir de ahí el carro empujaría hacia ese lado en las once curvas
+   restantes.
+
+**Y el sesgo lleva dos candados**, los dos por el mismo fallo de pista: nunca
+se aplica con un rebase en curso o recién terminado, y nunca empuja **hacia**
+un muro que ya está a menos de `guardia_muro_mm`. El sesgo existe para
+resolver un hueco indeciso, no para meter el morro en la pared; si la esquina
+es de verdad, el término de rumbo la resuelve igual en cuanto haya sitio.
+
+En la ventana de `--ver`: `hueco a N deg`, `sesgo` y `curvas hacia ...` dicen
+qué está pensando, y salen avisos de `TRAS PILAR` y `MURO ENCIMA` cuando el
+sesgo está callado. Si `curvas hacia` sigue en `sin aprender` después de dos
+curvas, sube `sesgo_curva` o baja `aprender_curva_deg`.
+
+## De qué lado se corre esta ronda
+
+El reglamento sortea el sentido antes de cada ronda (9.3) y prohíbe metérselo
+al programa a mano (9.4, 9.9), así que hay que leerlo de la pista. Se lee dos
+veces, y la segunda corrige a la primera:
+
+| Cuándo | Cómo | Qué vale |
+|---|---|---|
+| primera línea pisada | su color, contra `color_entrada_horario` | **provisional** |
+| primera esquina entera | el **orden** del par naranja/azul | **firme** |
+
+El par es el que de verdad contesta. La primera línea solo acierta si es de
+verdad la de entrada, y en pista el TCS se salta líneas —una línea de 20 mm a
+1 m/s dura 20 ms—: cuando se salta la de entrada, la de salida se toma por la
+primera y **el sentido sale invertido**. Un carro que cree que las curvas van
+al otro lado se estampa en la primera esquina de frente, y el fallo no se
+parece en nada a su causa. Con el par da igual cuál de las dos se vea primero
+si se ven las dos, porque lo que se mira es el orden.
+
+Tres cautelas, y las tres evitan contestar mal en vez de no contestar:
+
+- **Una línea suelta no se empareja con la de la esquina de al lado.** Caduca
+  por `ventana_par_mm` (1500 mm; la sección de curva mide 1000) y abre un par
+  nuevo. Un par inventado es peor que ningún par: contesta, y al revés.
+- **Si los dos colores suben en el mismo ciclo de la Pi, no forman par.** Los
+  cruces llegan como contadores acumulados, no como eventos con marca de
+  tiempo, así que ahí el orden no se sabe.
+- **Una vez firme, el sentido no cambia.** En esta pista no hay media vuelta:
+  un par al revés es un cruce mal leído. Se cuenta en `pares_incoherentes` y
+  se sigue.
+
+Si `--ver` avisa de que **las líneas y las curvas no dicen el mismo sentido**,
+una de las dos fuentes está mal, y lo más probable es `color_entrada_horario`
+al revés — el aprendizaje del carril no depende de ningún parámetro.
 
 ---
 
@@ -304,6 +406,26 @@ exactamente qué filtro se está comiendo los contornos:
 
 ---
 
+## Si el carro gira sin sentido justo después de rebasar un pilar
+
+Este era EL fallo: rebasaba bien y acto seguido seguía girando hacia el lado
+del esquive hasta clavarse en la pared. Mira estas cuatro cosas de `--ver`, en
+este orden, que es el orden en que se encadenaban las causas:
+
+| Qué mirar | Qué significa si sale mal |
+|---|---|
+| `lateral izq`/`der` con una esquina de frente | si los dos bajan a la vez con el carro centrado, el muro frontal se está colando en la medida lateral: revisa `frac_frente_lateral` |
+| el estado después del esquive | tiene que ser `reincorporacion`, no `pista` |
+| `sesgo` durante esa reincorporación | tiene que ser `0`, y salir el aviso `TRAS PILAR` |
+| `sentido` | si dice `(provisional)` después de la primera curva, el par de la esquina no se está completando: el TCS se está saltando una de las dos líneas |
+
+Y si sale el aviso de que **las líneas y las curvas no dicen el mismo
+sentido**, para y arregla `color_entrada_horario` antes de seguir rodando: el
+carro está funcionando con dos respuestas contradictorias a la pregunta de
+hacia dónde giran las curvas.
+
+---
+
 ## Reglas del juego que están metidas en el código
 
 Con la cita al lado, para que se puedan comprobar contra el reglamento:
@@ -316,5 +438,6 @@ Con la cita al lado, para que se puedan comprobar contra el reglamento:
 | 9.25.7 tocar un delimitador termina la ronda | `carril.py` → `margen_magenta` |
 | Apéndice A.5 hay margen para corregir el lado | `fsm.py` → `Estado.CORRECCION` |
 | 9.23 volver a la sección de arranque y parar | `vueltas.py` → `evaluar_parada` |
+| 9.3 / 9.4 el sentido se sortea y no se configura | `vueltas.py` → `_emparejar` (par ordenado de la esquina) |
 | 13.1 pilar de 50 × 50 × 100 mm | `senales.py`, `geometria.py` |
 | 13.9 líneas naranja y azul de 20 mm | `lineas.h` |
