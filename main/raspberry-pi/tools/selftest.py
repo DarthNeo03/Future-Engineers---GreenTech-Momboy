@@ -2110,15 +2110,28 @@ vb["obstaculos"]["recordar_lado"] = False
 prueba("la memoria se puede apagar", not eb.memoria_viva(time.time()))
 vb["obstaculos"]["recordar_lado"] = True
 
-# perdido de CERCA: manda el compromiso de adelantamiento, no la busqueda
+# Perdido de CERCA. Lo que NUNCA puede pasar es que se ponga a buscarlo:
+# buscar es girar HACIA el pilar, y de cerca eso es llevarselo con la rueda
+# trasera. Primero se sigue a ciegas contra su ultima posicion (que es girar
+# para librarlo, no hacia el) y despues manda el compromiso de adelantamiento.
 eb.reiniciar()
 for _ in range(20):
     eb._t_prev = time.time() - 0.033
     eb.paso({"rojo": [_pil(400.0, 100.0)]}, None, geo_o, None, False, 0, 500.0)
 eb._t_prev = time.time() - 0.033
 d_cerca, _pc = eb.paso({}, None, geo_o, None, False, 0, 500.0)
-prueba("si se pierde CERCA no lo busca: adelanta comprometido",
-       eb.info.get("buscando") is None and "adelantando_s" in eb.info,
+prueba("si se pierde CERCA no lo busca nunca",
+       eb.info.get("buscando") is None, str(eb.info))
+prueba("primero lo sigue a ciegas, sin soltar el lado",
+       eb.info.get("ciego") is True and eb.info.get("lado") == "derecha",
+       str(eb.info))
+prueba("y a ciegas no gira HACIA el pilar", d_cerca >= 0, f"dir {d_cerca:.0f}")
+# agotado ciego_max_ms, el relevo lo toma el compromiso
+for _ in range(40):
+    eb._t_prev = time.time() - 0.033
+    d_cerca, _pc = eb.paso({}, None, geo_o, None, False, 0, 500.0)
+prueba("cumplido el plazo a ciegas, adelanta comprometido",
+       "adelantando_s" in eb.info and eb.info.get("buscando") is None,
        str(eb.info))
 
 # ===========================================================================

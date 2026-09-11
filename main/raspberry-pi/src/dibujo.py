@@ -151,6 +151,22 @@ def anotar(frame: np.ndarray,
         cv2.putText(frame, str(obst_info["sin_sitio"]), (8, H - 140),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.42, (60, 60, 235), 1, cv2.LINE_AA)
 
+    # --- lo que el esquive DESCARTO --------------------------------------
+    # Un pilar descartado no deja rastro en el video: se ve el recuadro del
+    # detector de color y nada mas, y parece que el esquive no funciona. Aqui
+    # se dice cuantos se cayeron y por que, que es la diferencia entre
+    # depurarlo en cinco minutos o en toda una tarde.
+    if obst_info:
+        motivos = [(k, obst_info[k]) for k in
+                   ("fuera_tamano", "veto_magenta", "tras_linea",
+                    "otro_carril", "fuera_alcance") if obst_info.get(k)]
+        if motivos:
+            txt = "descartados: " + ", ".join(f"{v} {k}" for k, v in motivos)
+            if obst_info.get("descarte"):
+                txt += f" ({obst_info['descarte']})"
+            cv2.putText(frame, txt, (8, H - 156), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.40, (0, 200, 255), 1, cv2.LINE_AA)
+
     # --- esquive: por que lado va a pasar y si esta adelantando ----------
     if obst_info:
         # El color del rotulo es el del objeto IDENTIFICADO, no el de la
@@ -179,6 +195,11 @@ def anotar(frame: np.ndarray,
                 etq += " [FIJO]"
             elif "votos" in obst_info:
                 etq += f" [votos {obst_info['votos']}]"
+        if obst_info.get("ciego"):
+            # Se conduce contra la ULTIMA posicion conocida. Verlo en el video
+            # importa: si esto sale casi siempre, la deteccion de color esta
+            # parpadeando y hay que arreglar eso, no los parametros del esquive.
+            etq += f"  A CIEGAS {obst_info.get('sin_ver_s', 0):.1f}s"
         if "adelantando_s" in obst_info:
             etq += f"  ADELANTANDO {obst_info['adelantando_s']:.1f}s (recto)"
         if "hueco_estrecho_mm" in obst_info:

@@ -59,6 +59,12 @@ COMO SE PASA UN PILAR, EN TRES ACTOS
      MIRADA MINIMA (mirada_min_mm): sin ella, al acercarse el angulo al punto
      crece hasta pedir el volante a tope, que es justo lo que hacia que el
      carro girase de golpe casi al 100 %.
+  1b. A CIEGAS. La mascara de color parpadea. En cuanto el pilar se pierde
+     un par de frames, el esquive de antes soltaba el volante y se iba recto:
+     ahi es donde se perdia el lado. Ahora se sigue conduciendo contra su
+     ultima posicion conocida, adelantada con la velocidad real del carro,
+     hasta ciego_max_ms. Es la diferencia entre esquivar por el lado correcto
+     y "esquivar y ya".
   2. COMPROMISO. Cuando el pilar queda demasiado cerca deja de verse: la
      camara no llega tan abajo. Si en ese momento el esquive desaparece, el
      centrado tira del carro hacia el medio del carril y la RUEDA TRASERA
@@ -120,7 +126,9 @@ class Pista:
     color: str = ""
     lat: float = 0.0
     dist: float = 0.0
-    t: float = 0.0
+    ancho_mm: float = 50.0
+    t: float = 0.0            # ultima vez que se ACTUALIZO (visto o predicho)
+    t_visto: float = 0.0      # ultima vez que se VIO de verdad
     vistas: int = 0
     lado: int = 0
     fijo: bool = False
@@ -204,18 +212,34 @@ class Esquivador:
         return abs(der - izq), alto_esp
 
     def _es_pilar(self, d: vision.Deteccion, dist_cam: float,
-                  geo: Geometria) -> Tuple[bool, float]:
-        """¿Esta mancha puede ser una señal de transito de 50x50x100 mm?
+                  geo: Geometria) -> Tuple[bool, float, str]:
+        """Puede esta mancha ser una señal de transito de 50x50x100 mm?
 
-        Es una prueba FISICA, no de imagen: no depende de como este calibrado
-        el color, solo de la geometria de la camara. Por eso caza tanto al
-        delimitador magenta (mide 200 mm de ancho, cuatro veces un pilar) como
-        a las manchas de color en la pared o en el zocalo, que a su distancia
-        saldrian enanas o enormes.
+        Devuelve (vale, ancho_mm, por_que_no). Es una prueba FISICA, no de
+        imagen: no depende de como este calibrado el COLOR. Pero SI depende de
+        la geometria, y ahi esta el peligro: una prueba de tamaño mal calibrada
+        no se equivoca poco, BORRA TODOS LOS PILARES y deja al carro ciego, que
+        es el peor fallo que puede tener. Por eso hay tres niveles:
+
+          "no"        no se comprueba nada.
+          "suave"     (por defecto) solo el ALTO contra la geometria, que
+                      depende de fy, el parametro fiable: la altura de captura
+                      (480) es la misma con la que se calibro. El ancho solo
+                      mata lo imposible. A cambio, separar el pilar del
+                      delimitador magenta queda en manos del veto por
+                      solapamiento, que no usa geometria ninguna.
+          "estricto"  añade la banda de ancho real en mm. Es la que caza al
+                      delimitador aunque el magenta este mal calibrado, pero
+                      necesita fx BIEN medido. Ojo: fx se escala con el ANCHO
+                      de captura, asi que si grabas a 1920 y calibraste a 640
+                      sale tres veces mayor y un pilar de 50 mm se mide como
+                      17 mm: todos fuera. Compruebalo antes con
+                      tools/diagnostico_pilares.py, que dice cuanto mide.
         """
         ancho_mm, alto_esp = self._medidas(d, dist_cam, geo)
-        if not bool(self.cfg.get("verificar_tamano", True)):
-            return True, ancho_mm
+        modo = str(self.cfg.get("verificar_tamano", "suave"))
+        if modo == "no":
+            return True, ancho_mm, ""
 
         # Recortado por el canto de la imagen: la medida ya no es la del objeto
         # entero, asi que no se puede usar para descartarlo. Pasa siempre con
@@ -225,18 +249,21 @@ class Esquivador:
         cortado_abajo = d.base_y >= (geo.H - margen)
         cortado_arriba = d.y <= margen
 
-        if not cortado_lados:
-            lo = float(self.cfg.get("pilar_ancho_min_mm", 25.0))
-            hi = float(self.cfg.get("pilar_ancho_max_mm", 120.0))
-            if not (lo <= ancho_mm <= hi):
-                return False, ancho_mm
-
         if not (cortado_abajo or cortado_arriba):
-            tol = float(self.cfg.get("pilar_alto_tol", 0.55))
+            tol = float(self.cfg.get("pilar_alto_tol", 0.6))
             if not (alto_esp * (1.0 - tol) <= d.h <= alto_esp * (1.0 + tol)):
-                return False, ancho_mm
+                return False, ancho_mm, f"alto {d.h}px, esperaba {alto_esp}px"
 
-        return True, ancho_mm
+        if not cortado_lados:
+            if modo == "estricto":
+                lo = float(self.cfg.get("pilar_ancho_min_mm", 25.0))
+                hi = float(self.cfg.get("pilar_ancho_max_mm", 120.0))
+            else:
+                lo, hi = 10.0, 400.0          # solo lo imposible
+            if not (lo <= ancho_mm <= hi):
+                return False, ancho_mm, f"ancho {ancho_mm:.0f}mm"
+
+        return True, ancho_mm, ""
 
     @staticmethod
     def _solape(d: vision.Deteccion, otras: List[vision.Deteccion]) -> float:
@@ -269,13 +296,17 @@ class Esquivador:
             mirar.append("magenta")
 
         fuera = {"tras_linea": 0, "fuera_tamano": 0, "veto_magenta": 0,
-                 "otro_carril": 0}
+                 "otro_carril": 0, "fuera_alcance": 0}
         salida: List[Candidato] = []
         for color in mirar:
             for d in dets.get(color, []):
                 dist_cam = float(geo.fila_a_distancia(d.base_y))
                 dist = dist_cam - morro
                 if dist <= 0 or dist > activar:
+                    # Mas lejos que activar_desde_mm, o detras del morro. Se
+                    # cuenta: "no veo nada" y "lo veo pero lo ignoro por
+                    # lejano" se arreglan de formas muy distintas.
+                    fuera["fuera_alcance"] += 1
                     continue
                 if limite is not None and dist > limite:
                     fuera["tras_linea"] += 1   # detras de la linea: otra seccion
@@ -292,9 +323,14 @@ class Esquivador:
                         fuera["veto_magenta"] += 1
                         continue
                     # (2) LA PRUEBA FISICA DE TAMAÑO.
-                    vale, ancho_mm = self._es_pilar(d, dist_cam, geo)
+                    vale, ancho_mm, motivo = self._es_pilar(d, dist_cam, geo)
                     if not vale:
                         fuera["fuera_tamano"] += 1
+                        # El motivo del primero que se cae va a la telemetria y
+                        # al video. Si la geometria esta mal calibrada, esto lo
+                        # dice en pantalla en vez de dejar al carro ciego y
+                        # callado, que es como se pierde una tarde entera.
+                        self.info.setdefault("descarte", motivo)
                         continue
                 else:
                     ancho_mm, _ = self._medidas(d, dist_cam, geo)
@@ -310,8 +346,8 @@ class Esquivador:
     # ==================================================================
     # SEGUIMIENTO: el lado se decide UNA vez por pilar
     # ==================================================================
-    def _seguir(self, cands: List[Candidato],
-                ahora: float) -> List[Tuple[Pista, Candidato]]:
+    def _seguir(self, cands: List[Candidato], ahora: float, dt: float,
+                vel_mm_s: float) -> List[Tuple[Pista, Candidato]]:
         """Empareja cada candidato con el pilar que ya se venia siguiendo.
 
         Asociacion por cercania en el plano del suelo: el carro avanza unos
@@ -324,6 +360,7 @@ class Esquivador:
 
         radio = float(self.cfg.get("emparejar_mm", 260.0))
         libres = list(self._pistas)
+        vistos = set()
         parejas: List[Tuple[Pista, Candidato]] = []
         for c in cands:
             mejor, mejor_d = None, radio
@@ -339,9 +376,61 @@ class Esquivador:
                 libres.remove(mejor)
             mejor.votar(c.color)
             mejor.lat, mejor.dist, mejor.t = c.lat, c.dist, ahora
+            mejor.t_visto = ahora
+            mejor.ancho_mm = c.ancho_mm
             mejor.vistas += 1
+            vistos.add(id(mejor))
             parejas.append((mejor, c))
+
+        # --- los que este frame NO se vieron: se adelantan a ciegas ---------
+        # El carro sigue avanzando aunque la mascara parpadee. Sin esto la
+        # posicion guardada se queda congelada y al frame siguiente ya no
+        # empareja con nada (el pilar esta 20 cm mas cerca de lo que dice la
+        # ficha), asi que cada parpadeo estrenaba pilar y los votos no se
+        # acumulaban nunca.
+        avance = max(0.0, vel_mm_s) * dt
+        for pi in self._pistas:
+            if id(pi) not in vistos:
+                pi.dist -= avance
+                pi.t = ahora
         return parejas
+
+    def _pista_ciega(self, ahora: float) -> Optional[Pista]:
+        """El pilar no se ve en ESTE frame, pero se sabe donde esta.
+
+        ESTE ERA EL AGUJERO POR EL QUE SE ESCAPABA EL LADO. La mascara de color
+        se cae cada dos por tres: el brillo del tapete, la exposicion
+        automatica que reacciona a una pared blanca, el propio pilar entrando
+        en el punto ciego de delante del carro. Y en cuanto se caia, el esquive
+        se iba directo a "ir recto": el carro se olvidaba de por que lado tenia
+        que pasar y lo adelantaba por donde tocara. En pista se ve clavado — el
+        pilar ahi delante, perfectamente visible, y el rotulo del video
+        diciendo ADELANTANDO.
+
+        Mientras la ficha del pilar siga viva se sigue conduciendo contra su
+        ULTIMA posicion conocida, que _seguir() ya adelanta cada frame con la
+        velocidad real del carro. Se deja de hacer cuando el pilar queda al
+        costado (dist <= 0: ahi manda el compromiso de adelantamiento, que es
+        quien impide que la rueda trasera lo barra) o cuando lleva demasiado
+        tiempo sin verse (ciego_max_ms).
+
+        No vale cualquier ficha: hace falta haberlo visto ciego_vistas_min
+        veces. Un destello suelto de color en una pared no puede llevarse al
+        carro medio segundo a ciegas.
+        """
+        if not bool(self.cfg.get("seguir_a_ciegas", True)):
+            return None
+        tope = float(self.cfg.get("ciego_max_ms", 600)) / 1000.0
+        minimo = int(self.cfg.get("ciego_vistas_min", 2))
+        mejor: Optional[Pista] = None
+        for pi in self._pistas:
+            if not pi.color or pi.dist <= 0.0 or pi.vistas < minimo:
+                continue
+            if (ahora - pi.t_visto) > tope:
+                continue
+            if mejor is None or pi.dist < mejor.dist:
+                mejor = pi
+        return mejor
 
     def _lado_de(self, p: Pista, sentido: int) -> int:
         """El lado por el que se pasa este pilar. Una vez fijado no cambia.
@@ -412,14 +501,22 @@ class Esquivador:
 
         # --- identificar y seguir ------------------------------------------
         cands = self._candidatos(dets, geo, morro, activar, limite)
-        parejas = self._seguir(cands, ahora)
+        parejas = self._seguir(cands, ahora, dt, vel_mm_s)
 
-        # --- no se ve ninguno: adelantando, o hay que ir a buscarlo ---------
-        if not parejas:
-            return self._sin_pilar(ahora, dt)
+        ciego = False
+        if parejas:
+            pista, cand = parejas[0]      # el mas cercano es el que manda
+            dist, lat, d_mejor = cand.dist, cand.lat, cand.det
+            ancho_mm = cand.ancho_mm
+        else:
+            # No se ve ninguno AHORA. Eso casi nunca significa que no haya.
+            pista_c = self._pista_ciega(ahora)
+            if pista_c is None:
+                return self._sin_pilar(ahora, dt)
+            pista, ciego = pista_c, True
+            dist, lat, d_mejor = pista.dist, pista.lat, None
+            ancho_mm = pista.ancho_mm
 
-        pista, cand = parejas[0]          # el mas cercano es el que manda
-        dist, lat, d_mejor = cand.dist, cand.lat, cand.det
         color = pista.color
         lado = self._lado_de(pista, sentido)
 
@@ -429,7 +526,7 @@ class Esquivador:
             # El delimitador del cajon mide 200 mm de largo y el centroide cae
             # en su mitad: el despeje se cuenta desde su CANTO, no desde el
             # centro, o el carro le pasaria por encima creyendo que sobra sitio.
-            semi_pilar = max(semi_pilar, cand.ancho_mm / 2.0)
+            semi_pilar = max(semi_pilar, ancho_mm / 2.0)
         # Despeje COMODO (el que se pide) y MINIMO (el que fisicamente hace
         # falta para no tocarlo). Si el hueco no da para el comodo se aprieta
         # hacia el minimo, pero jamas se cambia de lado.
@@ -444,7 +541,7 @@ class Esquivador:
 
         # --- a direccion ---------------------------------------------------
         modo = str(self.cfg.get("modo", "punto"))
-        if modo == "borde":
+        if modo == "borde" and d_mejor is not None:
             direccion = self._dir_borde(d_mejor, lado, dist, geo)
         else:
             # 'punto': se apunta al hueco al costado del pilar. La mirada
@@ -459,6 +556,10 @@ class Esquivador:
 
         t = (activar - dist) / max(1.0, activar - mandar)
         peso = float(self.cfg.get("peso_max", 0.8)) * min(1.0, max(0.0, t))
+        if ciego:
+            # Se conduce contra una posicion estimada, no medida: pesa algo
+            # menos que verlo, pero muchisimo mas que olvidarse de el.
+            peso *= float(self.cfg.get("peso_ciego", 0.9))
 
         # --- comprometerse a adelantarlo entero ----------------------------
         # SOLO cuando ya se le tiene encima: el compromiso existe para cubrir
@@ -480,7 +581,8 @@ class Esquivador:
                           "lado": "derecha" if lado > 0 else "izquierda",
                           "senal": pista.es_senal, "id": pista.id,
                           "votos": pista.apoyo, "fijo": pista.fijo,
-                          "ancho_mm": round(cand.ancho_mm),
+                          "ancho_mm": round(ancho_mm), "ciego": ciego,
+                          "sin_ver_s": round(ahora - pista.t_visto, 2),
                           "vistos": len(parejas), "modo": modo,
                           "peso": round(peso, 2), "dir": round(direccion),
                           "compromiso_s": round(seg, 2)})

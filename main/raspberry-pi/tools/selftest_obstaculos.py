@@ -28,6 +28,7 @@ tamaño se apoya en ella.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -140,18 +141,104 @@ def t_veto_magenta():
     return fallos
 
 
-@prueba("sin mascara magenta, el tamano real delata al delimitador")
+@prueba("en estricto, el ancho real delata al delimitador sin mascara magenta")
 def t_tamano():
     geo, fallos = _geo(), []
     # Segunda linea de defensa: si el magenta esta mal calibrado y no aparece,
-    # el delimitador sigue midiendo 200 mm de ancho y un pilar mide 50.
+    # el delimitador sigue midiendo 200 mm de ancho y un pilar mide 50. Solo
+    # vale en 'estricto', que es el modo que se fia de fx.
     falso = objeto(geo, "rojo", 900.0, 300.0, ancho_mm=200.0)
-    esq = Esquivador(cfg_obstaculos())
+    esq = Esquivador(cfg_obstaculos(verificar_tamano="estricto"))
     lado(esq, {"rojo": [falso], "verde": [], "magenta": []}, geo, 4)
     if esq.info.get("color"):
         fallos.append(f"se lo trago como '{esq.info['color']}'")
     if not esq.info.get("fuera_tamano"):
         fallos.append("no lo descarto por tamano")
+    return fallos
+
+
+@prueba("con fx mal calibrado, 'suave' NO deja ciego al carro")
+def t_fx_malo():
+    """El caso 1920 contra 640.
+
+    fx se guarda referido a 640 de ancho y se escala con el ancho de captura.
+    Grabando a 1920 con un fx calibrado a 640 sale tres veces mayor, y
+    entonces lateral_mm() mide un pilar de 50 mm como 17. En 'estricto' eso
+    borra TODOS los pilares y el carro se queda ciego sin decir por que; en
+    'suave' sigue viendolos, que es lo que tiene que pasar: una calibracion
+    floja puede costar precision, nunca la vista.
+    """
+    fallos = []
+    real = _geo()                       # la camara de verdad
+    malo = _geo()                       # lo que cree el programa
+    malo.cfg = dict(malo.cfg)
+    malo.cfg["fx_px"] = float(malo.cfg["fx_px"]) * 3.0
+
+    d = objeto(real, "rojo", 900.0, 150.0)
+    esq = Esquivador(cfg_obstaculos(verificar_tamano="suave"))
+    lado(esq, {"rojo": [d], "verde": [], "magenta": []}, malo, 4)
+    if esq.info.get("color") != "rojo":
+        fallos.append(f"en suave se quedo ciego (info={esq.info})")
+    if esq.info.get("lado") != "derecha":
+        fallos.append(f"y ademas el lado salio {esq.info.get('lado')}")
+
+    esq2 = Esquivador(cfg_obstaculos(verificar_tamano="estricto"))
+    lado(esq2, {"rojo": [objeto(real, "rojo", 900.0, 150.0)],
+                "verde": [], "magenta": []}, malo, 4)
+    if esq2.info.get("color"):
+        fallos.append("(control) en estricto deberia caerse, y no se cayo")
+    return fallos
+
+
+@prueba("si el detector pierde el pilar, se sigue conduciendo a su lado")
+def t_a_ciegas():
+    """El fallo que se veia en el video: el pilar ahi delante, bien visible, y
+    el carro 'esquivando y ya'. La mascara de color se caia unos frames y el
+    esquive soltaba el volante y se iba recto, olvidando el lado."""
+    geo, fallos = _geo(), []
+    esq = Esquivador(cfg_obstaculos(votos_color=2))
+    # seis frames viendolo, acercandose
+    for i in range(6):
+        esq._t_prev = time.time() - 0.033
+        d = objeto(geo, "verde", 1200.0 - i * 60.0, -180.0)
+        esq.paso({"verde": [d], "rojo": [], "magenta": []}, None, geo,
+                 None, False, 0, 500.0)
+    if esq.info.get("lado") != "izquierda":
+        fallos.append(f"viendolo ya sale mal: {esq.info.get('lado')}")
+
+    # y ahora el detector se cae del todo durante ocho frames
+    lados, ciegos = [], 0
+    for _ in range(8):
+        esq._t_prev = time.time() - 0.033
+        direccion, peso = esq.paso({"verde": [], "rojo": [], "magenta": []},
+                                   None, geo, None, False, 0, 500.0)
+        lados.append(esq.info.get("lado"))
+        if esq.info.get("ciego"):
+            ciegos += 1
+        if peso <= 0.0:
+            fallos.append("solto el esquive del todo al perderlo de vista")
+            break
+    if ciegos == 0:
+        fallos.append("no siguio ni un frame a ciegas")
+    if any(l != "izquierda" for l in lados):
+        fallos.append(f"cambio de lado al perderlo: {lados}")
+    return fallos
+
+
+@prueba("a ciegas se puede apagar, y entonces vuelve a soltar el lado")
+def t_ciego_apagado():
+    geo, fallos = _geo(), []
+    esq = Esquivador(cfg_obstaculos(votos_color=2, seguir_a_ciegas=False))
+    for i in range(6):
+        esq._t_prev = time.time() - 0.033
+        d = objeto(geo, "verde", 1200.0 - i * 60.0, -180.0)
+        esq.paso({"verde": [d], "rojo": [], "magenta": []}, None, geo,
+                 None, False, 0, 500.0)
+    esq._t_prev = time.time() - 0.033
+    esq.paso({"verde": [], "rojo": [], "magenta": []}, None, geo,
+             None, False, 0, 500.0)
+    if esq.info.get("ciego"):
+        fallos.append("siguio a ciegas con el interruptor apagado")
     return fallos
 
 

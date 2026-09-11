@@ -7,6 +7,8 @@ en src/web/index.html y se sirve desde disco (editar y F5, sin reiniciar).
 Rutas:
     /                    la pagina
     /stream.mjpg         video: ?vista=normal|cruda|piso|mascara&color=rojo
+    /api/cmd?capturar=1  guarda el frame crudo en capturas/ (para el
+                         diagnostico de deteccion de pilares)
     /api/estado          estado completo (JSON)
     /api/esquema         esquema de parametros (la web arma los sliders sola)
     /api/valores         valores actuales de todos los parametros
@@ -193,6 +195,12 @@ class Servidor:
                                           float(args.get("y", 0)),
                                           args.get("acumular", "0") == "1")
                     respuesta["rangos"] = rangos
+                elif k == "capturar":
+                    # ?capturar=1  (o ?capturar=nombre) desde el navegador del
+                    # movil. Deja el frame crudo en capturas/ para poder
+                    # pasarselo luego a tools/diagnostico_pilares.py.
+                    respuesta["capturas"] = r.capturar(
+                        "" if v in ("1", "true", "") else v)
                 elif k == "calibrar_giro":
                     r.calibrar_giro()
                 elif k == "cero_yaw":

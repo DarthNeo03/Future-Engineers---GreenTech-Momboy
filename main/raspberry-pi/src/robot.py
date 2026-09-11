@@ -19,6 +19,7 @@ import copy
 import json
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import cv2
@@ -250,6 +251,38 @@ class Robot:
     def pulsar_boton(self, tipo: str = botones_mod.CORTA) -> None:
         """Pulsacion virtual, para probar la secuencia sin cablear nada."""
         self.botones.pulsar_virtual(tipo)
+
+    # -- capturas ----------------------------------------------------------
+    def capturar(self, nombre: str = "") -> Dict[str, Any]:
+        """Guarda el frame CRUDO y el anotado en capturas/.
+
+        Existe por una razon muy concreta: cuando en el video se ve un pilar
+        perfectamente y el carro no lo detecta, mirando el video no se saca
+        nada — el stream va comprimido, reescalado y con el overlay encima. Lo
+        que hace falta es el frame tal cual entro, para pasarselo a
+        tools/diagnostico_pilares.py, que dice que filtro lo mato.
+
+        Se dispara desde el movil sin tocar la interfaz:
+            http://carrito.local:8080/api/cmd?capturar=1
+        """
+        with self._lock:
+            crudo = None if self.frame_crudo is None else self.frame_crudo.copy()
+            anotado = None if self.frame_anotado is None else self.frame_anotado.copy()
+        if crudo is None:
+            raise RuntimeError("todavia no hay imagen de la camara")
+        carpeta = Path(__file__).resolve().parent.parent / "capturas"
+        carpeta.mkdir(parents=True, exist_ok=True)
+        sello = time.strftime("%Y%m%d_%H%M%S")
+        etiqueta = "".join(c for c in nombre if c.isalnum() or c in "-_")[:24]
+        base = f"{sello}_{etiqueta}" if etiqueta else sello
+        rutas = {}
+        cv2.imwrite(str(carpeta / f"{base}_crudo.png"), crudo)
+        rutas["crudo"] = f"capturas/{base}_crudo.png"
+        if anotado is not None:
+            cv2.imwrite(str(carpeta / f"{base}_anotado.png"), anotado)
+            rutas["anotado"] = f"capturas/{base}_anotado.png"
+        self.log(f"[captura] {rutas['crudo']} ({crudo.shape[1]}x{crudo.shape[0]})")
+        return rutas
 
     # -- parametros y perfiles --------------------------------------------
     def fijar_param(self, grupo: str, clave: str, valor: Any) -> Any:

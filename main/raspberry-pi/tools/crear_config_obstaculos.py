@@ -35,6 +35,12 @@ El V minimo del rojo tambien sube (venia en 6): con ese valor cualquier pixel
 casi negro de tono rojizo -la sombra del zocalo, el canto de un muro- contaba
 como pilar. Un pilar iluminado nunca tiene V de 6.
 
+Y se congela el BALANCE DE BLANCOS. Con el en automatico la camara se reajusta
+sola al girar hacia una pared clara, el tono de los pilares se mueve con ella y
+la mascara se cae unos frames si y otros no: es la causa numero uno de "a veces
+no ve los cubos". La exposicion hay que fijarla a mano mirando el video, porque
+el valor util depende de la camara y del sistema.
+
 Nada de esto sustituye a calibrar con la camara en la pista: es un punto de
 partida coherente con el reglamento. Calibra desde la web arrancando con
 --reto obstaculos, y lo que guardes ira a esta carpeta.
@@ -79,17 +85,36 @@ OBSTACULOS = {
     "ignorar_magenta": True,
     "solape_magenta": 0.30,
     "esquivar_magenta": True,
-    "verificar_tamano": True,
+    # 'suave', no 'estricto': la banda de ancho en mm depende de fx, y fx se
+    # escala con el ancho de captura. Hasta comprobar con
+    # tools/diagnostico_pilares.py que un pilar mide ~50 mm, 'estricto' puede
+    # borrarlos todos y dejar al carro ciego sin decir por que.
+    "verificar_tamano": "suave",
     "pilar_ancho_min_mm": 25.0,
     "pilar_ancho_max_mm": 120.0,
     "pilar_alto_mm": 100.0,
-    "pilar_alto_tol": 0.55,
+    "pilar_alto_tol": 0.6,
     "lat_max_mm": 900.0,
     "votos_color": 3,
     "fijar_lado": True,
     "emparejar_mm": 260.0,
     "pista_ms": 700,
+    # seguir el pilar cuando la mascara parpadea (el arreglo de "lo esquiva y ya")
+    "seguir_a_ciegas": True,
+    "ciego_max_ms": 600,
+    "ciego_vistas_min": 2,
+    "peso_ciego": 0.9,
 }
+
+# El tono es lo unico que separa al rojo del magenta y al verde del piso, y el
+# balance de blancos AUTOMATICO lo mueve solo: la camara se reajusta al girar
+# hacia una pared clara y el HSV que calibraste deja de valer. Se congela en un
+# valor de pabellon para que la calibracion de color signifique algo. La
+# EXPOSICION no se toca aqui a proposito: el valor util depende de la camara y
+# del sistema (en Linux/V4L2 son positivos, en Windows/DSHOW negativos), asi
+# que clavarlo a ciegas puede dejar la imagen negra. Ajustala tu con el slider
+# mirando el video, hasta que el tapete deje de estar quemado.
+CAMARA = {"balance_blancos": 4500.0}
 
 
 def sembrar_params(desde: str, forzar: bool) -> Path:
@@ -104,6 +129,7 @@ def sembrar_params(desde: str, forzar: bool) -> Path:
 
     valores = copy.deepcopy(base["valores"])
     valores["obstaculos"].update(OBSTACULOS)
+    valores["camara"].update(CAMARA)
 
     datos = {"version": 1, "activo": "obstaculos_base", "perfiles": []}
     params_mod.guardar_perfil(datos, "obstaculos_base", valores, "obstaculos")

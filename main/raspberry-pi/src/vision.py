@@ -127,8 +127,17 @@ class DetectorColor:
 
     def detectar(self,
                  hsv: np.ndarray,
-                 con_contorno: bool = False) -> Tuple[List[Deteccion], np.ndarray]:
-        """Devuelve (detecciones ordenadas por area desc, mascara tamaño completo)."""
+                 con_contorno: bool = False,
+                 descartes: Optional[List[Dict[str, Any]]] = None
+                 ) -> Tuple[List[Deteccion], np.ndarray]:
+        """Devuelve (detecciones ordenadas por area desc, mascara tamaño completo).
+
+        descartes: si se pasa una lista, se le añade una ficha por cada mancha
+        RECHAZADA, con el filtro que la mato y sus medidas. No cuesta nada
+        cuando es None (el caso del lazo de control) y es la unica forma de
+        responder a "el pilar se ve perfectamente y el carro no lo detecta":
+        sin esto solo se sabe que no hay deteccion, no por que.
+        """
         p = self.params
         alto_img, ancho_img = hsv.shape[:2]
 
@@ -168,6 +177,10 @@ class DetectorColor:
             # Descarte barato antes de tocar pixeles: la mancha dilatada nunca
             # puede ser menor que la real.
             if area_dilatada < area_min:
+                if descartes is not None:
+                    descartes.append({"filtro": "area_min", "area": int(area_dilatada),
+                                      "limite": area_min, "x": int(bx),
+                                      "y": int(by + y0), "w": int(bw), "h": int(bh)})
                 continue
 
             # Trabajamos solo dentro del bbox de la etiqueta.
@@ -177,6 +190,11 @@ class DetectorColor:
 
             area = int(np.count_nonzero(propio))
             if area < area_min or area > area_max:
+                if descartes is not None:
+                    descartes.append({
+                        "filtro": "area_min" if area < area_min else "area_max",
+                        "area": area, "limite": area_min if area < area_min else area_max,
+                        "x": int(bx), "y": int(by + y0), "w": int(bw), "h": int(bh)})
                 continue
 
             ys, xs = np.nonzero(propio)
@@ -187,14 +205,31 @@ class DetectorColor:
             w = rx1 - rx0 + 1
             h = ry1 - ry0 + 1
             if w < ancho_min or h < alto_min:
+                if descartes is not None:
+                    descartes.append({"filtro": "ancho_min/alto_min", "area": area,
+                                      "x": int(bx + rx0), "y": int(by + ry0 + y0),
+                                      "w": int(w), "h": int(h),
+                                      "limite": f"{ancho_min}x{alto_min}"})
                 continue
 
             llenado = area / float(w * h)
             if llenado < llenado_min:
+                if descartes is not None:
+                    descartes.append({"filtro": "llenado_min", "area": area,
+                                      "llenado": round(llenado, 3),
+                                      "limite": llenado_min,
+                                      "x": int(bx + rx0), "y": int(by + ry0 + y0),
+                                      "w": int(w), "h": int(h)})
                 continue
 
             aspecto = h / float(w)
             if usar_asp and not (asp_min <= aspecto <= asp_max):
+                if descartes is not None:
+                    descartes.append({"filtro": "aspecto", "area": area,
+                                      "aspecto": round(aspecto, 2),
+                                      "limite": f"{asp_min}..{asp_max}",
+                                      "x": int(bx + rx0), "y": int(by + ry0 + y0),
+                                      "w": int(w), "h": int(h)})
                 continue
 
             det = Deteccion(
@@ -219,7 +254,16 @@ class DetectorColor:
             detecciones.append(det)
 
         detecciones.sort(key=lambda d: d.area, reverse=True)
-        return detecciones[:int(p.get("max_objetos", 4))], mascara
+        tope = int(p.get("max_objetos", 4))
+        if descartes is not None:
+            for d in detecciones[tope:]:
+                # Se cayo por la cuota, no por ser malo. Importa: si el piso
+                # sobreexpuesto entra en la mascara, sus manchas son enormes y
+                # se llevan todas las plazas antes que el pilar de verdad.
+                descartes.append({"filtro": "max_objetos", "area": d.area,
+                                  "limite": tope, "x": d.x, "y": d.y,
+                                  "w": d.w, "h": d.h})
+        return detecciones[:tope], mascara
 
 
 # --------------------------------------------------------------------------

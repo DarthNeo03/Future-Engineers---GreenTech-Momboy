@@ -57,6 +57,50 @@ from src import robot as robot_mod          # noqa: E402
 from src import servidor as srv_mod         # noqa: E402
 
 
+def avisos_deteccion(p) -> list:
+    """Las dos cosas que dejan al carro sin ver los pilares.
+
+    Las dos son silenciosas: el carro no falla, simplemente no detecta, y desde
+    el video no se distingue de "el esquive no funciona". Salen en cada
+    arranque del reto de obstaculos porque cuestan una tarde cada una.
+    """
+    avisos = []
+    cam, geo = p["camara"], p["geometria"]
+
+    if float(cam.get("balance_blancos", -1.0)) < 0 or \
+            float(cam.get("exposicion", -1.0)) == -1.0:
+        cuales = []
+        if float(cam.get("exposicion", -1.0)) == -1.0:
+            cuales.append("exposicion")
+        if float(cam.get("balance_blancos", -1.0)) < 0:
+            cuales.append("balance de blancos")
+        avisos.append(
+            "AVISO: " + " y ".join(cuales) + " en AUTO. El tapete es blanco y "
+            "brillante: la camara se reajusta sola al girar hacia una pared "
+            "clara, el tono de los pilares se mueve con ella y la mascara se "
+            "cae unos frames si y otros no. Es la causa numero uno de 'a veces "
+            "no ve los cubos'. Congelalos en la pestaña Ajustes.")
+
+    # fx se guarda referido a 640 de ancho y se escala con el ancho de captura.
+    # Capturando a 1920 con un fx calibrado a 640 sale tres veces mayor: los
+    # milimetros laterales salen tres veces cortos y el punto de paso apunta a
+    # donde no es. En el Open Challenge casi no se nota (la distancia al muro
+    # sale de las FILAS, o sea de fy); aqui decide por que lado se pasa.
+    ancho = int(cam.get("ancho", 640))
+    if ancho != 640:
+        fx = float(geo.get("fx_px", 460.0)) * (ancho / 640.0)
+        fy = float(geo.get("fy_px", 460.0)) * (int(cam.get("alto", 480)) / 480.0)
+        if abs(fx - fy) / max(1.0, fy) > 0.25:
+            avisos.append(
+                f"AVISO: capturando a {ancho} de ancho, fx efectivo sale "
+                f"{fx:.0f} px contra fy {fy:.0f}. En una camara de pixeles "
+                "cuadrados son casi iguales, asi que uno de los dos esta mal "
+                "calibrado y los milimetros laterales no valen. Comprueba con "
+                "'python3 tools/diagnostico_pilares.py' cuanto mide un pilar: "
+                "tiene que dar ~50 mm de ancho.")
+    return avisos
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Piloto WRO 2026")
     ap.add_argument("--reto", default="open",
@@ -95,6 +139,9 @@ def main() -> int:
         print("[main] AVISO: --reto " + args.reto + " pero obstaculos.activo "
               "esta APAGADO: el carro no va a esquivar nada. Enciendelo en la "
               "web o carga un perfil del reto.")
+    if args.reto != "open":
+        for aviso in avisos_deteccion(r.p):
+            print("[main] " + aviso)
     r.iniciar()
 
     servidor = None

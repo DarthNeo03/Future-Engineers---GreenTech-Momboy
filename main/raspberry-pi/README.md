@@ -22,7 +22,7 @@ el estado del pulsador de competencia a la Pi).
 ```bash
 python3 -m venv .venv && source .venv/bin/activate    # en Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python tools/selftest.py            # 387 pruebas, sin hardware
+python tools/selftest.py            # 393 pruebas, sin hardware
 python main.py                      # camara + ESP32 + web (Open Challenge)
 python main.py --reto obstaculos    # Reto con Obstaculos (config/obstaculos/)
 python main.py --simulado           # sin ESP32 (pruebas en el PC)
@@ -735,11 +735,18 @@ llenado y aspecto son de IMAGEN: no saben de tamaños reales. Una sombra rojiza
 del zocalo, un reflejo en el tapete o un trozo de pared los pasaba. Una señal
 mide **50x50x100 mm** (regla 13.1): sabiendo a que distancia esta, la geometria
 dice cuanto TIENE que medir en pixeles, y lo que no cuadra no es un pilar
-(`verificar_tamano`). Esto es lo que caza al delimitador aunque el magenta este
-mal calibrado: mide 200 mm de ancho, cuatro veces un pilar. Depende de que la
-geometria este bien medida (`fy`, `fx`, altura, inclinacion): calibrala antes.
-Los objetos recortados por el canto de la imagen no se descartan, que de cerca
-siempre se salen del cuadro.
+(`verificar_tamano`). Los objetos recortados por el canto de la imagen no se
+descartan, que de cerca siempre se salen del cuadro.
+
+El peligro de esta prueba es que, mal calibrada, no se equivoca poco: **borra
+todos los pilares y deja al carro ciego**. Por eso tiene tres niveles.
+`suave` (por defecto) comprueba solo el **alto**, que depende de `fy` — el
+parametro fiable, porque la altura de captura es la misma con la que se
+calibro — y del ancho solo mata lo imposible; separar el pilar del delimitador
+queda entonces en manos del veto por solapamiento, que no usa geometria
+ninguna. `estricto` añade la banda de ancho real en mm (25-120), que caza al
+delimitador aunque el magenta este mal calibrado, pero **necesita `fx` bien
+medido** (ver la seccion de arriba). `no` la apaga.
 
 **3. El lado parpadeaba.** Aunque el detector falle solo uno de cada cinco
 frames, el lado se recalculaba entero en cada uno: un frame rojo (objetivo a la
@@ -760,6 +767,66 @@ python3 tools/selftest_obstaculos.py    # el lado, sin camara ni pista
 
 Comprueba los tres fallos de arriba con detecciones sinteticas proyectadas con
 la geometria real. Va incluido en `tools/selftest.py`.
+
+## "El pilar esta ahi delante y el carro no lo ve"
+
+Sintoma en pista: un cubo perfectamente visible a un metro, **sin recuadro** en
+el video, y el rotulo diciendo *ADELANTANDO*. El carro lo rodea de casualidad,
+por el lado que toque.
+
+**Lo primero: el recuadro lo dibuja el DETECTOR DE COLOR, antes del esquive.**
+Si no hay recuadro, el esquive ni se entero — el problema esta en la mascara de
+color o en los filtros de forma, y tocar los parametros del esquive no va a
+arreglarlo nunca. Si hay recuadro pero el carro lo ignora, entonces si es el
+esquive, y el rotulo naranja dice cuantos descarto y por que.
+
+```bash
+python3 tools/diagnostico_pilares.py            # con la camara en vivo
+python3 tools/diagnostico_pilares.py --imagen capturas/xxx_crudo.png
+```
+
+Abre la caja: para cada color dice cuanto del cuadro coge la mascara, las
+manchas aceptadas con su tamaño REAL en mm, las rechazadas con el filtro exacto
+que las mato, y que decide el esquive con lo que queda. Para capturar un frame
+crudo desde el movil, sin tocar la interfaz:
+
+    http://carrito.local:8080/api/cmd?capturar=1
+
+**Las dos causas que se llevan la tarde**, y que ahora se avisan en cada
+arranque del reto:
+
+**1. Exposicion y balance de blancos en AUTO.** El tapete es blanco y
+brillante: al girar hacia una pared clara la camara se reajusta sola, el tono
+de los pilares se mueve con ella y la mascara se cae unos frames si y otros no.
+Eso es exactamente "a veces no ve los cubos". Congelalos en Ajustes **antes**
+de calibrar colores, o la calibracion no significa nada. El perfil sembrado ya
+fija el balance de blancos en 4500; la exposicion hay que ponerla a mano
+mirando el video, porque el valor util depende de la camara y del sistema (en
+Linux/V4L2 son positivos, en Windows/DSHOW negativos).
+
+**2. `fx` y el ancho de captura.** `fx_px` se guarda referido a **640** de
+ancho y se escala con el ancho real. Capturando a **1920** con un `fx`
+calibrado a 640, el `fx` efectivo sale **tres veces mayor**, y entonces
+`lateral_mm()` mide un pilar de 50 mm como 17: el punto de paso apunta a donde
+no es y `verificar_tamano` en estricto los borra todos. En el Open Challenge
+casi no se nota, porque la distancia al muro sale de las FILAS (o sea de `fy`);
+aqui decide por que lado se pasa. El diagnostico te dice cuanto mide un pilar
+de verdad: **tiene que dar ~50 mm de ancho y ~100 mm de alto**. Si no, recalibra
+`fx` en la pestaña Calibracion con la captura a la resolucion que vas a usar.
+
+### Y cuando el detector parpadea de todas formas
+
+Siempre parpadea un poco. Antes, en cuanto el pilar se perdia un par de frames
+el esquive soltaba el volante y se iba **recto**: el carro se olvidaba del lado
+y lo adelantaba por donde tocara. Ese era el *"lo esquiva y ya"*.
+
+Ahora (`seguir_a_ciegas`, encendido) se sigue conduciendo contra la **ultima
+posicion conocida**, adelantada cada frame con la velocidad real del carro,
+hasta `ciego_max_ms`. En el video sale `A CIEGAS 0.2s`. Hace falta haberlo
+visto `ciego_vistas_min` veces, para que un destello de color en una pared no
+se lleve al carro medio segundo hacia un fantasma. Si el rotulo dice *A CIEGAS*
+casi siempre, no toques el esquive: tu deteccion de color esta parpadeando y
+hay que arreglar eso.
 
 ## Los pilares de la seccion siguiente no son de esta recta
 
@@ -1200,8 +1267,9 @@ piloto/
 │   ├── servidor.py         http.server + MJPEG
 │   └── web/index.html      la interfaz
 └── tools/
-    ├── selftest.py         387 pruebas sin hardware
+    ├── selftest.py         393 pruebas sin hardware
     ├── selftest_obstaculos.py  el lado de paso, con pilares sinteticos
+    ├── diagnostico_pilares.py  por que NO se detecta ese pilar
     └── crear_config_obstaculos.py  siembra config/obstaculos/
 ```
 

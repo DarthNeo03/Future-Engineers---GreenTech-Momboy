@@ -4,7 +4,7 @@
  "perfiles": [
   {
    "nombre": "obstaculos_base",
-   "fecha": "2026-09-11 01:21:44",
+   "fecha": "2026-09-11 02:07:20",
    "categoria": "obstaculos",
    "valores": {
     "limites": {
@@ -21,7 +21,7 @@
      "fps": 30,
      "voltear": false,
      "exposicion": -1.0,
-     "balance_blancos": -1.0,
+     "balance_blancos": 4500.0,
      "indice_trasera": -1
     },
     "geometria": {
@@ -190,11 +190,15 @@
      "ignorar_magenta": true,
      "solape_magenta": 0.3,
      "esquivar_magenta": true,
-     "verificar_tamano": true,
+     "verificar_tamano": "suave",
      "pilar_ancho_min_mm": 25.0,
      "pilar_ancho_max_mm": 120.0,
      "pilar_alto_mm": 100.0,
-     "pilar_alto_tol": 0.55,
+     "pilar_alto_tol": 0.6,
+     "seguir_a_ciegas": true,
+     "ciego_max_ms": 600,
+     "ciego_vistas_min": 2,
+     "peso_ciego": 0.9,
      "lat_max_mm": 900.0,
      "votos_color": 3,
      "fijar_lado": true,
