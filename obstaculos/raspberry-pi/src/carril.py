@@ -68,6 +68,8 @@ class SalidaCarril:
     err_rumbo: float = 0.0       # normalizado -1..1
     rumbo_hueco_deg: float = 0.0  # hacia donde esta la salida
     sentido_curva: int = 0       # +1 las curvas van a la derecha, -1 izquierda
+    holgura_min_mm: Optional[float] = None  # el muro mas cercano, de cualquier lado
+    muro_critico: bool = False   # a punto de rozar: manda la guardia y se frena
     muro_encima: bool = False    # algun muro por debajo de guardia_muro_mm
     sesgo: float = 0.0           # cuanto puso el sesgo de curva, en %
     motivo: str = ""             # que mando este ciclo, para la telemetria
@@ -387,12 +389,30 @@ def guardia_muro(s: SalidaCarril, cfg: Dict[str, Any]) -> float:
     Devuelve % con signo (+ = empujar a la derecha).
     """
     umbral = float(cfg.get("guardia_muro_mm", 240.0))
+    critico = float(cfg.get("muro_critico_mm", 130.0))
     err = 0.0
     if s.lat_izq_mm is not None and s.lat_izq_mm < umbral:
         err += (umbral - s.lat_izq_mm) / umbral        # muro izq cerca -> derecha
     if s.lat_der_mm is not None and s.lat_der_mm < umbral:
         err -= (umbral - s.lat_der_mm) / umbral        # muro der cerca -> izquierda
-    return float(np.clip(err, -1.0, 1.0)) * float(cfg.get("k_guardia", 70.0))
+    salida = float(np.clip(err, -1.0, 1.0)) * float(cfg.get("k_guardia", 70.0))
+
+    # REGIMEN CRITICO. Por debajo de muro_critico_mm ya no se pondera nada:
+    # se manda al tope hacia el lado libre. El reglamento no distingue entre
+    # rozar y estrellarse —9.18, tocar el muro y moverlo termina la ronda— y
+    # un roce a 0.9 m/s mueve el muro. Aqui no hay nada que negociar.
+    lados = [d for d in (s.lat_izq_mm, s.lat_der_mm) if d is not None]
+    if lados:
+        s.holgura_min_mm = min(lados)
+        if s.holgura_min_mm < critico:
+            s.muro_critico = True
+            # Hacia el lado con mas sitio; si solo se ve un muro, lejos de el.
+            if s.lat_izq_mm is not None and (s.lat_der_mm is None or
+                                             s.lat_izq_mm < s.lat_der_mm):
+                salida = max(salida, float(cfg.get("k_guardia", 70.0)))
+            else:
+                salida = min(salida, -float(cfg.get("k_guardia", 70.0)))
+    return salida
 
 
 def margen_magenta(esc: Escena, semiancho_mm: float) -> Optional[float]:

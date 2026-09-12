@@ -109,9 +109,9 @@ class Contexto:
     vel_mm_s: float = 0.0
     direccion_mezclada: float = 0.0
     velocidad_sugerida: float = 0.0
-    # Empujon anti-muro. Se usa en los estados donde el seguidor de carril
-    # esta callado o a medio mandar (ESQUIVE, CORRECCION, REINCORPORACION):
-    # ver carril.guardia_muro.
+    # Empujon anti-muro. Lo aplica paso() a la salida de CUALQUIER estado que
+    # este conduciendo; los estados solo lo ponderan con Orden.peso_guardia.
+    # Ver carril.guardia_muro y el bloque al final de paso().
     guardia_muro: float = 0.0
 
 
@@ -125,6 +125,10 @@ class Orden:
     centrar: bool = True
     vmax: int = 255
     aux: int = 0          # bit0 = maniobra fina; viaja al firmware en el mando
+    # Cuanta autoridad se le deja a la guardia anti-muro en este estado. Se
+    # aplica UNA sola vez, en paso(); los estados solo la ponderan. Ver el
+    # comentario en paso() sobre por que esta centralizada.
+    peso_guardia: float = 1.0
     nota: str = ""
 
 
@@ -193,7 +197,35 @@ class MaquinaEstados:
             Estado.FIN: self._fin,
             Estado.FALLO: self._fallo,
         }[self.estado]
-        return manejador(c)
+        orden = manejador(c)
+
+        # ===== GUARDIA ANTI-MURO, UNA SOLA VEZ Y PARA TODOS ===============
+        # Estaba repartida por los estados, y por eso PISTA y SENAL —los dos
+        # donde el carro pasa la mayor parte de la ronda— se habian quedado
+        # sin ella. No es un descuido puntual: es lo que pasa siempre que una
+        # garantia depende de que cada rama nueva se acuerde de repetirla.
+        #
+        # El reglamento no admite matices aqui. 9.18: si el vehiculo mueve un
+        # muro, la ronda se detiene, la puntuacion es CERO y el tiempo es el
+        # maximo. No hay penalizacion parcial por rozar. Asi que la guardia
+        # deja de ser una opinion mas que se suma en algunos estados y pasa a
+        # ser lo ultimo que toca el volante, en todos.
+        #
+        # Los estados solo PONDERAN (peso_guardia), nunca la omiten: el unico
+        # que baja el peso es ESQUIVE al principio del adelantamiento, porque
+        # entonces el pilar sigue al costado y corregir hacia el lo barreria
+        # con la rueda trasera.
+        if orden.armado and not orden.parada:
+            orden.direccion = max(-100.0, min(
+                100.0, orden.direccion + orden.peso_guardia * c.guardia_muro))
+            # Y si el muro esta a punto de rozarse, ademas se frena: el radio
+            # de giro no depende de la velocidad pero el deslizamiento si, y
+            # un carro rapido sale hacia fuera mas de lo que la geometria dice.
+            if c.carril.muro_critico:
+                orden.vel = min(orden.vel, float(
+                    self.cfg.get("vel_muro_critico", 22.0)))
+                orden.nota += " [MURO]"
+        return orden
 
     # ============================================================ estados
     def _espera(self, c: Contexto) -> Orden:
@@ -231,6 +263,45 @@ class MaquinaEstados:
         if c.maniobra.peso > float(self.cfg.get("senal_desde_peso", 0.30)):
             self._ir(Estado.SENAL, f"pilar {c.maniobra.color}")
             return self._senal(c)
+
+        # ===== RECTA DESPEJADA: IR RECTO, NO IR AL HUECO ==================
+        # Sin pilar delante y con el frente libre, la tarea no es buscar nada:
+        # es llegar a la proxima linea o al proximo pilar SIN perder el
+        # centro. Dejarselo al rumbo del hueco tiene un problema sutil: el
+        # centroide del tramo libre se mueve unos grados con cada frame —basta
+        # que la mascara del muro parpadee en un sector— y el carro va
+        # persiguiendo ese ruido de lado a lado de la recta. No es un fallo
+        # grande; es el zigzag que se come el margen que hara falta luego para
+        # el pilar que aun no se ve.
+        #
+        # Con el MPU delante hay una referencia mucho mas firme: el RUMBO. Se
+        # fija al entrar en la recta y se sostiene, y el centrado —que si es
+        # una medida geometrica y no un centroide— corrige la posicion. El
+        # rumbo del hueco se queda de aporte menor.
+        despejada = (not c.carril.en_curva and
+                     c.carril.dist_frente_mm >= float(
+                         self.cfg.get("recta_despejada_mm", 1100.0)))
+        if despejada and c.sens.mpu_ok:
+            if self._yaw_recto is None:
+                self._yaw_recto = c.sens.yaw
+            err = envolver_grados(self._yaw_recto - c.sens.yaw)
+            # Si el rumbo guardado se aleja mucho, es que el carro ya no va por
+            # donde creia (una esquina que no se detecto, un empujon): se
+            # readopta el actual en vez de pelear contra la realidad.
+            if abs(err) > float(self.cfg.get("recto_reenganche_deg", 35.0)):
+                self._yaw_recto = c.sens.yaw
+                err = 0.0
+            recto = (float(self.cfg.get("kp_recto", 2.2)) * err
+                     - float(self.cfg.get("kd_recto", 0.20)) * c.sens.gz)
+            mezcla = float(self.cfg.get("peso_recto", 0.6))
+            direccion = mezcla * recto + (1.0 - mezcla) * c.direccion_mezclada
+            return Orden(vel=c.velocidad_sugerida,
+                         direccion=max(-100.0, min(100.0, direccion)),
+                         armado=True, parada=False, centrar=False,
+                         nota="recta (rumbo sostenido)")
+        if not despejada:
+            self._yaw_recto = None
+
         return Orden(vel=c.velocidad_sugerida, direccion=c.direccion_mezclada,
                      armado=True, parada=False, centrar=False,
                      nota="curva" if c.carril.en_curva else "recta")
@@ -271,9 +342,10 @@ class MaquinaEstados:
         # pilar sigue al costado y corregir hacia el seria barrerlo con la
         # cola; al final ya quedo atras y lo unico que importa es el muro.
         peso = 0.3 + 0.7 * c.maniobra.progreso
-        direccion = c.maniobra.direccion + peso * c.guardia_muro
+        direccion = c.maniobra.direccion
         return Orden(vel=v, direccion=max(-100.0, min(100.0, direccion)),
                      armado=True, parada=False, centrar=False,
+                     peso_guardia=peso,
                      nota=f"compromiso {c.maniobra.color}")
 
     def _reincorporacion(self, c: Contexto) -> Orden:
@@ -346,11 +418,11 @@ class MaquinaEstados:
             err = envolver_grados(self._yaw_recto - c.sens.yaw)
             direccion = (float(self.cfg.get("kp_recto", 2.6)) * err
                          - float(self.cfg.get("kd_recto", 0.22)) * c.sens.gz
-                         + c.guardia_muro)
+                         )
             nota = f"recto ({err:+.0f} deg)"
         else:
             # Sin MPU no hay rumbo que sostener: manda el carril y se nota.
-            direccion = c.direccion_mezclada + c.guardia_muro
+            direccion = c.direccion_mezclada
             nota = "reincorporandose sin MPU"
         return Orden(vel=v, direccion=max(-100.0, min(100.0, direccion)),
                      armado=True, parada=False, centrar=False, nota=nota)
@@ -448,7 +520,7 @@ class MaquinaEstados:
 
         v = min(c.velocidad_sugerida, float(self.cfg.get("vel_esquina", 30.0)))
         direccion = (self._sentido_esquina *
-                     float(self.cfg.get("dir_esquina", 85.0)) + c.guardia_muro)
+                     float(self.cfg.get("dir_esquina", 85.0)))
         return Orden(vel=v, direccion=max(-100.0, min(100.0, direccion)),
                      armado=True, parada=False, centrar=False, aux=AUX_LENTO,
                      nota=f"curva comprometida ({girado:.0f} de "
@@ -464,7 +536,7 @@ class MaquinaEstados:
         # cruzar el radio del pilar, no hasta tocarlo. Ir lento alarga ese
         # margen en tiempo, que es lo unico que se puede comprar aqui.
         v = float(self.cfg.get("vel_correccion", 22.0))
-        direccion = c.maniobra.direccion + c.guardia_muro
+        direccion = c.maniobra.direccion
         return Orden(vel=v, direccion=max(-100.0, min(100.0, direccion)),
                      armado=True, parada=False, centrar=False,
                      nota=f"corrigiendo lado de {c.maniobra.color}")

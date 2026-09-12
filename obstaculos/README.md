@@ -4,6 +4,10 @@ Pila completa y autocontenida para el **Desafío de Obstáculos** de WRO 2026
 Future Engineers. Raspberry Pi 5 (visión y decisiones) + ESP32 (hardware y
 failsafe), unidos por serial a 115200 8N1.
 
+La **[bitácora](BITACORA.md)** cuenta cómo llegó a ser así: los nueve fallos
+que aparecieron, cómo se aisló cada uno y qué queda pendiente —incluido lo que
+puede romper hardware. Este README explica cómo funciona; la bitácora, por qué.
+
 No hay nada de estacionamiento en este código. Los delimitadores magenta del
 cajón sí aparecen, pero **como muro intocable**, nunca como objetivo: la regla
 9.25.7 termina la ronda en el instante en que el vehículo los toca.

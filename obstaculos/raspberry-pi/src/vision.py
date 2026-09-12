@@ -242,6 +242,16 @@ class Detector:
             if llenado < float(cfg.get("llenado_min", 0.5)):
                 descartes[f"{color}:llenado"] = descartes.get(f"{color}:llenado", 0) + 1
                 continue
+            # ALTO MINIMO EN PIXELES, no area.
+            # Para ver mas lejos hay que bajar area_min, pero el area cae con
+            # el CUADRADO de la distancia y arrastra consigo el filtro contra
+            # motas: a 3 m un pilar son 103 px de area y una mota de ruido
+            # tambien. El alto cae solo con la distancia (100*fy/d), asi que
+            # discrimina mucho mejor a lo lejos: 10 px de alto son 4.6 m de
+            # pilar legitimo y ninguna mota de tres pixeles pasa.
+            if h < int(cfg.get("alto_min_px", 10)) or                     w < int(cfg.get("ancho_min_px", 5)):
+                descartes[f"{color}:alto"] = descartes.get(f"{color}:alto", 0) + 1
+                continue
 
             # ===== DISTANCIA: MANDA LA ALTURA APARENTE =====================
             # Aqui hubo un fallo que costo una tarde de pista: se exigia que

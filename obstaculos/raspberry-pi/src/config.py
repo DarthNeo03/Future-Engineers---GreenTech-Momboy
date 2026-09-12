@@ -128,6 +128,9 @@ DEFECTOS: Dict[str, Any] = {
         # lateral empuja hacia el otro lado.
         "guardia_muro_mm": 240.0,
         "k_guardia": 70.0,
+        # Por debajo de esto ya no se pondera: volante al tope hacia el lado
+        # libre y se frena. 9.18 no distingue entre rozar y estrellarse.
+        "muro_critico_mm": 130.0,
         "suavizado": 0.45,
         # VELOCIDADES. Subidas respecto a la primera version porque el carro
         # iba sobrado de margen. Si al subirlas se empieza a comer pilares en
@@ -146,7 +149,10 @@ DEFECTOS: Dict[str, Any] = {
         # Verlos antes es lo que permite tener la trayectoria decidida ANTES
         # de terminar de rebasar el anterior, en vez de descubrir el siguiente
         # cuando ya no hay sitio para colocarse.
-        "activar_desde_mm": 2400.0,   # se empieza a tener en cuenta
+        "activar_desde_mm": 3000.0,   # se empieza a tener en cuenta
+        # A lo lejos no basta con verlo: hay que creerselo. Ver elegir().
+        "exigir_confianza_desde_mm": 1800.0,
+        "confianza_min_lejos": 0.75,
         "mandar_desde_mm": 850.0,     # manda del todo sobre el carril
         "juzgar_lado_desde_mm": 700.0,  # desde aqui se juzga si vamos por el
                                         #   lado malo; mas lejos aun hay sitio
@@ -260,7 +266,7 @@ DEFECTOS: Dict[str, Any] = {
         # cierra la curva: la abre, porque el carro desliza hacia fuera. Si
         # despues de subir esto el carro vuelve a salir pegado al muro
         # exterior, lo que hay que tocar es el rango del servo, no esto.
-        "vel_esquina": 34.0,
+        "vel_esquina": 26.0,
         # La linea dice CUANDO y la camara confirma QUE ESTA AHI: si el frente
         # no esta cerrado, esa linea es la de SALIDA de una curva cuya entrada
         # se perdio el sensor, y girar ahi es meterse en la pared.
@@ -277,6 +283,13 @@ DEFECTOS: Dict[str, Any] = {
         "vel_reversa": 28.0,
         "dir_reversa": 70.0,
         "reversa_s": 0.9,
+        "vel_muro_critico": 22.0,
+        # RECTA DESPEJADA: sostener el rumbo en vez de perseguir el hueco.
+        "recta_despejada_mm": 1100.0,
+        "kp_recto": 2.2,
+        "kd_recto": 0.20,
+        "peso_recto": 0.6,          # 1.0 = solo rumbo; 0 = solo carril
+        "recto_reenganche_deg": 35.0,
         "atasco_dist_mm": 260.0,
         "atasco_movimiento_mm": 45.0,
         "atasco_s": 1.2,
@@ -296,27 +309,33 @@ DEFECTOS: Dict[str, Any] = {
         "rojo": {
             "rangos": [[[0, 110, 70], [10, 255, 255]],
                        [[168, 110, 70], [179, 255, 255]]],
-            "abrir": 3, "cerrar": 5, "area_min": 140,
+            "abrir": 3, "cerrar": 5, "area_min": 90,
+            # El alto discrimina mejor que el area a lo lejos: ver _pilares.
+            "alto_min_px": 10,
+            "ancho_min_px": 5,
             "aspecto_min": 0.6, "aspecto_max": 4.5, "llenado_min": 0.5,
             # Tolerancia al error de inclinacion del mastil, en pixeles.
             # 70 px aguantan ~8 grados de montaje torcido sin perder pilares.
-            "margen_horizonte_px": 70,
+            "margen_horizonte_px": 95,
             "max_objetos": 4,
         },
         "verde": {
             "rangos": [[[42, 80, 55], [88, 255, 255]]],
-            "abrir": 3, "cerrar": 5, "area_min": 140,
+            "abrir": 3, "cerrar": 5, "area_min": 90,
+            # El alto discrimina mejor que el area a lo lejos: ver _pilares.
+            "alto_min_px": 10,
+            "ancho_min_px": 5,
             "aspecto_min": 0.6, "aspecto_max": 4.5, "llenado_min": 0.5,
             # Tolerancia al error de inclinacion del mastil, en pixeles.
             # 70 px aguantan ~8 grados de montaje torcido sin perder pilares.
-            "margen_horizonte_px": 70,
+            "margen_horizonte_px": 95,
             "max_objetos": 4,
         },
         # Delimitadores del cajon. NO son objetivo: son muro intocable.
         "magenta": {
             "rangos": [[[140, 90, 70], [166, 255, 255]]],
             "abrir": 3, "cerrar": 5, "area_min": 400,
-            "margen_horizonte_px": 70,
+            "margen_horizonte_px": 95,
             "max_objetos": 3,
         },
         # Muros: negro es poca V, sin importar el tono.

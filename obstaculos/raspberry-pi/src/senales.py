@@ -102,6 +102,10 @@ class Maniobra:
     objetivo_mm: float = 0.0     # lateral del punto de paso
     lado_incorrecto: bool = False
     pedir_reversa: bool = False
+    # El pilar que viene DESPUES del que se esta atendiendo, si se ve.
+    siguiente_color: str = ""
+    siguiente_dist_mm: float = DIST_MAX_MM
+    siguiente_lado: int = 0      # lado por el que habra que pasarlo
     rumbo_objetivo: Optional[float] = None  # yaw que se sostiene al adelantar
     err_rumbo_deg: float = 0.0
     progreso: float = 0.0                   # 0..1 dentro del compromiso
@@ -126,6 +130,7 @@ class Esquivador:
         self._mem_color = ""
         self._mem_lado = 0
         self._mem_t = 0.0
+        self._siguiente: Optional[Deteccion] = None
 
     # ------------------------------------------------------------ eleccion
     def elegir(self, esc: Escena, lineas_mm: Dict[str, Optional[float]],
@@ -156,16 +161,33 @@ class Esquivador:
             if vistas:
                 limite = min(vistas) + float(self.cfg.get("holgura_linea_mm", 80.0))
 
+        # CONFIANZA MINIMA A LO LEJOS. Al bajar area_min para ver mas lejos
+        # entran tambien manchas pequeñas cuya distancia por base y por altura
+        # no se parecen en nada (confianza 0.5). De cerca da igual —hay que
+        # esquivar cualquier cosa que este ahi— pero desviarse por una mancha
+        # a tres metros es peor que ignorarla: da tiempo de sobra a verla bien
+        # cuando se acerque.
+        conf_lejos = float(self.cfg.get("confianza_min_lejos", 0.75))
+        dist_conf = float(self.cfg.get("exigir_confianza_desde_mm", 1800.0))
         candidatos = [p for p in esc.pilares
                       if p.color in LADO_OBLIGADO
                       and p.dist_mm <= activar
-                      and p.dist_mm <= limite]
+                      and p.dist_mm <= limite
+                      and (p.dist_mm <= dist_conf or p.confianza >= conf_lejos)]
         if not candidatos:
             return None
-        # Entre varios, el mas cercano. Con dos pilares seguidos, resolver el
-        # primero bien deja el carro colocado para ver el segundo; intentar
-        # planear los dos a la vez con una sola camara sale peor.
-        return min(candidatos, key=lambda p: p.dist_mm)
+        # Entre varios, el mas cercano MANDA. Pero el segundo no se tira: se
+        # guarda como AVISO.
+        #
+        # Planear los dos a la vez con una sola camara sale peor —el segundo se
+        # ve mal y las dos maniobras se pelean— pero ignorarlo del todo tiene
+        # su propio precio: al salir del rebase el carro vuelve a centrarse, y
+        # si el siguiente pilar pedia el otro lado, lo que acaba de hacer es
+        # justo lo contrario de lo que tocaba. Saber que viene, y de que color,
+        # basta para salir del primero hacia el lado bueno.
+        candidatos.sort(key=lambda p: p.dist_mm)
+        self._siguiente = candidatos[1] if len(candidatos) > 1 else None
+        return candidatos[0]
 
     # ---------------------------------------------------------------- paso
     def paso(self, esc: Escena, lineas_mm: Dict[str, Optional[float]],
@@ -364,6 +386,10 @@ class Esquivador:
         self._mem_color = objetivo.color
         self._mem_lado = lado
         self._mem_t = ahora
+        if self._siguiente is not None:
+            m.siguiente_color = self._siguiente.color
+            m.siguiente_dist_mm = self._siguiente.dist_mm
+            m.siguiente_lado = LADO_OBLIGADO[self._siguiente.color]
         m.info = {
             "holgura_mm": round(holgura_actual),
             "mirada_mm": round(mirada),

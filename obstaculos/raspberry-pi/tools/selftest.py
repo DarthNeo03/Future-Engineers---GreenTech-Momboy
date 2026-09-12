@@ -1177,6 +1177,118 @@ def prueba_vueltas_fantasma() -> None:
           f"{c4.e.vueltas} vueltas, {c4.e.dist_mm/1000:.1f} m: {c4.e.motivo}")
 
 
+# ============================ no tocar los muros, y ver mas lejos
+def prueba_muros_y_alcance() -> None:
+    print("muros intocables y alcance de vision")
+    import time as _t
+    from src.config import DEFECTOS
+    from src.carril import SalidaCarril, guardia_muro
+    from src.fsm import Contexto, Estado, MaquinaEstados
+    from src.senales import Maniobra
+
+    cfg = dict(DEFECTOS["fsm"])
+    cfg["arranque_s"] = 0.01
+
+    def rodando(**kw):
+        """FSM ya en PISTA, lista para el caso que se le ponga."""
+        f = MaquinaEstados(dict(cfg))
+        base = dict(enlace_ok=True, hay_frame=True,
+                    carril=SalidaCarril(dist_frente_mm=2000.0),
+                    velocidad_sugerida=50.0,
+                    sens=proto.Sensores(estado=proto.S_MPU_OK | proto.S_TCS_OK))
+        f.paso(Contexto(**dict(base, arranque_pedido=True)))
+        _t.sleep(0.02)
+        f.paso(Contexto(**base))
+        assert f.estado == Estado.PISTA, f.estado
+        return f, base
+
+    # --- LA GUARDIA TIENE QUE ACTUAR EN PISTA, que es donde faltaba -----
+    f, base = rodando()
+    o_sin = f.paso(Contexto(**base))
+    f, base = rodando()
+    o_con = f.paso(Contexto(**dict(base, guardia_muro=+55.0)))
+    check("en PISTA la guardia anti-muro llega al volante",
+          abs(o_con.direccion - o_sin.direccion) > 40,
+          f"sin {o_sin.direccion:.1f} con {o_con.direccion:.1f}")
+
+    # --- y en SENAL, el otro estado que se la habia perdido -------------
+    f, base = rodando()
+    m = Maniobra(direccion=10.0, peso=0.9, fase="aproximacion", color="rojo",
+                 lado=+1, dist_mm=800.0)
+    f.paso(Contexto(**dict(base, maniobra=m, direccion_mezclada=10.0)))
+    check("un pilar lleva a SENAL", f.estado == Estado.SENAL, f.estado.value)
+    o = f.paso(Contexto(**dict(base, maniobra=m, direccion_mezclada=10.0,
+                               guardia_muro=-60.0)))
+    check("en SENAL la guardia tambien llega", o.direccion < 0,
+          f"dir={o.direccion:.1f}")
+
+    # --- muro critico: ademas de girar, frena --------------------------
+    f, base = rodando()
+    critico = SalidaCarril(dist_frente_mm=2000.0, lat_izq_mm=90.0,
+                           lat_der_mm=700.0, muro_critico=True)
+    o = f.paso(Contexto(**dict(base, carril=critico, guardia_muro=+70.0)))
+    check("con el muro encima se frena",
+          o.vel <= DEFECTOS["fsm"]["vel_muro_critico"] + 0.01,
+          f"vel={o.vel}")
+    check("y queda anotado en la telemetria", "[MURO]" in o.nota, o.nota)
+
+    # --- la guardia nunca empuja hacia el muro -------------------------
+    c = DEFECTOS["carril"]
+    izq = guardia_muro(SalidaCarril(lat_izq_mm=100.0, lat_der_mm=800.0), c)
+    der = guardia_muro(SalidaCarril(lat_izq_mm=800.0, lat_der_mm=100.0), c)
+    check("muro a la izquierda -> empuja a la derecha", izq > 0, f"{izq:.1f}")
+    check("muro a la derecha -> empuja a la izquierda", der < 0, f"{der:.1f}")
+    check("regimen critico manda al tope",
+          abs(guardia_muro(SalidaCarril(lat_izq_mm=60.0, lat_der_mm=900.0), c))
+          >= c["k_guardia"], "por debajo del tope")
+
+    # --- recta despejada: sostener el rumbo ----------------------------
+    f, base = rodando()
+    lejos = SalidaCarril(dist_frente_mm=2500.0)
+    s_mpu = proto.Sensores(estado=proto.S_MPU_OK | proto.S_TCS_OK)
+    f.paso(Contexto(**dict(base, carril=lejos, sens=s_mpu)))
+    desviado = proto.Sensores(estado=proto.S_MPU_OK | proto.S_TCS_OK, yaw=-9.0)
+    o = f.paso(Contexto(**dict(base, carril=lejos, sens=desviado,
+                               direccion_mezclada=0.0)))
+    check("en recta, desviado a la izquierda, corrige a la derecha",
+          o.direccion > 3, f"dir={o.direccion:.1f}  nota={o.nota}")
+    check("la nota dice que manda el rumbo", "rumbo" in o.nota, o.nota)
+    # Sin MPU no se inventa un rumbo: manda el carril, como antes.
+    f, base = rodando()
+    sin_mpu = proto.Sensores(estado=proto.S_TCS_OK)
+    o = f.paso(Contexto(**dict(base, carril=lejos, sens=sin_mpu,
+                               direccion_mezclada=-30.0)))
+    check("sin MPU la recta la sigue llevando el carril",
+          abs(o.direccion + 30.0) < 1e-6, f"dir={o.direccion:.1f}")
+
+    # --- alcance de vision --------------------------------------------
+    from src.geometria import Geometria
+    from src.vision import Detector
+    geo = Geometria(dict(DEFECTOS["geometria"]), 640, 480)
+    det = Detector(DEFECTOS["colores"], geo)
+    for d, espera in ((2400, True), (3200, True), (4000, False)):
+        esc = det.procesar(_frame_con_pilar(d, 0.0, (45, 35, 235)))
+        check(f"pilar a {d} mm {'se ve' if espera else 'ya no'}",
+              bool(esc.pilares) == espera, f"descartes={dict(esc.descartes)}")
+
+    # --- el SIGUIENTE pilar se reporta --------------------------------
+    from src.senales import Esquivador
+    from src.vision import Deteccion, Escena
+    e = Escena()
+    e.pilares = [
+        Deteccion(color="verde", x=300, y=200, w=40, h=90, area=3600,
+                  dist_mm=800.0, lat_mm=0.0, confianza=1.0),
+        Deteccion(color="rojo", x=380, y=215, w=22, h=48, area=1050,
+                  dist_mm=1900.0, lat_mm=260.0, confianza=1.0)]
+    esq = Esquivador(dict(DEFECTOS["senales"]), 130.0)
+    m = esq.paso(e, {}, False, 900.0, yaw=0.0)
+    check("atiende el pilar mas cercano", m.color == "verde", m.color)
+    check("y ya sabe cual viene despues", m.siguiente_color == "rojo",
+          m.siguiente_color)
+    check("con el lado que le tocara", m.siguiente_lado == +1,
+          str(m.siguiente_lado))
+
+
 def main() -> int:
     prueba_protocolo()
     prueba_reglas()
@@ -1189,6 +1301,7 @@ def main() -> int:
     prueba_compromiso()
     prueba_muestreo_tcs()
     prueba_vueltas_fantasma()
+    prueba_muros_y_alcance()
     print()
     if fallos:
         print(f"{fallos} prueba(s) FALLARON")
